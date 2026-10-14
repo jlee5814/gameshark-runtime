@@ -14,9 +14,11 @@ process restarts without a second prompt.
   [README](prototype/README.md) with diagrams, schema, the invariant-to-test matrix, and
   the proven-vs-unproven guarantees. Start here.
 - `architecture/` — the design: supervisor, agent lifecycle, continuity invariants, and
-  the Discord-to-GameShark translation.
+  the Discord-to-GameShark and [Bionic to GameShark](architecture/bionic-to-gameshark.md)
+  translations, and the v0.3 [inference router](architecture/inference-router.md) design.
 - `research/` — the read-only reverse-engineering analysis that motivated the design,
-  with evidence and confidence levels.
+  with evidence and confidence levels: [Discord](research/discord/deep-analysis.md) and
+  [Bionic (LM Studio)](research/bionic/deep-analysis.md).
 
 ## Versions
 
@@ -28,6 +30,11 @@ process restarts without a second prompt.
   classify activity deterministically, deliver each meaningful change once to a local
   companion feed, and survive SIGKILL, offline periods, rate limits, and token revocation.
   Design: [architecture/github-monitor.md](architecture/github-monitor.md).
+- **v0.3 (design only, not implemented)** — a model agnostic inference router: stateless
+  providers behind one OpenAI compatible contract (SGLang, MLX, LM Studio/Bionic, cloud),
+  capability and budget admission, a fenced inference journal, and a drain then fence
+  handoff, so Stark switches local and cloud models without losing identity or duties.
+  Design: [architecture/inference-router.md](architecture/inference-router.md).
 
 ## Run
 
