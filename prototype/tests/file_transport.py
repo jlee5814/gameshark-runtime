@@ -53,3 +53,9 @@ def review(i: int, state: str, author: str = "reviewer", ago_s: float = 0.0) -> 
     ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - ago_s))
     return {"id": i, "state": state.upper(), "user": {"login": author, "type": "User"},
             "body": "", "submitted_at": ts}
+
+
+def check_run(i: int, conclusion: str, name: str = "test") -> dict:
+    ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time()))
+    return {"id": i, "name": name, "status": "completed", "conclusion": conclusion,
+            "completed_at": ts, "html_url": f"https://github.test/ci/{i}"}

@@ -161,7 +161,7 @@ the property does not hold.
 cd /Users/jaebonglee/Projects/gameshark-research/prototype
 uv venv --python 3.13
 uv pip install pytest
-uv run pytest -v                 # all 54 tests (v0.1 + v0.2)
+uv run pytest -v                 # all 55 tests (v0.1 + v0.2)
 uv run python demo.py            # v0.1 narrated Stark run with a real SIGKILL
 uv run python demo_v2.py         # v0.2 PR monitoring across a real SIGKILL and a revoke
 uv run python companion.py <runtime_db>   # render the companion feed for a run
@@ -255,6 +255,27 @@ Stark watched this repository's PR #1 with the gh token:
 6. Totals: 2 inbox events, both acknowledged, 0 notifications, 0 duplicates. SIGTERM
    stopped the daemon cleanly.
 
+### Live actionable event soak (2026-10-14, real GitHub)
+
+A deliberately failing test on throwaway draft PR #2 produced a real failing check run.
+The full chain ran: GitHub event, poller, classifier, durable notification, companion
+feed, acknowledgment.
+
+| Step | Action | Observed |
+|---|---|---|
+| a | `watch jlee5814/gameshark-runtime#2`, `run` | responsibility active, feed empty |
+| b | SIGKILL while CI pending | daemon not running, lease held |
+| c | CI fails on GitHub while Stark is dead | check run 116009057415, `failure` |
+| d | bare `run` restart | first tick: audit `ci_failure` relevant, effect `done`, inbox event acked once, feed row 1 `[ci_failure] test failure` with the run URL |
+| e | SIGKILL before ack, restart, six polls | same single unread row 1, one notification, inbox delivered_count 1 |
+| f | `ack 1`, SIGKILL, restart, six polls | `feed` empty, `feed --all` shows row 1 read, still one notification |
+| g | close PR #2 without merging | `[pr_state] pull request closed`, responsibility `done`, the closing comment audited `self` |
+| h | SIGTERM | clean stop, lease released |
+
+Identity `04e6103f...` and lease generation 2 held across all four process lifetimes.
+PR #2 is closed unmerged and its branch deleted. The automated twin of this run is
+`test_daemon.py::test_actionable_event_survives_restarts_until_acked`.
+
 ### Guarantees against real GitHub
 
 | Property | Holds? | Basis |
@@ -273,10 +294,11 @@ ownership, and long soak behavior beyond the session above.
 
 ```
 platform darwin -- Python 3.13.9, pytest-9.1.1, pluggy-1.6.0
-collected 54 items
+collected 55 items
 tests/test_daemon.py::test_responsibility_survives_sigkill_without_second_prompt PASSED
 tests/test_daemon.py::test_second_daemon_refused_and_cli_requests_reach_running_daemon PASSED
 tests/test_daemon.py::test_token_revocation_blocks_survives_restart_and_resumes PASSED
+tests/test_daemon.py::test_actionable_event_survives_restarts_until_acked PASSED
 tests/test_github_monitor.py::test_assign_then_quiet_poll_delivers_nothing PASSED
 tests/test_github_monitor.py::test_new_review_delivers_and_dedups_on_repoll PASSED
 tests/test_github_monitor.py::test_classification_kinds_and_relevance PASSED
@@ -329,7 +351,7 @@ tests/test_recovery.py::test_stale_external_effect_rejected_by_destination PASSE
 tests/test_recovery.py::test_authorization_revocation_survives_restart PASSED
 tests/test_recovery.py::test_real_subprocess_kill_then_recover PASSED
 
-54 passed
+55 passed
 ```
 
 All 20 v0.1 tests run unchanged. `uv run ruff check .` reports no findings.

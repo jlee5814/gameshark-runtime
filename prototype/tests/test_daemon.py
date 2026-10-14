@@ -19,7 +19,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.file_transport import review, write
+from tests.file_transport import check_run, review, write
 
 ROOT = Path(__file__).resolve().parents[1]
 TARGET = "acme/widget#42"
@@ -152,3 +152,39 @@ def test_token_revocation_blocks_survives_restart_and_resumes(env):
     assert "approved" in feed
     assert "marked 2 read" in stark(env, "ack", "--all").stdout
     assert stark(env, "feed").stdout.strip() == "(no updates)"
+
+
+def test_actionable_event_survives_restarts_until_acked(env):
+    """Full chain: event, poll, classify, durable notification, feed, ack, across kills."""
+    assert stark(env, "watch", TARGET).returncode == 0
+    d1 = daemon(env)
+    wait_for(lambda: query(env, "SELECT 1 FROM monitor_seen"))
+    write(env["fixture"], reviews=[review(1, "approved", author="old", ago_s=86400)],
+          check_runs=[check_run(77, "failure")])
+    wait_for(lambda: len(notes(env)) == 1)
+    d1.send_signal(signal.SIGKILL)
+    d1.wait(timeout=10)
+
+    def unread():
+        return query(env, "SELECT rowid, op_key FROM notifications WHERE read_at IS NULL")
+
+    first = [tuple(r) for r in unread()]
+    assert first == [(1, "notify:acme/widget:42:ci_failure:check:77:failure")]
+
+    d2 = daemon(env)                                  # killed before ack: still waiting
+    wait_for(lambda: query(env, "SELECT 1 FROM lease WHERE owner_token IS NOT NULL"))
+    time.sleep(0.6)                                   # several ticks
+    assert [tuple(r) for r in unread()] == first
+    assert "test failure" in stark(env, "feed").stdout
+
+    assert "marked 1 read" in stark(env, "ack", "1").stdout
+    d2.send_signal(signal.SIGKILL)
+    d2.wait(timeout=10)
+
+    d3 = daemon(env)                                  # acked: stays read, never redelivered
+    time.sleep(0.6)
+    assert unread() == []
+    assert len(notes(env)) == 1
+    assert stark(env, "feed").stdout.strip() == "(no updates)"
+    d3.send_signal(signal.SIGTERM)
+    assert d3.wait(timeout=10) == 0
