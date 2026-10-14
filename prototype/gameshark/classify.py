@@ -22,11 +22,11 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-from gameshark.github_events import FAILED
+from gameshark.github_events import CANCELLED, FAILED
 
 KINDS = (
     "new_review", "change_request", "review_comment", "comment",
-    "ci_failure", "ci_recovered", "ci", "pr_state", "self", "bot", "system",
+    "ci_failure", "ci_cancelled", "ci_recovered", "ci", "pr_state", "self", "bot", "system",
 )
 
 _ACK = re.compile(
@@ -63,7 +63,11 @@ def classify(event: dict) -> Decision:
         if state in FAILED:
             return Decision("ci_failure", True, f"CI {name} concluded {state}")
         prev = (event.get("prev_conclusion") or "").lower()
-        if state == "success" and prev in FAILED:
+        if state == CANCELLED:
+            if prev == CANCELLED:
+                return Decision("ci", False, f"CI {name} cancelled again")
+            return Decision("ci_cancelled", True, f"CI {name} was cancelled before finishing")
+        if state == "success" and (prev in FAILED or prev == CANCELLED):
             return Decision("ci_recovered", True, f"CI {name} passed after {prev}")
         return Decision("ci", False, f"CI {name} concluded {state}")
 
