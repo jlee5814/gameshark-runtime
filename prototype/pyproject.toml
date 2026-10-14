@@ -1,6 +1,6 @@
 [project]
 name = "gameshark-runtime"
-version = "0.1.0"
+version = "0.2.0"
 description = "Clean room persistent agent runtime prototype: durable identity, fenced ownership, crash recovery"
 requires-python = ">=3.12"
 dependencies = []

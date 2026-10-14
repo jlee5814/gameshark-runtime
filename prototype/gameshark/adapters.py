@@ -29,6 +29,7 @@ class AdapterContext:
     grants: object = None                      # GrantStore for per action authorization reads
     fenced: Callable[[Callable[[object], None]], None] | None = None   # fenced durable write
     generation: int = 0                        # the owning lease generation
+    clock: object = None                       # injectable Clock for durable timestamps
 
 
 class Adapter(Protocol):

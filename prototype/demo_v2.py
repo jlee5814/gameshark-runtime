@@ -43,7 +43,7 @@ def show_feed(sup) -> None:
     if not rows:
         print("  companion feed: (empty)")
     for r in rows:
-        print(f"  companion: [{r['kind']}] {r['repo']}#{r['pr']} {r['summary']} — {r['reason']}")
+        print(f"  companion: [{r['kind']}] {r['repo']}#{r['pr']} {r['summary']}")
 
 
 def main() -> None:

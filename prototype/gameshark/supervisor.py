@@ -91,6 +91,7 @@ class AgentSupervisor:
             grants=self.grants,
             fenced=self._fenced,
             generation=self.generation or 0,
+            clock=self.clock,
         )
 
     def _fenced(self, fn) -> None:
