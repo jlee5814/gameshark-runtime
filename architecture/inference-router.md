@@ -1,6 +1,6 @@
 # GameShark inference router: v0.3 design
 
-Status: design only. Nothing here is implemented. v0.1 and v0.2 runtime code stays unchanged.
+Status: design, with steps 0 and 1 of Minimal v0.3 scope implemented (graceful drain; provider contracts in `prototype/gameshark/inference/`). v0.1 and v0.2 runtime code stays unchanged.
 
 Stark gains inference without letting any model own Stark. Providers become disposable executors behind one contract; identity, memory, and responsibilities stay in GameShark's SQLite store under the existing fenced lease. The Bionic (LM Studio) study supplies the problem shape (`../research/bionic/deep-analysis.md`); GameShark code stays clean room.
 
@@ -87,11 +87,9 @@ class Privacy(Enum):
 @dataclass(frozen=True)
 class Capabilities:
     model: str                     # provider model name, display only
-    locality: Literal["local", "cloud"]
+    locality: Locality             # LOCAL | CLOUD
     context_window: int            # tokens, prompt plus output
-    tools: bool
-    json_mode: bool
-    vision: bool
+    features: frozenset[Capability]  # TOOLS, JSON_MODE, VISION
     max_concurrency: int           # slots; config, not discovered
     price_in_micros: int           # per 1k input tokens, 0 for local
     price_out_micros: int          # per 1k output tokens
@@ -102,37 +100,47 @@ class ProviderRequest:
     attempt: int                   # 1..3, durable
     messages: tuple[Message, ...]  # full context; provider keeps no session
     max_tokens: int                # bounds cost and the budget reservation
-    temperature: float
-    needs: frozenset[str]          # required capabilities, e.g. {"tools"}
     deadline: float                # absolute monotonic time
     privacy: Privacy
+    temperature: float
+    needs: frozenset[Capability]   # required capabilities
 
 @dataclass(frozen=True)
 class Chunk:
-    text: str
+    call_id: str                   # the call this chunk belongs to
     index: int
+    text: str
 
 @dataclass(frozen=True)
 class ProviderResult:
+    call_id: str                   # echoed from the request
+    attempt: int
     text: str
-    finish_reason: Literal["stop", "length", "tool_calls"]
-    tokens_in: int
-    tokens_out: int
+    finish_reason: FinishReason    # STOP | LENGTH | TOOL_CALLS
+    usage: Usage                   # tokens_in, tokens_out
+    model: str
     instance_ref: str | None       # per incarnation handle, audit only
+
+class ProviderCall(Protocol):      # one invocation; owns its stream, usage, and error
+    request: ProviderRequest
+    def __iter__(self) -> Iterator[Chunk]: ...
+    def result(self) -> ProviderResult: ...   # this call only; re-raises its terminal error
+    def close(self) -> None: ...
 
 class Provider(Protocol):
     name: str
     def capabilities(self) -> Capabilities: ...
     def health(self, timeout_s: float) -> Health: ...          # cheap: GET /v1/models
-    def generate(self, req: ProviderRequest, cancel: CancelToken) -> Iterator[Chunk]: ...
-    def result(self) -> ProviderResult: ...                    # valid after the iterator ends
+    def generate(self, req: ProviderRequest, cancel: CancelToken) -> ProviderCall: ...
 ```
 
 Contracts:
 
+- **Request scoped results.** Revised in step 1. The first draft put `result()` on the provider, valid after the iterator ended. Two concurrent calls on one provider (SGLang runs 8 slots) would then share one result slot and could read each other's text, usage, or error. `generate` now returns a `ProviderCall` handle that owns its stream, usage, and terminal error; the provider keeps no result state. `result()` before the stream ends raises `StreamNotFinished`; after a fault it re-raises that call's error. Results and chunks carry `call_id`, so the journal can reject a mismatched commit.
+- **Pre dispatch refusal.** `generate` does no I/O. It raises only `CapabilityUnsupported`, `ContextTooLong`, or `InvalidRequest`; transport and model errors surface from iteration.
 - **Statelessness.** A provider may cache prefixes or KV state; GameShark never relies on it. Every request is complete. Correctness under a cold cache is a test requirement.
 - **Streaming.** Chunks are internal. No chunk reaches a user or external surface before commit (R5). Live streaming to a user is deferred.
-- **Cancellation.** `CancelToken` is cooperative. On cancel or deadline, the provider closes the stream within 2 s grace and raises `Cancelled` or `Timeout`. Partial text is discarded, never committed. Server side abort on disconnect is UNKNOWN per provider, so the ledger charges the full reservation.
+- **Cancellation.** `CancelToken` is cooperative. On cancel or deadline, the provider closes the stream within 2 s grace and raises `ProviderCancelled` (a subclass of the runtime's existing `Cancelled`) or `Timeout`; cancel wins when both apply. Partial text is discarded, never committed. Server side abort on disconnect is UNKNOWN per provider, so the ledger charges the full reservation.
 - **Errors.** Providers raise only taxonomy types below; raw transport exceptions are wrapped at the boundary, as `RestGitHubClient` does in v0.2.
 - **Secrets.** API keys come from the environment or keychain at construction; they never enter `ProviderRequest`, the journal, or logs.
 
@@ -367,7 +375,7 @@ SIGKILL skips steps 1 to 4; steps 5 and 6 still hold, at the cost of the lost re
 Ordered increments; each lands with its own tests and leaves the suite green.
 
 0. **Prerequisites.** Done. PR #6 fixed the `LeaseManager.renew` double rollback that could mask `FencedError`. Graceful draining added the `draining` lease state, a heartbeat that renews through the drain, bounded drain deadlines, and release fencing; see `prototype/README.md`, Graceful drain and handoff.
-1. **Contracts.** `inference/types.py`: dataclasses, `Provider` protocol, error taxonomy, `CancelToken`. `FakeProvider` with scripted faults per chunk index. Pure unit tests.
+1. **Contracts.** Done. `inference/types.py` (immutable values, error taxonomy), `inference/provider.py` (`Provider`, request scoped `ProviderCall`), `inference/fake.py` (`FakeProvider` with deterministic text, scripted delays, faults per chunk index, invocation counts). Reuses the existing `CancelToken`. Pure unit tests in `tests/test_inference_contracts.py`.
 2. **Journal.** Tables plus `InferenceJournal` (reserve, commit, short circuit, recovery settlement) with crash points E1 to E4 using the existing `crash_at` hook.
 3. **Router.** Capability, policy, ordering, health, admission, bounded queues, failover, degraded flag. Fake providers only.
 4. **OpenAI compatible provider.** stdlib HTTP plus SSE; tested against a local HTTP fixture in the style of `tests/test_github_rest.py`. No new runtime dependency.
