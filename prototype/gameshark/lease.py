@@ -11,8 +11,9 @@ A lease moves through three states:
 Draining keeps the lease live: the holder admits no new work, keeps renewing while in
 flight work finishes, and a successor stays refused until release or expiry. Release
 keeps the generation, and the guard rejects any write under a released lease, so the old
-generation can never commit again even before a successor appears. An expired lease
-refuses renewal, so its holder learns of the loss at its next heartbeat.
+generation can never commit again even before a successor appears. Expiry fences the
+same way: the guard rejects a write once expires_at <= now, and renewal refuses an
+expired lease, so its holder learns of the loss at its next heartbeat or write.
 """
 
 from __future__ import annotations
@@ -124,16 +125,25 @@ class LeaseManager:
         return row["state"] if row else None
 
     def guard_in_txn(self, generation: int) -> None:
-        """Assert the caller still owns the current generation. Call inside a txn.
+        """Assert the caller still owns a live lease at this generation. Call inside a txn.
 
-        A released lease fences its own generation too, so nothing from the old owner
-        commits between its release and a successor's acquire.
+        Fails closed on a missing row, a stale generation, a released lease, or an expired
+        one (expires_at <= now, read from the injected clock). Release and expiry fence the
+        old generation even before a successor acquires.
+
+        The guarantee holds at the guard instant. The caller's BEGIN IMMEDIATE holds the
+        write lock until COMMIT, so no acquire, renew, or release interleaves: a write whose
+        guard passed commits before any successor's acquire, even if the clock crosses
+        expires_at in between, and that acquire then bumps the generation.
         """
         row = self._row()
-        current = row["generation"] if row else 0
-        if generation != current:
+        if row is None:
+            raise FencedError(f"generation {generation} has no lease row")
+        if generation != row["generation"]:
             raise FencedError(
-                f"stale generation {generation}; current is {current}"
+                f"stale generation {generation}; current is {row['generation']}"
             )
-        if row is not None and row["state"] == RELEASED:
+        if row["state"] == RELEASED:
             raise FencedError(f"generation {generation} released its lease")
+        if row["expires_at"] <= self.clock.now():
+            raise FencedError(f"generation {generation} lease expired at {row['expires_at']}")

@@ -332,7 +332,7 @@ These extend I1 to I7 in `continuity-invariants.md`.
 - **R1 Identity independence.** No identity, persona, conversation, or responsibility field is ever read from a provider. Switching provider or model leaves the agent uuid and every durable row unchanged.
 - **R2 Single committed result.** At most one assistant message per `call_id` (`UNIQUE` constraint) and at most one transition to `done`.
 - **R3 Linear context.** An assistant message commits only at `seq = base_seq = next_seq`; message sequences stay contiguous.
-- **R4 Fenced writes.** Every inference write carries the current lease generation; a stale process commits nothing.
+- **R4 Fenced writes.** Every inference write carries the current lease generation; a stale, released, or expired owner commits nothing. `guard_in_txn` checks expiry against the injected clock inside the write transaction, so a late completion after expiry fails closed even with no successor (issue #10).
 - **R5 No effect from uncommitted output.** An `EffectJournal` intent derived from model output must reference a `done` `call_id`. Streamed chunks never reach an external surface.
 - **R6 Reserve before spend.** A ledger reservation commits before any request leaves the process, and admitted spend never exceeds the window budget.
 - **R7 Egress under grant.** No request byte reaches a cloud provider unless the conversation is `cloud_ok` and `inference.cloud` is effective at dispatch time.

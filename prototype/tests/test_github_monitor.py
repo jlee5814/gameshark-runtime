@@ -47,6 +47,18 @@ def build_monitor(paths, clock, client, owner=HOST, crash_at=None, interval=0.0)
     return sup
 
 
+def elapse(sup, clock, seconds: float) -> None:
+    """Pass time on a live owner as run_forever does, renewing every third of the TTL.
+
+    The guard fences an expired lease, so a live owner must keep its heartbeat.
+    """
+    step = sup.lease_ttl_s / 3
+    while seconds > 0:
+        clock.advance(min(step, seconds))
+        seconds -= step
+        sup.lease.renew(sup.owner_token, sup.generation, sup.lease_ttl_s)
+
+
 def watch(sup, baseline=False):
     return sup.registry.get("github").accept_responsibility(REPO, PR, baseline=baseline)
 
@@ -296,12 +308,12 @@ def test_outage_backs_off_durably_then_catches_up(paths, clock):
     rep = sup.poll()
     assert client.calls == calls and rep["github"]["waiting"]
 
-    clock.advance(backoff_delay(1))
+    elapse(sup, clock, backoff_delay(1))
     sup.poll()                                              # second fault
     assert state(sup)["fail_count"] == 2
     assert state(sup)["next_poll_at"] == clock.now() + backoff_delay(2)
 
-    clock.advance(backoff_delay(2))
+    elapse(sup, clock, backoff_delay(2))
     sup.poll()
     assert kinds(sup) == ["new_review", "change_request"]   # both, in order, none missed
     assert state(sup)["fail_count"] == 0 and state(sup)["status"] == "ok"
@@ -316,15 +328,15 @@ def test_rate_limit_pauses_until_reset_and_long_waits_notify_once(paths, clock):
     sup.poll()
     assert state(sup)["status"] == "backoff" and feed(sup) == []   # short wait: silent
     calls = client.calls
-    clock.advance(60)
+    elapse(sup, clock, 60)
     sup.poll()
     assert client.calls == calls                                    # honored the reset
-    clock.advance(60)
+    elapse(sup, clock, 60)
 
     client.stage_fault(RateLimited(3600))
     sup.poll()
     assert kinds(sup) == ["system"]                                 # long wait: tell the user
-    clock.advance(3600)
+    elapse(sup, clock, 3600)
     client.add_review("r1", 100, "approved")
     sup.poll()
     assert kinds(sup) == ["system", "new_review"]
@@ -529,7 +541,7 @@ def test_review_on_page_25_delivers_once_and_history_stays_quiet(paths, clock, p
     assert seen_count(sup) == 241
     assert json.loads(state(sup)["page_cursors"])["reviews"]["backfill"] == 0
 
-    clock.advance(60)
+    elapse(sup, clock, 60)
     reviews.items.append(_gh_review(242, clock.now(), "CHANGES_REQUESTED"))   # page 25
     reviews.hits.clear()
     sup.poll()
@@ -557,7 +569,7 @@ def test_backfill_resumes_across_restart_without_duplicates(paths, clock, paged_
     assert reviews.hits == [1, 30, *range(11, 1, -1)]
     assert seen_count(sup) == 300
 
-    clock.advance(60)
+    elapse(sup, clock, 60)
     reviews.items.append(_gh_review(301, clock.now(), "APPROVED"))
     sup.poll()
     sup.close()
@@ -574,7 +586,7 @@ def test_rate_limit_mid_walk_backs_off_and_loses_nothing(paths, clock, paged_gh)
     watch(sup, baseline=True)
     sup.poll()
     sup.poll()
-    clock.advance(60)
+    elapse(sup, clock, 60)
     reviews.items.extend(_gh_review(i, clock.now() + i, "APPROVED") for i in range(242, 262))
     limited = [(403, {"message": "API rate limit exceeded"},
                 {"x-ratelimit-remaining": "0", "x-ratelimit-reset": str(int(time.time()) + 300)})]
@@ -586,7 +598,7 @@ def test_rate_limit_mid_walk_backs_off_and_loses_nothing(paths, clock, paged_gh)
     sup.close()
 
     sup = build_monitor(paths, clock, _rest(srv))              # restart during the wait
-    clock.advance(400)
+    elapse(sup, clock, 400)
     sup.poll()
     sup.poll()
     assert kinds(sup) == ["system"] + ["new_review"] * 20
@@ -602,7 +614,7 @@ def test_crash_while_marking_seen_never_strands_a_hole(paths, clock, paged_gh, m
     watch(sup, baseline=True)
     sup.poll()
     sup.poll()                                                 # settled
-    clock.advance(60)
+    elapse(sup, clock, 60)
     reviews.items.extend(_gh_review(i, clock.now() + i) for i in range(242, 492))  # 25 pages
 
     marks = []
