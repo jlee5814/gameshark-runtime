@@ -325,6 +325,22 @@ heartbeat and exits 4. Until then, if nobody has taken over, it can still commit
 most one heartbeat interval (TTL/3); once a successor acquires, the generation fence
 rejects it at once.
 
+## Inference provider contracts (v0.3 step 1)
+
+Implements step 1 of `../architecture/inference-router.md`. Contracts and a fake only: no
+HTTP transport, journal, router, or model loading, and no change to existing runtime paths.
+
+| Module | Contents |
+|---|---|
+| `gameshark/inference/types.py` | frozen `Capabilities`, `Message`, `ProviderRequest` (stable `call_id`, `attempt`, full context, monotonic deadline, required capabilities, privacy), `Chunk`, `ProviderResult` with `Usage`, `Health`, and the typed error taxonomy |
+| `gameshark/inference/provider.py` | `Provider` and `ProviderCall` protocols, `complete()` |
+| `gameshark/inference/fake.py` | `FakeProvider`: deterministic text, scripted delays, faults at chosen chunk indices, cancellation, deadlines, configurable capabilities and health, invocation counts |
+
+Completion is request scoped. `generate` returns a `ProviderCall` that owns its chunks,
+usage, and terminal error; the provider holds no result slot, so concurrent calls cannot
+cross. Cancellation reuses `lifecycle.CancelToken`; `ProviderCancelled` subclasses the
+existing `Cancelled`, so drain code catches it unchanged.
+
 ## Actual test results
 
 ```
@@ -389,6 +405,55 @@ tests/test_github_rest.py::test_fault_mid_walk_raises_then_retry_recovers[fault1
 tests/test_github_rest.py::test_fault_mid_walk_raises_then_retry_recovers[fault2-TransientOutage] PASSED
 tests/test_github_rest.py::test_pending_review_is_never_a_stop_page PASSED
 tests/test_github_rest.py::test_capped_check_runs_report_truncation PASSED
+tests/test_inference_contracts.py::test_values_are_frozen PASSED
+tests/test_inference_contracts.py::test_request_snapshots_its_context PASSED
+tests/test_inference_contracts.py::test_request_rejects_invalid_fields[kw0] PASSED
+tests/test_inference_contracts.py::test_request_rejects_invalid_fields[kw1] PASSED
+tests/test_inference_contracts.py::test_request_rejects_invalid_fields[kw2] PASSED
+tests/test_inference_contracts.py::test_request_rejects_invalid_fields[kw3] PASSED
+tests/test_inference_contracts.py::test_request_rejects_invalid_fields[kw4] PASSED
+tests/test_inference_contracts.py::test_request_rejects_invalid_fields[kw5] PASSED
+tests/test_inference_contracts.py::test_capabilities_reject_invalid_fields[kw0] PASSED
+tests/test_inference_contracts.py::test_capabilities_reject_invalid_fields[kw1] PASSED
+tests/test_inference_contracts.py::test_capabilities_reject_invalid_fields[kw2] PASSED
+tests/test_inference_contracts.py::test_capabilities_reject_invalid_fields[kw3] PASSED
+tests/test_inference_contracts.py::test_request_carries_no_identity PASSED
+tests/test_inference_contracts.py::test_completion_belongs_to_the_call_not_the_provider PASSED
+tests/test_inference_contracts.py::test_output_is_deterministic_per_request PASSED
+tests/test_inference_contracts.py::test_stream_completes_with_usage PASSED
+tests/test_inference_contracts.py::test_max_tokens_truncates_with_length_finish PASSED
+tests/test_inference_contracts.py::test_closed_stream_has_no_result PASSED
+tests/test_inference_contracts.py::test_interleaved_calls_never_cross PASSED
+tests/test_inference_contracts.py::test_concurrent_calls_keep_their_own_results PASSED
+tests/test_inference_contracts.py::test_fault_at_chunk_index[0] PASSED
+tests/test_inference_contracts.py::test_fault_at_chunk_index[1] PASSED
+tests/test_inference_contracts.py::test_fault_at_chunk_index[3] PASSED
+tests/test_inference_contracts.py::test_fault_at_chunk_index[8] PASSED
+tests/test_inference_contracts.py::test_fault_on_first_attempt_only_and_counts PASSED
+tests/test_inference_contracts.py::test_pre_dispatch_refusals_are_not_invocations PASSED
+tests/test_inference_contracts.py::test_cancel_before_first_chunk PASSED
+tests/test_inference_contracts.py::test_cancel_wakes_a_long_delay PASSED
+tests/test_inference_contracts.py::test_cancel_beats_expired_deadline PASSED
+tests/test_inference_contracts.py::test_expired_deadline_yields_no_chunks PASSED
+tests/test_inference_contracts.py::test_delay_crossing_deadline_times_out_mid_stream PASSED
+tests/test_inference_contracts.py::test_cancel_token_wait PASSED
+tests/test_inference_contracts.py::test_error_classification[ProviderUnavailable-True-False] PASSED
+tests/test_inference_contracts.py::test_error_classification[ModelCrashed-True-False] PASSED
+tests/test_inference_contracts.py::test_error_classification[Timeout-True-False] PASSED
+tests/test_inference_contracts.py::test_error_classification[RateLimited-True-False] PASSED
+tests/test_inference_contracts.py::test_error_classification[Overloaded-True-True] PASSED
+tests/test_inference_contracts.py::test_error_classification[StreamInterrupted-True-False] PASSED
+tests/test_inference_contracts.py::test_error_classification[ContextConflict-True-True] PASSED
+tests/test_inference_contracts.py::test_error_classification[CapabilityUnsupported-False-True] PASSED
+tests/test_inference_contracts.py::test_error_classification[ContextTooLong-False-True] PASSED
+tests/test_inference_contracts.py::test_error_classification[BudgetExceeded-False-True] PASSED
+tests/test_inference_contracts.py::test_error_classification[EgressDenied-False-True] PASSED
+tests/test_inference_contracts.py::test_error_classification[AuthFailed-False-False] PASSED
+tests/test_inference_contracts.py::test_error_classification[InvalidRequest-False-False] PASSED
+tests/test_inference_contracts.py::test_error_classification[ProviderCancelled-False-False] PASSED
+tests/test_inference_contracts.py::test_error_classification[AttemptsExhausted-False-False] PASSED
+tests/test_inference_contracts.py::test_errors_carry_retry_hints PASSED
+tests/test_inference_contracts.py::test_health_is_scripted_and_counted PASSED
 tests/test_invariants.py::test_i1_identity_stable_across_restart PASSED
 tests/test_invariants.py::test_i2_single_owner PASSED
 tests/test_invariants.py::test_i3_checkpoint_before_effect PASSED
@@ -424,7 +489,7 @@ tests/test_recovery.py::test_stale_external_effect_rejected_by_destination PASSE
 tests/test_recovery.py::test_authorization_revocation_survives_restart PASSED
 tests/test_recovery.py::test_real_subprocess_kill_then_recover PASSED
 tests/test_takeover.py::test_stale_owner_exits_and_successor_recovers_after_sigkill PASSED
-95 passed
+144 passed
 ```
 
-All 80 tests that predate draining run unchanged. `uv run ruff check .` reports no findings.
+All 95 tests that predate the inference contracts run unchanged. `uv run ruff check .` reports no findings.
