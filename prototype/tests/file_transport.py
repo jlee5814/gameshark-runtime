@@ -25,7 +25,7 @@ class FileClient:
     def viewer(self) -> str:
         return self._load().get("viewer", "stark-owner")
 
-    def snapshot(self, repo, pr, etags, head_sha) -> Snapshot:
+    def snapshot(self, repo, pr, etags, head_sha, known=None, cursors=None) -> Snapshot:
         data = self._load()
         if data.get("revoked"):
             raise AuthRevoked(401, "Bad credentials")

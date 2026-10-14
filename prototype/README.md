@@ -216,7 +216,7 @@ Token: `GITHUB_TOKEN`, else `gh auth token`. Prefer a fine grained, read only to
 | durable responsibilities | `gameshark/responsibilities.py` (unchanged) | active, blocked, done |
 | execution worker | `gameshark/worker.py`, `stark.py` | scheduling, lease renewal, operator requests, host lock |
 | environment adapter | `sims/github_monitor.py` | seen set, backoff, audit, notification effects |
-| transport | `gameshark/github_client.py` | GET only REST, pagination, ETags, typed errors |
+| transport | `gameshark/github_client.py` | GET only REST, tail first pagination, ETags, typed errors |
 | pure logic | `gameshark/github_events.py`, `classify.py` | logical event ids, relevance |
 | companion | `companion.py` | feed, unread state, banner hook |
 
@@ -228,6 +228,7 @@ Token: `GITHUB_TOKEN`, else `gh auth token`. Prefer a fine grained, read only to
 | one integer cursor across review ids and comment ids hid reviews | per stream logical ids and a durable seen set |
 | no CI, no inline comments | check runs on the head commit, pull request review comments |
 | README claimed pagination the code lacked | Link pagination; ETags only for single page streams |
+| pagination stopped after 20 pages and never reached newer reviews (#4) | tail first walk that stops at a fully seen page, durable backfill cursor, one warning per truncation episode |
 | 401 or 403 crashed the poll; client slept in place | typed errors, durable backoff, blocked responsibility with one notice |
 | every comment counted as noise | self, bot, acknowledgement, and inline rollup rules |
 
@@ -287,7 +288,7 @@ PR #2 is closed unmerged and its branch deleted. The automated twin of this run 
 | no write to GitHub | yes | GET only primitive; tested on the wire and in source |
 | duty survives restart with no prompt | yes | responsibilities drive polling; subprocess SIGKILL test and live soak |
 | no duplicate notification | yes | inbox dedup by logical id, journal plus `op_key` dedup |
-| no missed review, comment, or check run | yes, up to 2,000 items per stream | seen set over paginated lists, no id order assumption; pagination stops after 20 pages (open issue) |
+| no missed review, comment, or check run | yes for reviews and comments at any length; check runs up to 2,000 per commit, with a warning past that | seen set over paginated lists, no id order assumption; tail first pagination with a durable backfill cursor; a capped read enters the feed as a system warning |
 | backoff and blocks survive restart | yes | durable `next_poll_at`, `status`, `episode` |
 | timeliness | no | polling interval plus GitHub eventual consistency |
 
@@ -308,6 +309,10 @@ tests/test_github_monitor.py::test_classification_kinds_and_relevance PASSED
 tests/test_github_monitor.py::test_review_with_lower_id_than_prior_comment_is_not_lost PASSED
 tests/test_github_monitor.py::test_inline_comments_roll_up_into_their_review PASSED
 tests/test_github_monitor.py::test_ci_in_progress_then_failure_then_recovery PASSED
+tests/test_github_monitor.py::test_ci_cancelled_on_head_notifies_once PASSED
+tests/test_github_monitor.py::test_ci_success_after_cancelled_is_recovery PASSED
+tests/test_github_monitor.py::test_ci_cancelled_again_on_rerun_does_not_duplicate PASSED
+tests/test_github_monitor.py::test_ci_cancelled_on_superseded_commit_stays_silent PASSED
 tests/test_github_monitor.py::test_checks_unavailable_degrades_without_blocking PASSED
 tests/test_github_monitor.py::test_baseline_records_history_without_notifying PASSED
 tests/test_github_monitor.py::test_outage_backs_off_durably_then_catches_up PASSED
@@ -319,6 +324,10 @@ tests/test_github_monitor.py::test_duplicate_inbox_delivery_absorbed PASSED
 tests/test_github_monitor.py::test_revoke_github_read_stops_monitoring_safely PASSED
 tests/test_github_monitor.py::test_crash_mid_delivery_recovers_without_duplicate PASSED
 tests/test_github_monitor.py::test_real_subprocess_kill_mid_monitor_then_recover PASSED
+tests/test_github_monitor.py::test_review_on_page_25_delivers_once_and_history_stays_quiet PASSED
+tests/test_github_monitor.py::test_backfill_resumes_across_restart_without_duplicates PASSED
+tests/test_github_monitor.py::test_rate_limit_mid_walk_backs_off_and_loses_nothing PASSED
+tests/test_github_monitor.py::test_crash_while_marking_seen_never_strands_a_hole PASSED
 tests/test_github_rest.py::test_snapshot_reads_every_stream_and_normalizes PASSED
 tests/test_github_rest.py::test_pagination_follows_link_and_skips_etag_for_multipage PASSED
 tests/test_github_rest.py::test_etag_304_survives_and_yields_no_items PASSED
@@ -333,6 +342,17 @@ tests/test_github_rest.py::test_secondary_rate_limit_carries_retry_after PASSED
 tests/test_github_rest.py::test_connection_refused_is_transient PASSED
 tests/test_github_rest.py::test_checks_forbidden_degrades_instead_of_blocking PASSED
 tests/test_github_rest.py::test_client_only_ever_sends_get PASSED
+tests/test_github_rest.py::test_first_read_past_page_cap_reaches_the_tail PASSED
+tests/test_github_rest.py::test_truncated_first_read_warns_then_backfills PASSED
+tests/test_github_rest.py::test_steady_state_reads_page_one_and_the_tail_only PASSED
+tests/test_github_rest.py::test_page_boundary_changes_between_polls[delete_then_append] PASSED
+tests/test_github_rest.py::test_page_boundary_changes_between_polls[grow_two_pages] PASSED
+tests/test_github_rest.py::test_deletion_during_a_walk_loses_nothing PASSED
+tests/test_github_rest.py::test_fault_mid_walk_raises_then_retry_recovers[fault0-RateLimited] PASSED
+tests/test_github_rest.py::test_fault_mid_walk_raises_then_retry_recovers[fault1-RateLimited] PASSED
+tests/test_github_rest.py::test_fault_mid_walk_raises_then_retry_recovers[fault2-TransientOutage] PASSED
+tests/test_github_rest.py::test_pending_review_is_never_a_stop_page PASSED
+tests/test_github_rest.py::test_capped_check_runs_report_truncation PASSED
 tests/test_invariants.py::test_i1_identity_stable_across_restart PASSED
 tests/test_invariants.py::test_i2_single_owner PASSED
 tests/test_invariants.py::test_i3_checkpoint_before_effect PASSED
@@ -359,7 +379,7 @@ tests/test_recovery.py::test_stale_external_effect_rejected_by_destination PASSE
 tests/test_recovery.py::test_authorization_revocation_survives_restart PASSED
 tests/test_recovery.py::test_real_subprocess_kill_then_recover PASSED
 tests/test_takeover.py::test_stale_owner_exits_and_successor_recovers_after_sigkill PASSED
-61 passed
+80 passed
 ```
 
 All 20 v0.1 tests run unchanged. `uv run ruff check .` reports no findings.
