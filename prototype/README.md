@@ -161,7 +161,7 @@ the property does not hold.
 cd /Users/jaebonglee/Projects/gameshark-research/prototype
 uv venv --python 3.13
 uv pip install pytest
-uv run pytest -v                 # all 55 tests (v0.1 + v0.2)
+uv run pytest -v                 # all 61 tests (v0.1 + v0.2 + lease fencing)
 uv run python demo.py            # v0.1 narrated Stark run with a real SIGKILL
 uv run python demo_v2.py         # v0.2 PR monitoring across a real SIGKILL and a revoke
 uv run python companion.py <runtime_db>   # render the companion feed for a run
@@ -172,6 +172,10 @@ uv run pytest -v tests/test_daemon.py::test_responsibility_survives_sigkill_with
 uv run pytest -v tests/test_github_monitor.py::test_review_with_lower_id_than_prior_comment_is_not_lost
 uv run pytest -v tests/test_github_monitor.py::test_github_auth_revoked_blocks_notifies_once_and_resumes_explicitly
 uv run pytest -v tests/test_github_rest.py
+
+# lease fencing: stale owner exits and commits nothing
+uv run pytest -v tests/test_lease_fencing.py
+uv run pytest -v tests/test_takeover.py
 
 # individual critical tests
 uv run pytest -v tests/test_recovery.py::test_real_subprocess_kill_then_recover
@@ -283,18 +287,17 @@ PR #2 is closed unmerged and its branch deleted. The automated twin of this run 
 | no write to GitHub | yes | GET only primitive; tested on the wire and in source |
 | duty survives restart with no prompt | yes | responsibilities drive polling; subprocess SIGKILL test and live soak |
 | no duplicate notification | yes | inbox dedup by logical id, journal plus `op_key` dedup |
-| no missed review, comment, or check run | yes, for what the read endpoints return | seen set over full paginated lists, no id order assumption |
+| no missed review, comment, or check run | yes, up to 2,000 items per stream | seen set over paginated lists, no id order assumption; pagination stops after 20 pages (open issue) |
 | backoff and blocks survive restart | yes | durable `next_poll_at`, `status`, `episode` |
 | timeliness | no | polling interval plus GitHub eventual consistency |
 
 Unproven: legacy commit statuses, check runs on superseded commits, multi host
-ownership, and long soak behavior beyond the session above.
+ownership (lease takeover is tested between owner processes on one host), and long soak behavior beyond the session above.
 
 ## Actual test results
 
 ```
-platform darwin -- Python 3.13.9, pytest-9.1.1, pluggy-1.6.0
-collected 55 items
+platform darwin -- Python 3.13.9, pytest-9.1.1, pluggy-1.6.0 -- /Users/jaebonglee/Projects/gameshark-research/prototype/.venv/bin/python3
 tests/test_daemon.py::test_responsibility_survives_sigkill_without_second_prompt PASSED
 tests/test_daemon.py::test_second_daemon_refused_and_cli_requests_reach_running_daemon PASSED
 tests/test_daemon.py::test_token_revocation_blocks_survives_restart_and_resumes PASSED
@@ -337,6 +340,11 @@ tests/test_invariants.py::test_i4_idempotent_effect PASSED
 tests/test_invariants.py::test_i5_inbox_replay_and_dedup PASSED
 tests/test_invariants.py::test_i6_authorization_durable PASSED
 tests/test_invariants.py::test_i7_outcome_completeness PASSED
+tests/test_lease_fencing.py::test_renew_after_takeover_raises_fenced_error PASSED
+tests/test_lease_fencing.py::test_write_txn_keeps_original_exception PASSED
+tests/test_lease_fencing.py::test_run_forever_exits_4_after_takeover PASSED
+tests/test_lease_fencing.py::test_stale_owner_cannot_commit PASSED
+tests/test_lease_fencing.py::test_stale_notification_rejected_then_recovered_once PASSED
 tests/test_recovery.py::test_a_crash_before_intent PASSED
 tests/test_recovery.py::test_b_crash_after_intent_before_dispatch PASSED
 tests/test_recovery.py::test_c_crash_after_remote_before_journal PASSED
@@ -350,8 +358,8 @@ tests/test_recovery.py::test_delayed_remote_visibility PASSED
 tests/test_recovery.py::test_stale_external_effect_rejected_by_destination PASSED
 tests/test_recovery.py::test_authorization_revocation_survives_restart PASSED
 tests/test_recovery.py::test_real_subprocess_kill_then_recover PASSED
-
-55 passed
+tests/test_takeover.py::test_stale_owner_exits_and_successor_recovers_after_sigkill PASSED
+61 passed
 ```
 
 All 20 v0.1 tests run unchanged. `uv run ruff check .` reports no findings.

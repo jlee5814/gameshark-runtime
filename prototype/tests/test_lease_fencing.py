@@ -81,17 +81,15 @@ def test_write_txn_keeps_original_exception(tmp_path):
     conn = connect(tmp_path / "txn.db")
 
     # The body already ended the transaction: no second rollback, no masking.
-    with pytest.raises(ValueError, match="original"):
-        with write_txn(conn):
-            conn.execute("ROLLBACK")
-            raise ValueError("original")
+    with pytest.raises(ValueError, match="original"), write_txn(conn):
+        conn.execute("ROLLBACK")
+        raise ValueError("original")
     assert not conn.in_transaction
 
     # A failing statement rolls back once and surfaces its own error.
-    with pytest.raises(sqlite3.OperationalError, match="no such table"):
-        with write_txn(conn):
-            conn.execute("INSERT INTO lease(agent_id, generation) VALUES('x', 1)")
-            conn.execute("SELECT * FROM missing_table")
+    with pytest.raises(sqlite3.OperationalError, match="no such table"), write_txn(conn):
+        conn.execute("INSERT INTO lease(agent_id, generation) VALUES('x', 1)")
+        conn.execute("SELECT * FROM missing_table")
     assert not conn.in_transaction
     assert conn.execute("SELECT COUNT(*) FROM lease").fetchone()[0] == 0
     conn.close()

@@ -13,6 +13,7 @@ from dataclasses import dataclass
 
 from gameshark.clock import Clock
 from gameshark.lease import LeaseManager
+from gameshark.store import write_txn
 
 VALID = {"pending", "active", "done", "blocked"}
 
@@ -44,8 +45,7 @@ class ResponsibilityStore:
 
     def upsert(self, rid: str, kind: str, payload: dict, state: str = "pending") -> None:
         now = self.clock.now()
-        self.conn.execute("BEGIN IMMEDIATE")
-        try:
+        with write_txn(self.conn):
             self.lease.guard_in_txn(self.generation)
             existing = self.conn.execute(
                 "SELECT id FROM responsibilities WHERE id=?", (rid,)
@@ -56,27 +56,18 @@ class ResponsibilityStore:
                     "checkpoint, created, updated) VALUES(?,?,?,?,?,?,?,?)",
                     (rid, self.agent_id, kind, state, json.dumps(payload), None, now, now),
                 )
-            self.conn.execute("COMMIT")
-        except Exception:
-            self.conn.execute("ROLLBACK")
-            raise
 
     def transition(self, rid: str, state: str, checkpoint: str | None = None) -> None:
         if state not in VALID:
             raise ValueError(f"invalid state {state}")
         now = self.clock.now()
-        self.conn.execute("BEGIN IMMEDIATE")
-        try:
+        with write_txn(self.conn):
             self.lease.guard_in_txn(self.generation)
             self.conn.execute(
                 "UPDATE responsibilities SET state=?, checkpoint=COALESCE(?, checkpoint), "
                 "updated=? WHERE id=? AND agent_id=?",
                 (state, checkpoint, now, rid, self.agent_id),
             )
-            self.conn.execute("COMMIT")
-        except Exception:
-            self.conn.execute("ROLLBACK")
-            raise
 
     def get(self, rid: str) -> Responsibility | None:
         row = self.conn.execute(

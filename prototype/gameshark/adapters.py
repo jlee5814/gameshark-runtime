@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Any, Protocol
 
 from gameshark.effects import Effect
 
@@ -27,7 +27,7 @@ class AdapterContext:
     submit_event: Callable[[dict], str] | None = None   # feed a detected event into the inbox
     conn: object = None                        # sqlite connection for adapter owned durable state
     grants: object = None                      # GrantStore for per action authorization reads
-    fenced: Callable[[Callable[[object], None]], None] | None = None   # fenced durable write
+    fenced: Callable[[Callable[[Any], Any]], Any] | None = None   # fenced durable write
     generation: int = 0                        # the owning lease generation
     clock: object = None                       # injectable Clock for durable timestamps
 

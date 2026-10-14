@@ -11,6 +11,7 @@ from __future__ import annotations
 import sqlite3
 
 from gameshark.clock import Clock
+from gameshark.store import write_txn
 
 
 class GrantStore:
@@ -26,32 +27,22 @@ class GrantStore:
         revoked even if the adapter re-registers after a restart.
         """
         now = self.clock.now()
-        self.conn.execute("BEGIN IMMEDIATE")
-        try:
+        with write_txn(self.conn):
             for cap in caps:
                 self.conn.execute(
                     "INSERT OR IGNORE INTO grants(agent_id, adapter, cap, granted, updated) "
                     "VALUES(?,?,?,1,?)",
                     (self.agent_id, adapter, cap, now),
                 )
-            self.conn.execute("COMMIT")
-        except Exception:
-            self.conn.execute("ROLLBACK")
-            raise
 
     def revoke(self, adapter: str, cap: str) -> None:
         now = self.clock.now()
-        self.conn.execute("BEGIN IMMEDIATE")
-        try:
+        with write_txn(self.conn):
             self.conn.execute(
                 "INSERT INTO grants(agent_id, adapter, cap, granted, updated) VALUES(?,?,?,0,?) "
                 "ON CONFLICT(agent_id, adapter, cap) DO UPDATE SET granted=0, updated=excluded.updated",
                 (self.agent_id, adapter, cap, now),
             )
-            self.conn.execute("COMMIT")
-        except Exception:
-            self.conn.execute("ROLLBACK")
-            raise
 
     def effective(self, adapter: str, cap: str) -> bool:
         row = self.conn.execute(

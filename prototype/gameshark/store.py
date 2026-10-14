@@ -8,6 +8,8 @@ file, so no in memory state survives.
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 SCHEMA = """
@@ -160,19 +162,35 @@ MIGRATIONS: dict[str, list[tuple[str, str]]] = {
 }
 
 
-def migrate(conn: sqlite3.Connection) -> None:
-    """Add missing columns inside one write txn so a concurrent CLI and daemon agree."""
+@contextmanager
+def write_txn(conn: sqlite3.Connection) -> Iterator[sqlite3.Connection]:
+    """Run the body in one BEGIN IMMEDIATE transaction; commit on success.
+
+    On any failure, roll back at most once and only while a transaction is still open,
+    then reraise the original exception. A failed rollback is attached as a note and
+    never replaces the error that caused it, so FencedError always reaches its caller.
+    """
     conn.execute("BEGIN IMMEDIATE")
     try:
+        yield conn
+        conn.execute("COMMIT")
+    except BaseException as exc:
+        if conn.in_transaction:
+            try:
+                conn.execute("ROLLBACK")
+            except sqlite3.Error as rb:
+                exc.add_note(f"rollback failed: {rb!r}")
+        raise
+
+
+def migrate(conn: sqlite3.Connection) -> None:
+    """Add missing columns inside one write txn so a concurrent CLI and daemon agree."""
+    with write_txn(conn):
         for table, cols in MIGRATIONS.items():
             have = {r[1] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()}
             for name, decl in cols:
                 if name not in have:
                     conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {decl}")
-        conn.execute("COMMIT")
-    except Exception:
-        conn.execute("ROLLBACK")
-        raise
 
 
 def connect(path: str | Path) -> sqlite3.Connection:

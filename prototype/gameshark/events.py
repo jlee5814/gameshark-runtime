@@ -16,6 +16,7 @@ from collections.abc import Callable
 from gameshark.clock import Clock
 from gameshark.errors import AmbiguousEffect, BlockedEffect
 from gameshark.lease import LeaseManager
+from gameshark.store import write_txn
 
 
 class EventRouter:
@@ -36,14 +37,12 @@ class EventRouter:
     def _persist(self, event: dict) -> str:
         """Insert a new event or return the status of an existing one (dedup)."""
         now = self.clock.now()
-        self.conn.execute("BEGIN IMMEDIATE")
-        try:
+        with write_txn(self.conn):
             self.lease.guard_in_txn(self.generation)
             existing = self.conn.execute(
                 "SELECT status FROM events WHERE event_id=?", (event["event_id"],)
             ).fetchone()
             if existing is not None:
-                self.conn.execute("COMMIT")
                 return existing["status"]
             self.conn.execute(
                 "INSERT INTO events(event_id, adapter, type, payload, status, "
@@ -51,24 +50,15 @@ class EventRouter:
                 (event["event_id"], event["adapter"], event["type"],
                  json.dumps(event.get("payload", {})), now),
             )
-            self.conn.execute("COMMIT")
             return "pending"
-        except Exception:
-            self.conn.execute("ROLLBACK")
-            raise
 
     def _set_status(self, event_id: str, status: str) -> None:
-        self.conn.execute("BEGIN IMMEDIATE")
-        try:
+        with write_txn(self.conn):
             self.lease.guard_in_txn(self.generation)
             self.conn.execute(
                 "UPDATE events SET status=?, delivered_count=delivered_count+1 WHERE event_id=?",
                 (status, event_id),
             )
-            self.conn.execute("COMMIT")
-        except Exception:
-            self.conn.execute("ROLLBACK")
-            raise
 
     def deliver(self, event: dict) -> str:
         """Durably accept and handle one event. Return a short outcome label."""

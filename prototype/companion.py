@@ -27,19 +27,27 @@ class Companion:
     """Durable notification sink. Reuses the runtime connection; op_key is the dedup anchor."""
 
     def __init__(self, conn: sqlite3.Connection,
-                 on_new: Callable[[dict], None] | None = None) -> None:
+                 on_new: Callable[[dict], None] | None = None,
+                 fenced: Callable[[Callable[[sqlite3.Connection], int]], int] | None = None,
+                 ) -> None:
         self.conn = conn
         self.on_new = on_new
+        # Runs the insert inside the owner's lease guarded transaction, so a worker that
+        # lost its lease after checkpointing intent cannot deliver (destination fencing).
+        self.fenced = fenced
 
     def write(self, op_key: str, repo: str, pr: int, kind: str, event_id: str,
               summary: str, reason: str, fence: int = 0, url: str | None = None) -> str:
-        # Idempotent by op_key; a retried delivery is a no op (fence accepted but local).
-        cur = self.conn.execute(
-            "INSERT OR IGNORE INTO notifications(op_key, repo, pr, kind, event_id, summary, "
-            "reason, created, url) VALUES(?,?,?,?,?,?,?,?,?)",
-            (op_key, repo, pr, kind, event_id, summary, reason, time.time(), url),
-        )
-        if cur.rowcount == 1 and self.on_new is not None:
+        # Idempotent by op_key; a retried delivery is a no op.
+        def _insert(conn: sqlite3.Connection) -> int:
+            return conn.execute(
+                "INSERT OR IGNORE INTO notifications(op_key, repo, pr, kind, event_id, "
+                "summary, reason, created, url) VALUES(?,?,?,?,?,?,?,?,?)",
+                (op_key, repo, pr, kind, event_id, summary, reason, time.time(), url),
+            ).rowcount
+
+        inserted = self.fenced(_insert) if self.fenced else _insert(self.conn)
+        if inserted == 1 and self.on_new is not None:
             try:
                 self.on_new({"repo": repo, "pr": pr, "kind": kind, "summary": summary,
                              "reason": reason, "url": url})

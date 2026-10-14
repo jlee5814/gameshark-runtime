@@ -19,7 +19,7 @@ from gameshark.events import EventRouter
 from gameshark.identity import Identity, load_or_create_identity
 from gameshark.lease import LeaseManager
 from gameshark.responsibilities import ResponsibilityStore
-from gameshark.store import connect
+from gameshark.store import connect, write_txn
 
 
 class AgentSupervisor:
@@ -94,16 +94,15 @@ class AgentSupervisor:
             clock=self.clock,
         )
 
-    def _fenced(self, fn) -> None:
-        """Run fn(conn) inside one lease guarded transaction (fencing for adapter writes)."""
-        self.conn.execute("BEGIN IMMEDIATE")
-        try:
+    def _fenced(self, fn):
+        """Run fn(conn) inside one lease guarded transaction and return its result.
+
+        Every adapter write goes through here, so a stale owner's write raises FencedError
+        and commits nothing.
+        """
+        with write_txn(self.conn):
             self.lease.guard_in_txn(self.generation)
-            fn(self.conn)
-            self.conn.execute("COMMIT")
-        except Exception:
-            self.conn.execute("ROLLBACK")
-            raise
+            return fn(self.conn)
 
     def start(self) -> None:
         """Acquire ownership, build generation bound stores, open adapters, recover."""

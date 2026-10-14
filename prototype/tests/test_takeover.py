@@ -80,8 +80,12 @@ class Owner:
     def pause(self) -> None:
         self.proc.send_signal(signal.SIGUSR1)
         self.expect("pausing")
-        wait_for(lambda: subprocess.run(["ps", "-o", "stat=", "-p", str(self.proc.pid)],
-                                        capture_output=True, text=True).stdout.startswith("T"))
+        wait_for(self.stopped)
+
+    def stopped(self) -> bool:
+        ps = subprocess.run(["ps", "-o", "stat=", "-p", str(self.proc.pid)],
+                            capture_output=True, text=True, check=False)
+        return ps.stdout.startswith("T")
 
     def kill(self) -> None:
         if self.proc.poll() is None:
