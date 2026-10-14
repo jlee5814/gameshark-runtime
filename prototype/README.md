@@ -164,7 +164,7 @@ the property does not hold.
 cd /Users/jaebonglee/Projects/gameshark-research/prototype
 uv venv --python 3.13
 uv pip install pytest
-uv run pytest -v                 # all 95 tests (v0.1 + v0.2 + lease fencing + draining)
+uv run pytest -v                 # all 154 tests (v0.1 + v0.2 + lease fencing + draining + expiry + v0.3 contracts)
 uv run python demo.py            # v0.1 narrated Stark run with a real SIGKILL
 uv run python demo_v2.py         # v0.2 PR monitoring across a real SIGKILL and a revoke
 uv run python companion.py <runtime_db>   # render the companion feed for a run
@@ -314,16 +314,24 @@ Implements the `draining` lease state from `../architecture/bionic-to-gameshark.
 | Cancel | at `--drain-deadline` (default 10 s) a cancel token stops work at the next safe boundary: before an event dispatches, between poll targets, before a detected event is submitted. Never between an effect's intent and outcome. Exit 5 |
 | Abort | 2 s past the deadline, non cooperative work (a hung GET) loses: the heartbeat releases the lease and ends the process. Exit 6 |
 | Release | `release` sets `released`, clears the owner, and keeps the generation |
-| Fence | `guard_in_txn` rejects a stale generation and a released lease, so the old generation commits nothing even before a successor appears. A successor acquires generation + 1 only after release or expiry; a live draining lease refuses it |
+| Fence | `guard_in_txn` rejects a missing lease row, a stale generation, a released lease, and an expired lease, so the old generation commits nothing even before a successor appears. A successor acquires generation + 1 only after release or expiry; a live draining lease refuses it |
 | Resume | unchanged v0.1 recovery: pending effects reconcile by probe, pending events replay, unseen activity is detected again; `op_key` and effect keys absorb repeats |
 
 Exit codes of `stark run`: 0 drained, 3 another owner, 4 lost ownership, 5 drain
 cancelled at the deadline, 6 drain aborted at the grace limit.
 
-Expiry: `renew` refuses an expired lease, so an expired owner learns of the loss at its next
-heartbeat and exits 4. Until then, if nobody has taken over, it can still commit for at
-most one heartbeat interval (TTL/3); once a successor acquires, the generation fence
-rejects it at once.
+Expiry: `guard_in_txn` rejects any write once `expires_at <= clock.now()`, read inside
+the write's own `BEGIN IMMEDIATE` transaction, so an expired owner commits nothing even
+when no successor has acquired. `renew` refuses an expired lease too, so the owner learns of
+the loss at its next heartbeat or write and exits 4. A late completion (an effect whose
+remote call outlived the lease) raises `FencedError` at its outcome checkpoint: the effect
+stays `pending` and its event unacknowledged, and the successor reconciles it by probe.
+
+The guarantee holds at the guard instant. SQLite holds the write lock from `BEGIN
+IMMEDIATE` to `COMMIT`, so no acquire, renew, or release interleaves: a write whose guard
+passed commits before any successor's acquire even if the clock crosses `expires_at` in
+between, and that acquire then bumps the generation. Covered by
+`tests/test_expired_lease.py`.
 
 ## Inference provider contracts (v0.3 step 1)
 

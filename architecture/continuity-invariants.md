@@ -17,7 +17,7 @@ At most one process holds a responsibility set, enforced by an ownership lease.
 
 - Durable requirement: lease record with owner token and ttl, atomic acquire.
 - Guards transition: cold → claimed, and crash → claimed on restart.
-- Fencing: a takeover bumps the lease generation. Every durable write, including the companion notification insert, runs in one transaction guarded by the writer's generation, so a stale owner commits nothing.
+- Fencing: a takeover bumps the lease generation. Every durable write, including the companion notification insert, runs in one transaction guarded by the writer's generation and lease expiry, so a stale, released, or expired owner commits nothing, even before a successor acquires.
 - Stale owner exit: a renewal that finds a newer generation raises FencedError and the worker exits with code 4. Retrying cannot succeed, and the stale process must not keep its instance lock.
 - Rollback discipline: every write transaction rolls back at most once through `store.write_txn`, so a failed rollback never masks FencedError.
 - Discord anchor: one long lived main process owns the module set; the commit record has a single writer.
