@@ -320,7 +320,7 @@ class GitHubMonitorAdapter:
     # ------------------------------------------------------------------ handling
     def _companion(self) -> Companion:
         assert self.ctx is not None
-        return Companion(self.ctx.conn, on_new=self.notifier)
+        return Companion(self.ctx.conn, on_new=self.notifier, fenced=self.ctx.fenced)
 
     def _audit(self, repo: str, pr: int, event_id: str, decision: Decision,
                prefix: str = "") -> None:

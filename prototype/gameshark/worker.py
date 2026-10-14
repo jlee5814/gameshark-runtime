@@ -117,8 +117,10 @@ def run_forever(sup: AgentSupervisor, stop: threading.Event, interval_s: float,
                 log=print, max_ticks: int | None = None) -> int:
     """Serve until stop is set. Return a process exit code.
 
-    Unexpected errors in one tick are logged and retried next tick; only losing
-    ownership ends the loop, because then another process owns Stark's work.
+    Unexpected errors in one tick are logged and retried next tick. Losing ownership
+    ends the loop with exit code 4: a renewal or any fenced write that raises FencedError
+    means another owner holds a newer generation, so retrying could never succeed and
+    the stale process must stop instead of holding its instance lock.
     """
     ticks = 0
     try:

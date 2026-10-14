@@ -11,6 +11,7 @@ import sqlite3
 
 from gameshark.clock import Clock
 from gameshark.errors import FencedError, LeaseDenied
+from gameshark.store import write_txn
 
 
 class LeaseManager:
@@ -28,8 +29,7 @@ class LeaseManager:
     def acquire(self, owner_token: str, ttl_s: float) -> int:
         """Acquire or renew. Return the owned generation. Raise LeaseDenied if held."""
         now = self.clock.now()
-        self.conn.execute("BEGIN IMMEDIATE")
-        try:
+        with write_txn(self.conn):
             row = self._row()
             if row is None:
                 gen = 1
@@ -38,7 +38,6 @@ class LeaseManager:
                     "VALUES(?,?,?,?)",
                     (self.agent_id, owner_token, gen, now + ttl_s),
                 )
-                self.conn.execute("COMMIT")
                 return gen
 
             live = row["expires_at"] > now
@@ -57,31 +56,26 @@ class LeaseManager:
                 "UPDATE lease SET owner_token=?, generation=?, expires_at=? WHERE agent_id=?",
                 (owner_token, gen, now + ttl_s, self.agent_id),
             )
-            self.conn.execute("COMMIT")
             return gen
-        except Exception:
-            self.conn.execute("ROLLBACK")
-            raise
 
     def renew(self, owner_token: str, generation: int, ttl_s: float) -> None:
+        """Extend our lease. Raise FencedError once another owner has taken it over.
+
+        The caller must stop serving on FencedError: a takeover is permanent for this
+        generation, so retrying can never succeed.
+        """
         now = self.clock.now()
-        self.conn.execute("BEGIN IMMEDIATE")
-        try:
+        with write_txn(self.conn):
             row = self._row()
             if row is None or row["owner_token"] != owner_token or row["generation"] != generation:
-                self.conn.execute("ROLLBACK")
                 raise FencedError("cannot renew a lease we no longer hold")
             self.conn.execute(
                 "UPDATE lease SET expires_at=? WHERE agent_id=?", (now + ttl_s, self.agent_id)
             )
-            self.conn.execute("COMMIT")
-        except Exception:
-            self.conn.execute("ROLLBACK")
-            raise
 
     def release(self, owner_token: str, generation: int) -> None:
-        self.conn.execute("BEGIN IMMEDIATE")
-        try:
+        """Expire our lease now. A stale owner's release is a no op on the new lease."""
+        with write_txn(self.conn):
             row = self._row()
             if row is not None and row["owner_token"] == owner_token and (
                 row["generation"] == generation
@@ -91,10 +85,6 @@ class LeaseManager:
                     "UPDATE lease SET owner_token=NULL, expires_at=0 WHERE agent_id=?",
                     (self.agent_id,),
                 )
-            self.conn.execute("COMMIT")
-        except Exception:
-            self.conn.execute("ROLLBACK")
-            raise
 
     def current_generation(self) -> int:
         row = self._row()

@@ -29,6 +29,7 @@ from enum import Enum
 from gameshark.clock import Clock
 from gameshark.errors import AmbiguousEffect, BlockedEffect
 from gameshark.lease import LeaseManager
+from gameshark.store import write_txn
 
 
 class ProbeKind(Enum):
@@ -88,8 +89,7 @@ class EffectJournal:
     def _write(self, key: str, status: str, intent: dict, external_id: str | None) -> None:
         """Guarded atomic upsert of one effect row (fencing enforced here)."""
         now = self.clock.now()
-        self.conn.execute("BEGIN IMMEDIATE")
-        try:
+        with write_txn(self.conn):
             self.lease.guard_in_txn(self.generation)
             exists = self.conn.execute("SELECT key FROM effects WHERE key=?", (key,)).fetchone()
             if exists is None:
@@ -105,10 +105,6 @@ class EffectJournal:
                     "generation=?, updated=? WHERE key=?",
                     (status, external_id, self.generation, now, key),
                 )
-            self.conn.execute("COMMIT")
-        except Exception:
-            self.conn.execute("ROLLBACK")
-            raise
 
     def perform_once(self, eff: Effect) -> str:
         """Perform a consequential effect at most once in observable consequence."""
