@@ -1,9 +1,10 @@
-# GameShark Runtime v0.1 (prototype)
+# GameShark Runtime v0.2 (prototype)
 
 A clean room, deterministic prototype that proves an agent named Stark can lose his
 process, restart from durable SQLite records, recover his responsibilities, and resume
 cross environment work without silently losing commitments or duplicating externally
-observable effects. No LLM, no real GitHub, no game client.
+observable effects. v0.2 adds a real, read only GitHub monitoring responsibility that
+survives restarts without new prompts. No LLM, no game client.
 
 Design sources: `../architecture/agent-supervisor.md`, `../architecture/continuity-invariants.md`.
 
@@ -146,7 +147,8 @@ the property does not hold.
 ## Known limitations
 
 - Single host, single SQLite file. No distributed consensus; the lease is local.
-- Determinism by design: no real network, no clocks beyond an injectable one, no LLM.
+- Determinism by design: tests use no real network and no clocks beyond an injectable one;
+  no LLM. v0.2 adds an opt in live GitHub transport.
 - The probe UNKNOWN path blocks and escalates but does not implement an operator
   resolution workflow; a blocked effect stays blocked.
 - An unauthorized event stays pending (refused, not dropped, not executed); no dead
@@ -159,14 +161,17 @@ the property does not hold.
 cd /Users/jaebonglee/Projects/gameshark-research/prototype
 uv venv --python 3.13
 uv pip install pytest
-uv run pytest -v                 # all 28 tests (v0.1 + v0.2)
+uv run pytest -v                 # all 54 tests (v0.1 + v0.2)
 uv run python demo.py            # v0.1 narrated Stark run with a real SIGKILL
 uv run python demo_v2.py         # v0.2 PR monitoring across a real SIGKILL and a revoke
 uv run python companion.py <runtime_db>   # render the companion feed for a run
+uv run python stark.py --help    # the persistent companion CLI (see v0.2 below)
 
 # v0.2 critical tests
-uv run pytest -v tests/test_github_monitor.py::test_real_subprocess_kill_mid_monitor_then_recover
-uv run pytest -v tests/test_github_monitor.py::test_revoke_github_read_stops_monitoring_safely
+uv run pytest -v tests/test_daemon.py::test_responsibility_survives_sigkill_without_second_prompt
+uv run pytest -v tests/test_github_monitor.py::test_review_with_lower_id_than_prior_comment_is_not_lost
+uv run pytest -v tests/test_github_monitor.py::test_github_auth_revoked_blocks_notifies_once_and_resumes_explicitly
+uv run pytest -v tests/test_github_rest.py
 
 # individual critical tests
 uv run pytest -v tests/test_recovery.py::test_real_subprocess_kill_then_recover
@@ -177,116 +182,132 @@ uv run pytest -v tests/test_recovery.py::test_stale_external_effect_rejected_by_
 uv run pytest -v tests/test_recovery.py::test_authorization_revocation_survives_restart
 ```
 
-## v0.2: first real responsibility (GitHub PR monitoring)
+## v0.2: persistent real GitHub responsibility
 
-Stark accepts a durable `monitor_pull_request` responsibility, polls authorized pull
-requests read only, classifies activity deterministically, and delivers relevant updates
-to a local companion feed exactly once per logical event, surviving process death. All
-changes are additive; the v0.1 supervisor is unchanged and every v0.1 test still passes.
+Stark accepts a durable `monitor_pull_request` responsibility with one prompt and keeps it
+against real GitHub across process kills, restarts, offline periods, rate limits, and
+token revocation, with no further prompts. Read only, deterministic, no LLM. Full design,
+failure matrix, and limitations: [`../architecture/github-monitor.md`](../architecture/github-monitor.md).
 
-GitHub source: a deterministic scripted transport drives tests and the demo (no
-credentials). A real read only client (`RestGitHubClient`, token from `GITHUB_TOKEN`,
-ETag conditional reads, pagination, rate limit and outage backoff) exists for live opt
-in. The client class exposes no write method, so autonomous post, merge, or code change
-is impossible by construction.
+### Use it
 
-### Monitor flow
-
-```
-poll() ── list_events(cursor) ──▶ for each new logical event:
-    submit_event(gh:repo:pr:id)  ──▶ durable inbox (dedup by event_id)
-        on_event ──▶ classify ──▶ audit row (every decision)
-                     if relevant ──▶ emit notification effect (journal: intent, outcome)
-                                        companion feed (dedup by op_key)
-    advance monitor_state.cursor   (fenced, only after the event is durably handled)
+```sh
+uv run python stark.py watch jlee5814/gameshark-runtime#1   # the one prompt
+uv run python stark.py run --interval 60 --notify           # serve; restart freely
+uv run python stark.py status                               # uuid, lease, duties, backoff
+uv run python stark.py feed                                 # unread updates
+uv run python stark.py ack --all
+uv run python stark.py resume jlee5814/gameshark-runtime#1  # after fixing a refused token
 ```
 
-Ordering rule: the cursor advances only after an event is durably handled, so a crash
-never skips an event; the inbox and the companion both deduplicate, so a re poll never
-delivers twice.
+Token: `GITHUB_TOKEN`, else `gh auth token`. Prefer a fine grained, read only token
+(Pull requests, Checks, Metadata). State: `~/.gameshark/runtime.db` (`--db` overrides).
+`watch` treats activity older than the watch as history; `--backfill` delivers it.
 
-### Classification (deterministic, auditable)
+### Components
 
-| Raw event | Kind | Delivered? | Reason |
-|---|---|---|---|
-| review approved | new_review | yes | reviewer approved the pull request |
-| review changes_requested | change_request | yes | reviewer requested changes |
-| review commented | comment | no | review comment without a state change |
-| issue comment | comment | no | ordinary discussion comment |
-| check_run failure/timed_out/cancelled | ci | yes | CI concluded <state> |
-| check_run success | ci | no | CI concluded success |
-
-Every decision, delivered or not, is written to `classification_audit`.
-
-### New schema (additive)
-
-```sql
-CREATE TABLE monitor_state (agent_id TEXT, repo TEXT, pr INTEGER, etag TEXT,
-    last_cursor TEXT, scope TEXT, updated REAL, PRIMARY KEY (agent_id, repo, pr));
-CREATE TABLE notifications (op_key TEXT PRIMARY KEY, repo TEXT, pr INTEGER, kind TEXT,
-    event_id TEXT, summary TEXT, reason TEXT, created REAL);
-CREATE TABLE classification_audit (agent_id TEXT, repo TEXT, pr INTEGER, event_id TEXT,
-    kind TEXT, relevant INTEGER, reason TEXT, created REAL,
-    PRIMARY KEY (agent_id, repo, pr, event_id));
-```
-
-### Acceptance steps → coverage
-
-| Brief step | Where |
-|---|---|
-| assign PR monitoring responsibility | `test_assign_then_quiet_poll_delivers_nothing` |
-| monitoring continues without extra prompts | `poll()` driven by the runtime, not a human |
-| introduce a new review event | `test_new_review_delivers_and_dedups_on_repoll` |
-| identify and communicate the update | same test, companion feed `new_review` |
-| kill during processing | `test_real_subprocess_kill_mid_monitor_then_recover` (SIGKILL) |
-| restart | same test, fresh supervisor on same db |
-| same uuid, responsibility, cursor recovered | same test asserts all three |
-| no missed events, no duplicate notifications | subprocess + `test_crash_mid_delivery...` + dedup test |
-| revoke permissions, monitoring stops safely | `test_revoke_github_read_stops_monitoring_safely` |
-
-### Guarantees against a real GitHub account
-
-| Property | Holds against real GitHub? | Basis / assumption |
+| Layer | Module | Owns |
 |---|---|---|
-| Read only, no autonomous writes | Yes | `RestGitHubClient` has no write methods |
-| No duplicate user facing notification | Yes, under the assumptions | dedup by stable logical event id in the inbox and by op_key in the feed |
-| Cursor resume after restart | Yes | durable `monitor_state`, advanced only after durable handling |
-| Conditional reads save quota | Yes | ETag `If-None-Match`; pagination via `Link` |
-| No missed events | Under the at least once polling assumption | relies on logical event id stability and on events being visible to the reads used |
-| Timeliness | Not guaranteed | polling cadence, GitHub eventual consistency, and rate limits bound latency |
+| identity, ownership | `gameshark/identity.py`, `lease.py` (v0.1, unchanged) | uuid, fenced generation |
+| durable responsibilities | `gameshark/responsibilities.py` (unchanged) | active, blocked, done |
+| execution worker | `gameshark/worker.py`, `stark.py` | scheduling, lease renewal, operator requests, host lock |
+| environment adapter | `sims/github_monitor.py` | seen set, backoff, audit, notification effects |
+| transport | `gameshark/github_client.py` | GET only REST, pagination, ETags, typed errors |
+| pure logic | `gameshark/github_events.py`, `classify.py` | logical event ids, relevance |
+| companion | `companion.py` | feed, unread state, banner hook |
 
-What stays unproven for real GitHub: logical event id stability across API responses, and
-that the three read endpoints surface every meaningful event type. Those are assumptions
-the deterministic transport encodes; a live soak test would be needed to validate them.
+### What changed from the first v0.2 scaffold
 
-### v0.2 restrictions honored
+| Gap | Fix |
+|---|---|
+| nothing ran between prompts | `stark run` daemon resumes every active responsibility at start |
+| one integer cursor across review ids and comment ids hid reviews | per stream logical ids and a durable seen set |
+| no CI, no inline comments | check runs on the head commit, pull request review comments |
+| README claimed pagination the code lacked | Link pagination; ETags only for single page streams |
+| 401 or 403 crashed the poll; client slept in place | typed errors, durable backoff, blocked responsibility with one notice |
+| every comment counted as noise | self, bot, acknowledgement, and inline rollup rules |
 
-Read only; no autonomous post, merge, or code change; no real MapleStory client; no LLM;
-durable runtime state stays authoritative (the cursor and journal, not conversation
-history); the supervisor was extended, not redesigned.
+### Failure handling
+
+| Condition | Behavior | Survives restart |
+|---|---|---|
+| 5xx, timeout, DNS, refused | backoff 30 s doubling to 15 min, no notice | yes, `next_poll_at` |
+| primary or secondary rate limit | wait until reset or `retry-after`; notice once if over 15 min | yes |
+| 401, 403 without rate limit, 404 | responsibility blocked, one notice per episode, no polling | yes, until `resume` |
+| checks forbidden for the token | reviews and comments continue; status reports CI unavailable | yes |
+| offline for hours | next poll replays everything unseen; one catch up notice over 1 h | yes |
+| PR merged or closed | notice, responsibility done, polling stops | yes |
+| local `github.read` revoked | polling stops, responsibility intact | yes |
+
+### Live soak (2026-10-14, real GitHub, GET only)
+
+Stark watched this repository's PR #1 with the gh token:
+
+1. `watch jlee5814/gameshark-runtime#1 --backfill`, then `run --interval 5`.
+2. First poll found a `chatgpt-codex-connector[bot]` review summary comment:
+   audited `bot`, not delivered.
+3. The daemon received SIGKILL while the PR's CI run was pending. `status` showed
+   `daemon not running` and the lease still held until TTL.
+4. CI completed on GitHub while Stark was dead.
+5. `run` again with no other command: same uuid `443db68b...`, same lease generation,
+   `resuming 1 responsibilities`, the CI result detected on the first tick and audited
+   `ci`, `CI test concluded success`, not delivered.
+6. Totals: 2 inbox events, both acknowledged, 0 notifications, 0 duplicates. SIGTERM
+   stopped the daemon cleanly.
+
+### Guarantees against real GitHub
+
+| Property | Holds? | Basis |
+|---|---|---|
+| no write to GitHub | yes | GET only primitive; tested on the wire and in source |
+| duty survives restart with no prompt | yes | responsibilities drive polling; subprocess SIGKILL test and live soak |
+| no duplicate notification | yes | inbox dedup by logical id, journal plus `op_key` dedup |
+| no missed review, comment, or check run | yes, for what the read endpoints return | seen set over full paginated lists, no id order assumption |
+| backoff and blocks survive restart | yes | durable `next_poll_at`, `status`, `episode` |
+| timeliness | no | polling interval plus GitHub eventual consistency |
+
+Unproven: legacy commit statuses, check runs on superseded commits, multi host
+ownership, and long soak behavior beyond the session above.
 
 ## Actual test results
 
 ```
 platform darwin -- Python 3.13.9, pytest-9.1.1, pluggy-1.6.0
-collected 28 items
-
+collected 54 items
+tests/test_daemon.py::test_responsibility_survives_sigkill_without_second_prompt PASSED
+tests/test_daemon.py::test_second_daemon_refused_and_cli_requests_reach_running_daemon PASSED
+tests/test_daemon.py::test_token_revocation_blocks_survives_restart_and_resumes PASSED
 tests/test_github_monitor.py::test_assign_then_quiet_poll_delivers_nothing PASSED
 tests/test_github_monitor.py::test_new_review_delivers_and_dedups_on_repoll PASSED
 tests/test_github_monitor.py::test_classification_kinds_and_relevance PASSED
-tests/test_github_monitor.py::test_pagination_rate_limit_and_outage_resume PASSED
+tests/test_github_monitor.py::test_review_with_lower_id_than_prior_comment_is_not_lost PASSED
+tests/test_github_monitor.py::test_inline_comments_roll_up_into_their_review PASSED
+tests/test_github_monitor.py::test_ci_in_progress_then_failure_then_recovery PASSED
+tests/test_github_monitor.py::test_checks_unavailable_degrades_without_blocking PASSED
+tests/test_github_monitor.py::test_baseline_records_history_without_notifying PASSED
+tests/test_github_monitor.py::test_outage_backs_off_durably_then_catches_up PASSED
+tests/test_github_monitor.py::test_rate_limit_pauses_until_reset_and_long_waits_notify_once PASSED
+tests/test_github_monitor.py::test_offline_gap_catches_up_and_reports PASSED
+tests/test_github_monitor.py::test_github_auth_revoked_blocks_notifies_once_and_resumes_explicitly PASSED
+tests/test_github_monitor.py::test_merged_pr_notifies_and_completes_responsibility PASSED
 tests/test_github_monitor.py::test_duplicate_inbox_delivery_absorbed PASSED
 tests/test_github_monitor.py::test_revoke_github_read_stops_monitoring_safely PASSED
 tests/test_github_monitor.py::test_crash_mid_delivery_recovers_without_duplicate PASSED
 tests/test_github_monitor.py::test_real_subprocess_kill_mid_monitor_then_recover PASSED
-```
-
-Earlier v0.1 block retained below for reference.
-
-```
-platform darwin -- Python 3.13.9, pytest-9.1.1, pluggy-1.6.0
-collected 20 items
-
+tests/test_github_rest.py::test_snapshot_reads_every_stream_and_normalizes PASSED
+tests/test_github_rest.py::test_pagination_follows_link_and_skips_etag_for_multipage PASSED
+tests/test_github_rest.py::test_etag_304_survives_and_yields_no_items PASSED
+tests/test_github_rest.py::test_http_failures_map_to_typed_errors[401-headers0-body0-AuthRevoked] PASSED
+tests/test_github_rest.py::test_http_failures_map_to_typed_errors[403-headers1-body1-AuthRevoked] PASSED
+tests/test_github_rest.py::test_http_failures_map_to_typed_errors[404-headers2-body2-AuthRevoked] PASSED
+tests/test_github_rest.py::test_http_failures_map_to_typed_errors[403-headers3-body3-RateLimited] PASSED
+tests/test_github_rest.py::test_http_failures_map_to_typed_errors[403-headers4-body4-RateLimited] PASSED
+tests/test_github_rest.py::test_http_failures_map_to_typed_errors[429-headers5-body5-RateLimited] PASSED
+tests/test_github_rest.py::test_http_failures_map_to_typed_errors[502-headers6-body6-TransientOutage] PASSED
+tests/test_github_rest.py::test_secondary_rate_limit_carries_retry_after PASSED
+tests/test_github_rest.py::test_connection_refused_is_transient PASSED
+tests/test_github_rest.py::test_checks_forbidden_degrades_instead_of_blocking PASSED
+tests/test_github_rest.py::test_client_only_ever_sends_get PASSED
 tests/test_invariants.py::test_i1_identity_stable_across_restart PASSED
 tests/test_invariants.py::test_i2_single_owner PASSED
 tests/test_invariants.py::test_i3_checkpoint_before_effect PASSED
@@ -308,5 +329,7 @@ tests/test_recovery.py::test_stale_external_effect_rejected_by_destination PASSE
 tests/test_recovery.py::test_authorization_revocation_survives_restart PASSED
 tests/test_recovery.py::test_real_subprocess_kill_then_recover PASSED
 
-20 passed in 0.17s
+54 passed
 ```
+
+All 20 v0.1 tests run unchanged. `uv run ruff check .` reports no findings.

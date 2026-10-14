@@ -1,4 +1,4 @@
-"""GameShark Runtime v0.1: clean room persistent agent primitives."""
+"""GameShark Runtime v0.2: clean room persistent agent primitives and GitHub monitoring."""
 
 from gameshark.errors import (
     AmbiguousEffect,

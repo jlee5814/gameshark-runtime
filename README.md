@@ -5,7 +5,8 @@ responsibilities, survives process death, and resumes cross-environment work wit
 losing commitments or duplicating externally observable effects.
 
 Deterministic by design. No LLM, no real game client, and all external integrations are
-read only.
+read only. Stark can hold a real GitHub pull request monitoring responsibility across
+process restarts without a second prompt.
 
 ## Layout
 
@@ -22,9 +23,11 @@ read only.
 - **v0.1** — durable identity, fenced ownership leases, a checkpoint-before-effect journal
   for exactly-once consequence under documented destination assumptions, a durable event
   inbox, and crash recovery proven by real subprocess kills.
-- **v0.2** — the first real responsibility: read-only GitHub pull request monitoring with
-  deterministic relevance classification, deduplicated delivery to a local companion feed,
-  durable cursors, and safe stop on authorization revocation.
+- **v0.2** — persistent real world responsibility: a `stark` daemon and CLI monitor real
+  GitHub pull requests read only (reviews, change requests, comments, CI check runs),
+  classify activity deterministically, deliver each meaningful change once to a local
+  companion feed, and survive SIGKILL, offline periods, rate limits, and token revocation.
+  Design: [architecture/github-monitor.md](architecture/github-monitor.md).
 
 ## Run
 
@@ -33,6 +36,10 @@ cd prototype
 uv run pytest -v        # full suite
 uv run python demo.py   # v0.1 durable-core demo (real SIGKILL)
 uv run python demo_v2.py  # v0.2 PR-monitoring demo across a restart and a revoke
+
+uv run python stark.py watch owner/repo#123   # assign once (token: GITHUB_TOKEN or gh)
+uv run python stark.py run --notify           # serve across restarts, no more prompts
+uv run python stark.py feed                   # unread updates
 ```
 
 ## Scope and ethics
