@@ -101,7 +101,78 @@ CREATE TABLE IF NOT EXISTS classification_audit (
     created  REAL NOT NULL,
     PRIMARY KEY (agent_id, repo, pr, event_id)
 );
+
+-- v0.2 live: logical events already submitted per pull request. Novelty is set
+-- membership, not id order, so independent id spaces never hide an event.
+CREATE TABLE IF NOT EXISTS monitor_seen (
+    agent_id TEXT NOT NULL,
+    repo     TEXT NOT NULL,
+    pr       INTEGER NOT NULL,
+    event_id TEXT NOT NULL,
+    created  REAL NOT NULL,
+    PRIMARY KEY (agent_id, repo, pr, event_id)
+);
+
+-- v0.2 live: last conclusion per check name, so a pass after a failure reads as recovery.
+CREATE TABLE IF NOT EXISTS monitor_checks (
+    agent_id   TEXT NOT NULL,
+    repo       TEXT NOT NULL,
+    pr         INTEGER NOT NULL,
+    name       TEXT NOT NULL,
+    conclusion TEXT NOT NULL,
+    PRIMARY KEY (agent_id, repo, pr, name)
+);
+
+-- v0.2 live: operator requests (watch, unwatch, resume) written by the CLI without a
+-- lease and applied by the lease holder, so a CLI never competes with the daemon.
+CREATE TABLE IF NOT EXISTS control_requests (
+    id       INTEGER PRIMARY KEY AUTOINCREMENT,
+    agent_id TEXT NOT NULL,
+    adapter  TEXT NOT NULL,
+    action   TEXT NOT NULL,
+    payload  TEXT NOT NULL,           -- JSON
+    status   TEXT NOT NULL,           -- pending | applied | rejected
+    detail   TEXT,
+    created  REAL NOT NULL,
+    applied  REAL
+);
 """
+
+# Columns added after a table first shipped. Applied idempotently so a v0.1 or early v0.2
+# database upgrades in place without losing rows.
+MIGRATIONS: dict[str, list[tuple[str, str]]] = {
+    "monitor_state": [
+        ("status", "TEXT NOT NULL DEFAULT 'ok'"),      # ok | backoff | auth_revoked | closed
+        ("next_poll_at", "REAL NOT NULL DEFAULT 0"),
+        ("fail_count", "INTEGER NOT NULL DEFAULT 0"),
+        ("last_ok_at", "REAL"),
+        ("last_error", "TEXT"),
+        ("etags", "TEXT NOT NULL DEFAULT '{}'"),       # JSON url -> etag, survives restart
+        ("head_sha", "TEXT"),
+        ("viewer", "TEXT"),
+        ("baseline_before", "TEXT"),                   # ISO time; older activity is history
+        ("episode", "INTEGER NOT NULL DEFAULT 0"),     # auth failure episodes, dedup anchor
+    ],
+    "notifications": [
+        ("url", "TEXT"),
+        ("read_at", "REAL"),
+    ],
+}
+
+
+def migrate(conn: sqlite3.Connection) -> None:
+    """Add missing columns inside one write txn so a concurrent CLI and daemon agree."""
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        for table, cols in MIGRATIONS.items():
+            have = {r[1] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+            for name, decl in cols:
+                if name not in have:
+                    conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {decl}")
+        conn.execute("COMMIT")
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
 
 
 def connect(path: str | Path) -> sqlite3.Connection:
@@ -113,4 +184,5 @@ def connect(path: str | Path) -> sqlite3.Connection:
     conn.execute("PRAGMA foreign_keys=ON")
     conn.execute("PRAGMA busy_timeout=3000")
     conn.executescript(SCHEMA)
+    migrate(conn)
     return conn
