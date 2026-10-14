@@ -366,7 +366,7 @@ SIGKILL skips steps 1 to 4; steps 5 and 6 still hold, at the cost of the lost re
 
 Ordered increments; each lands with its own tests and leaves the suite green.
 
-0. **Prerequisites.** Fix the open PR #1 review finding: `LeaseManager.renew` rolls back twice on a fence failure, so a SQLite rollback error can mask `FencedError`. Add the `draining` lease state with one transition test.
+0. **Prerequisites.** Done. PR #6 fixed the `LeaseManager.renew` double rollback that could mask `FencedError`. Graceful draining added the `draining` lease state, a heartbeat that renews through the drain, bounded drain deadlines, and release fencing; see `prototype/README.md`, Graceful drain and handoff.
 1. **Contracts.** `inference/types.py`: dataclasses, `Provider` protocol, error taxonomy, `CancelToken`. `FakeProvider` with scripted faults per chunk index. Pure unit tests.
 2. **Journal.** Tables plus `InferenceJournal` (reserve, commit, short circuit, recovery settlement) with crash points E1 to E4 using the existing `crash_at` hook.
 3. **Router.** Capability, policy, ordering, health, admission, bounded queues, failover, degraded flag. Fake providers only.

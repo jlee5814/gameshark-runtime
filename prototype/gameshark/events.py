@@ -16,6 +16,7 @@ from collections.abc import Callable
 from gameshark.clock import Clock
 from gameshark.errors import AmbiguousEffect, BlockedEffect
 from gameshark.lease import LeaseManager
+from gameshark.lifecycle import CancelToken
 from gameshark.store import write_txn
 
 
@@ -27,12 +28,14 @@ class EventRouter:
         generation: int,
         clock: Clock,
         dispatch: Callable[[dict], None],
+        cancel: CancelToken | None = None,
     ) -> None:
         self.conn = conn
         self.lease = lease
         self.generation = generation
         self.clock = clock
         self._dispatch = dispatch              # routes an event dict to its adapter.on_event
+        self._cancel = cancel or CancelToken()
 
     def _persist(self, event: dict) -> str:
         """Insert a new event or return the status of an existing one (dedup)."""
@@ -70,6 +73,8 @@ class EventRouter:
         return self._handle(event)
 
     def _handle(self, event: dict) -> str:
+        # Safe boundary: a cancelled drain leaves the event pending for the successor.
+        self._cancel.check()
         try:
             self._dispatch(event)              # may raise CrashInjected or Ambiguous/Blocked
         except (AmbiguousEffect, BlockedEffect):

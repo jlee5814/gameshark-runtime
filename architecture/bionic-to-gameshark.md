@@ -39,9 +39,9 @@ Bionic's closest primitive is the local inference lease: an exclusive, crash rel
 
 ## Proposed changes, not yet made
 
-Ranked by value per effort. None is implemented; this study changes no runtime code.
+Ranked by value per effort. This study changed no runtime code; change 1 has since landed separately.
 
-1. **Draining lease state.** Add `draining` between `held` and `released`: the holder stops admitting new effects, reconciles pending journal entries, then releases. Cost: one state, one transition test. Opportunity cost: low; it closes a real gap in handoff.
+1. **Draining lease state.** Implemented (`gameshark/lease.py`, `gameshark/lifecycle.py`, `gameshark/heartbeat.py`; tests in `tests/test_lifecycle.py` and `tests/test_drain.py`). Add `draining` between `held` and `released`: the holder stops admitting new effects, reconciles pending journal entries, then releases. Cost: one state, one transition test. Opportunity cost: low; it closes a real gap in handoff.
 2. **Crash as state, rematerialize on due.** Make adapter worker death mark the worker absent instead of triggering an immediate restart; the scheduler rebuilds it when its next responsibility is due, under a per responsibility mutex. Cost: moderate refactor of `supervisor.py` and `worker.py`. Opportunity cost: medium; it trades fast recovery for restart storm immunity.
 3. **Typed admission at acceptance.** Gate `upsert` on a capacity budget with a journaled refusal. Cost: small. Opportunity cost: low until GameShark runs many responsibilities per agent.
 4. **Retry plans that must change something.** Require each adapter retry to carry a changed parameter or stop. Cost: small. Opportunity cost: low; it also improves logs.

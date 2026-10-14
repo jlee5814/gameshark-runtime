@@ -30,6 +30,8 @@ class AdapterContext:
     fenced: Callable[[Callable[[Any], Any]], Any] | None = None   # fenced durable write
     generation: int = 0                        # the owning lease generation
     clock: object = None                       # injectable Clock for durable timestamps
+    admit: Callable[[], None] | None = None    # raises Draining once admission is frozen
+    cancel: object = None                      # lifecycle CancelToken, checked at safe points
 
 
 class Adapter(Protocol):

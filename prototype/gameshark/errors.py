@@ -41,3 +41,19 @@ class StaleFenceRejected(Exception):
     This is the destination side guarantee that local fencing alone cannot provide: it
     stops a stale worker from producing an external effect after another owner took over.
     """
+
+
+class Draining(Exception):
+    """The owner is draining and admits no new work.
+
+    Retryable before dispatch: the work stays at its durable source (an unacknowledged
+    event, a pending control request, unseen remote activity) and the successor takes it.
+    """
+
+
+class Cancelled(Exception):
+    """In flight work stopped at a safe boundary because the drain deadline passed.
+
+    Terminal for this process only. Nothing partial commits; the work stays durable and
+    the successor replays it.
+    """

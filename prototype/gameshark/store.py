@@ -143,6 +143,9 @@ CREATE TABLE IF NOT EXISTS control_requests (
 # Columns added after a table first shipped. Applied idempotently so a v0.1 or early v0.2
 # database upgrades in place without losing rows.
 MIGRATIONS: dict[str, list[tuple[str, str]]] = {
+    "lease": [
+        ("state", "TEXT NOT NULL DEFAULT 'held'"),     # held | draining | released
+    ],
     "monitor_state": [
         ("status", "TEXT NOT NULL DEFAULT 'ok'"),      # ok | backoff | auth_revoked | closed
         ("next_poll_at", "REAL NOT NULL DEFAULT 0"),

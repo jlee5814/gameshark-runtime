@@ -18,6 +18,7 @@ from gameshark.errors import CrashInjected
 from gameshark.events import EventRouter
 from gameshark.identity import Identity, load_or_create_identity
 from gameshark.lease import LeaseManager
+from gameshark.lifecycle import Lifecycle
 from gameshark.responsibilities import ResponsibilityStore
 from gameshark.store import connect, write_txn
 
@@ -50,6 +51,7 @@ class AgentSupervisor:
         self.router: EventRouter | None = None
         self._declared: list[Adapter] = []
         self.started = False
+        self.lifecycle = Lifecycle()
 
     # ------------------------------------------------------------------ crash hook
     def _maybe_crash(self, label: str) -> None:
@@ -86,12 +88,14 @@ class AgentSupervisor:
             caps=self.grants.effective_caps(adapter_name),
             emit_effect=self._emit_for(adapter_name),
             responsibilities=self.responsibilities,
-            submit_event=self.submit,
+            submit_event=self._submit_inflight,
             conn=self.conn,
             grants=self.grants,
             fenced=self._fenced,
             generation=self.generation or 0,
             clock=self.clock,
+            admit=self.lifecycle.admit,
+            cancel=self.lifecycle.token,
         )
 
     def _fenced(self, fn):
@@ -115,7 +119,8 @@ class AgentSupervisor:
             crash=self._maybe_crash,
         )
         self.router = EventRouter(
-            self.conn, self.lease, self.generation, self.clock, dispatch=self._dispatch
+            self.conn, self.lease, self.generation, self.clock, dispatch=self._dispatch,
+            cancel=self.lifecycle.token,
         )
         for adapter in self._declared:
             self.registry.register(adapter)
@@ -125,6 +130,7 @@ class AgentSupervisor:
             self.registry.open(name, self._make_ctx)
         self.started = True
         self.recover()
+        self.lifecycle.serve()
 
     def revoke(self, adapter: str, cap: str) -> None:
         """Durably revoke a capability. It stays revoked across restarts."""
@@ -136,8 +142,22 @@ class AgentSupervisor:
         adapter.on_event(event)
 
     def submit(self, event: dict) -> str:
-        """Accept a new external event durably and handle it."""
+        """Accept a new external event durably and handle it.
+
+        New work: raises Draining once the owner stops admitting, before anything persists,
+        so the event stays with its source for the successor.
+        """
         assert self.router is not None
+        self.lifecycle.admit()
+        return self.router.deliver(event)
+
+    def _submit_inflight(self, event: dict) -> str:
+        """Submit an event detected by work already admitted (an adapter's poll).
+
+        In flight work may finish while draining; only the drain deadline stops it.
+        """
+        assert self.router is not None
+        self.lifecycle.token.check()
         return self.router.deliver(event)
 
     def poll(self) -> dict:
@@ -194,6 +214,7 @@ class AgentSupervisor:
         assert self.generation is not None
         self.lease.release(self.owner_token, self.generation)
         self.started = False
+        self.lifecycle.stopped()
 
     def close(self) -> None:
         # Best effort close; a failure here is not actionable during shutdown.
