@@ -17,6 +17,7 @@ from collections import Counter
 from gameshark.github_client import Snapshot
 
 FAILED = frozenset({"failure", "timed_out", "action_required", "startup_failure"})
+CANCELLED = "cancelled"                               # did not finish; not a failure verdict
 
 
 def _login(obj: dict) -> tuple[str, str]:

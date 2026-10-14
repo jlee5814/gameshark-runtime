@@ -76,7 +76,9 @@ snapshot(repo, pr, stored ETags, head sha)
 | system condition | system | yes |
 | pull request merged or closed | pr_state | yes, completes the duty |
 | check failed, timed out, action required, startup failure | ci_failure | yes |
-| check passed after a failure of the same check name | ci_recovered | yes |
+| check cancelled on the head commit | ci_cancelled | yes |
+| check cancelled again after a cancellation of the same check name | ci | no |
+| check passed after a failure or cancellation of the same check name | ci_recovered | yes |
 | other check conclusions | ci | no |
 | any activity by the token's own login | self | no |
 | review changes requested | change_request | yes |
