@@ -175,6 +175,63 @@ def test_ci_in_progress_then_failure_then_recovery(paths, clock):
     sup.close()
 
 
+def test_ci_cancelled_on_head_notifies_once(paths, clock):
+    client = FakeGitHubClient()
+    sup = build_monitor(paths, clock, client)
+    watch(sup)
+    client.add_check_run("run1", 100, "cancelled", name="tests")
+    sup.poll()
+    sup.poll()                                               # repoll: seen set holds it
+    rows = feed(sup)
+    assert [r["kind"] for r in rows] == ["ci_cancelled"]
+    assert "cancelled" in rows[0]["summary"]
+    sup.close()
+
+
+def test_ci_success_after_cancelled_is_recovery(paths, clock):
+    client = FakeGitHubClient()
+    sup = build_monitor(paths, clock, client)
+    watch(sup)
+    client.add_check_run("run1", 100, "cancelled", name="tests")
+    sup.poll()
+    client.add_check_run("run2", 110, "success", name="tests")   # rerun on the same head
+    sup.poll()
+    sup.poll()
+    assert kinds(sup) == ["ci_cancelled", "ci_recovered"]
+    sup.close()
+
+
+def test_ci_cancelled_again_on_rerun_does_not_duplicate(paths, clock):
+    client = FakeGitHubClient()
+    sup = build_monitor(paths, clock, client)
+    watch(sup)
+    client.add_check_run("run1", 100, "cancelled", name="tests")
+    sup.poll()
+    client.add_check_run("run2", 110, "cancelled", name="tests")
+    sup.poll()
+    sup.poll()
+    assert kinds(sup) == ["ci_cancelled"]
+    audit = {r["event_id"]: (r["kind"], r["relevant"]) for r in sup.conn.execute(
+        "SELECT event_id, kind, relevant FROM classification_audit")}
+    assert audit["check:run1:cancelled"] == ("ci_cancelled", 1)
+    assert audit["check:run2:cancelled"] == ("ci", 0)
+    sup.close()
+
+
+def test_ci_cancelled_on_superseded_commit_stays_silent(paths, clock):
+    client = FakeGitHubClient()
+    sup = build_monitor(paths, clock, client)
+    watch(sup)
+    client.add_check_run("run1", 100, None, name="tests")
+    sup.poll()
+    client.push("sha2")                                      # cancel in progress on push
+    client.complete_check_run("run1", 110, "cancelled")
+    client.add_check_run("run2", 120, "success", name="tests")
+    sup.poll()
+    assert feed(sup) == []                                   # old head is not watched
+    sup.close()
+
+
 def test_checks_unavailable_degrades_without_blocking(paths, clock):
     client = FakeGitHubClient()
     client.checks_unavailable = True
