@@ -73,6 +73,22 @@ def wait_for(pred, timeout=15.0):
     raise AssertionError("condition not reached")
 
 
+def started(proc: subprocess.Popen) -> str:
+    """Block until the daemon logs recovery complete; return that line."""
+    for line in proc.stdout:
+        if "resuming" in line:
+            return line
+    raise AssertionError("daemon exited before recovery")
+
+
+def wait_ticks(env, n: int = 3) -> None:
+    """Wait for n completed polls, observed as last_ok_at advancing."""
+    for _ in range(n):
+        before = query(env, "SELECT last_ok_at FROM monitor_state")[0]["last_ok_at"]
+        wait_for(lambda b=before: query(
+            env, "SELECT last_ok_at FROM monitor_state")[0]["last_ok_at"] != b)
+
+
 def test_responsibility_survives_sigkill_without_second_prompt(env):
     out = stark(env, "watch", TARGET)                 # the only prompt
     assert out.returncode == 0, out.stderr
@@ -95,7 +111,7 @@ def test_responsibility_survives_sigkill_without_second_prompt(env):
 
     d2 = daemon(env)                                  # no watch, no other input
     wait_for(lambda: len(notes(env)) == 2)
-    time.sleep(0.5)                                   # several more ticks: nothing repeats
+    wait_ticks(env)                                   # several more polls: nothing repeats
     assert notes(env) == ["notify:acme/widget:42:new_review:review:2",
                           "notify:acme/widget:42:change_request:review:3"]
     assert query(env, "SELECT uuid FROM identity")[0]["uuid"] == uuid
@@ -132,15 +148,17 @@ def test_token_revocation_blocks_survives_restart_and_resumes(env):
     write(env["fixture"], revoked=True)
     d1 = daemon(env)
     wait_for(lambda: query(env, "SELECT state FROM responsibilities")[0]["state"] == "blocked")
+    # The kill may land before or after the notice commits; either way the inbox holds
+    # the auth event, so the restart below ends with exactly one notice.
     d1.send_signal(signal.SIGKILL)
     d1.wait(timeout=10)
-    assert [k.split(":")[-2] for k in notes(env)] == ["auth_revoked"]
 
     write(env["fixture"], reviews=[review(5, "approved")])
     d2 = daemon(env)
-    time.sleep(0.5)
+    started(d2)                                       # recovery, including inbox replay, done
+    time.sleep(0.5)                                   # blocked: ticks poll nothing
     assert query(env, "SELECT state FROM responsibilities")[0]["state"] == "blocked"
-    assert len(notes(env)) == 1                       # still blocked, no repeat notice
+    assert [k.split(":")[-2] for k in notes(env)] == ["auth_revoked"]   # no repeat notice
 
     assert "queued" in stark(env, "resume", TARGET).stdout
     wait_for(lambda: len(notes(env)) == 2)
@@ -172,8 +190,8 @@ def test_actionable_event_survives_restarts_until_acked(env):
     assert first == [(1, "notify:acme/widget:42:ci_failure:check:77:failure")]
 
     d2 = daemon(env)                                  # killed before ack: still waiting
-    wait_for(lambda: query(env, "SELECT 1 FROM lease WHERE owner_token IS NOT NULL"))
-    time.sleep(0.6)                                   # several ticks
+    started(d2)
+    wait_ticks(env)
     assert [tuple(r) for r in unread()] == first
     assert "test failure" in stark(env, "feed").stdout
 
@@ -182,7 +200,8 @@ def test_actionable_event_survives_restarts_until_acked(env):
     d2.wait(timeout=10)
 
     d3 = daemon(env)                                  # acked: stays read, never redelivered
-    time.sleep(0.6)
+    started(d3)
+    wait_ticks(env)
     assert unread() == []
     assert len(notes(env)) == 1
     assert stark(env, "feed").stdout.strip() == "(no updates)"
