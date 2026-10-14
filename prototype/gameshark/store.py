@@ -154,6 +154,7 @@ MIGRATIONS: dict[str, list[tuple[str, str]]] = {
         ("viewer", "TEXT"),
         ("baseline_before", "TEXT"),                   # ISO time; older activity is history
         ("episode", "INTEGER NOT NULL DEFAULT 0"),     # auth failure episodes, dedup anchor
+        ("page_cursors", "TEXT NOT NULL DEFAULT '{}'"),  # JSON stream -> pagination cursor
     ],
     "notifications": [
         ("url", "TEXT"),

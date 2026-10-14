@@ -7,9 +7,11 @@ revocation, pull request close, dedup, and a real subprocess kill mid processing
 
 from __future__ import annotations
 
+import json
 import signal
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -22,11 +24,13 @@ from gameshark.github_client import (
     AuthRevoked,
     FakeGitHubClient,
     RateLimited,
+    RestGitHubClient,
     TransientOutage,
 )
 from gameshark.supervisor import AgentSupervisor
-from sims.github_monitor import GitHubMonitorAdapter, backoff_delay
+from sims.github_monitor import GitHubMonitorAdapter, backoff_delay, iso
 from tests.helpers import HOST
+from tests.test_github_rest import FakeGitHubServer, PagedStream
 
 REPO, PR = "acme/widget", 42
 RID = f"monitor:{REPO}:{PR}"
@@ -471,4 +475,153 @@ def test_real_subprocess_kill_mid_monitor_then_recover(paths, tmp_path, clock):
     assert sup.responsibility_state(RID) == "active"
     sup.poll()                                           # same remote again: still one
     assert len(feed(sup)) == 1
+    sup.close()
+
+
+# ----------------------------------------------------------------- pagination past 20 pages
+# The real REST client against the local GitHub server, ten items per page so 25 pages
+# stay cheap to journal. Reviews arrive oldest first, exactly as GitHub lists them.
+@pytest.fixture
+def paged_gh():
+    srv = FakeGitHubServer()
+    reviews = PagedStream([])
+    p = f"/repos/{REPO}"
+    srv.routes.update({
+        "/user": (200, {"login": "stark-owner"}, {}),
+        f"{p}/pulls/{PR}": (200, {"number": PR, "state": "open", "head": {"sha": "abc"},
+                                  "user": {"login": "stark-owner", "type": "User"}}, {}),
+        f"{p}/pulls/{PR}/reviews": reviews,
+        f"{p}/pulls/{PR}/comments": (200, [], {}),
+        f"{p}/issues/{PR}/comments": (200, [], {}),
+        f"{p}/commits/abc/check-runs": (200, {"total_count": 0, "check_runs": []}, {}),
+    })
+    yield srv, reviews
+    srv.stop()
+
+
+def _rest(srv) -> RestGitHubClient:
+    return RestGitHubClient("test-token", base=srv.base, timeout_s=5, per_page=10)
+
+
+def _gh_review(i: int, epoch: float, state: str = "COMMENTED") -> dict:
+    return {"id": i, "state": state, "user": {"login": "reviewer", "type": "User"},
+            "body": "", "submitted_at": iso(epoch), "html_url": f"https://github.test/r/{i}"}
+
+
+def _history(n: int, clock) -> list[dict]:
+    return [_gh_review(i, clock.now() - 10_000 + i) for i in range(1, n + 1)]
+
+
+def seen_count(sup) -> int:
+    return sup.conn.execute("SELECT COUNT(*) FROM monitor_seen").fetchone()[0]
+
+
+def test_review_on_page_25_delivers_once_and_history_stays_quiet(paths, clock, paged_gh):
+    srv, reviews = paged_gh
+    reviews.items.extend(_history(241, clock))                 # 25 pages, oldest first
+    sup = build_monitor(paths, clock, _rest(srv))
+    watch(sup, baseline=True)
+
+    sup.poll()                                                 # cap hit: tail first, warn
+    assert kinds(sup) == ["system"]
+    assert "reviews" in feed(sup)[0]["summary"]
+    sup.poll()                                                 # backfill finishes the hole
+    assert seen_count(sup) == 241
+    assert json.loads(state(sup)["page_cursors"])["reviews"]["backfill"] == 0
+
+    clock.advance(60)
+    reviews.items.append(_gh_review(242, clock.now(), "CHANGES_REQUESTED"))   # page 25
+    reviews.hits.clear()
+    sup.poll()
+    assert reviews.hits == [1, 25, 24]                         # no historical refetch
+    sup.poll()
+    assert kinds(sup) == ["system", "change_request"]          # once, and one warning only
+    audit = {r["event_id"]: r["reason"] for r in sup.conn.execute(
+        "SELECT event_id, reason FROM classification_audit")}
+    assert all(audit[f"review:{i}"].startswith("baseline: ") for i in range(1, 242))
+    sup.close()
+
+
+def test_backfill_resumes_across_restart_without_duplicates(paths, clock, paged_gh):
+    srv, reviews = paged_gh
+    reviews.items.extend(_history(300, clock))                 # 30 pages
+    sup = build_monitor(paths, clock, _rest(srv))
+    watch(sup, baseline=True)
+    sup.poll()
+    assert json.loads(state(sup)["page_cursors"])["reviews"]["backfill"] == 11
+    sup.close()
+
+    reviews.hits.clear()
+    sup = build_monitor(paths, clock, _rest(srv))              # fresh process, same files
+    sup.poll()
+    assert reviews.hits == [1, 30, *range(11, 1, -1)]
+    assert seen_count(sup) == 300
+
+    clock.advance(60)
+    reviews.items.append(_gh_review(301, clock.now(), "APPROVED"))
+    sup.poll()
+    sup.close()
+    sup = build_monitor(paths, clock, _rest(srv))
+    sup.poll()
+    assert kinds(sup) == ["system", "new_review"]
+    sup.close()
+
+
+def test_rate_limit_mid_walk_backs_off_and_loses_nothing(paths, clock, paged_gh):
+    srv, reviews = paged_gh
+    reviews.items.extend(_history(241, clock))
+    sup = build_monitor(paths, clock, _rest(srv))
+    watch(sup, baseline=True)
+    sup.poll()
+    sup.poll()
+    clock.advance(60)
+    reviews.items.extend(_gh_review(i, clock.now() + i, "APPROVED") for i in range(242, 262))
+    limited = [(403, {"message": "API rate limit exceeded"},
+                {"x-ratelimit-remaining": "0", "x-ratelimit-reset": str(int(time.time()) + 300)})]
+    reviews.before = lambda page: limited.pop() if page == 26 and limited else None
+
+    rep = sup.poll()
+    assert rep["github"]["deferred"] == [f"{REPO}#{PR}:RateLimited"]
+    assert kinds(sup) == ["system"]
+    sup.close()
+
+    sup = build_monitor(paths, clock, _rest(srv))              # restart during the wait
+    clock.advance(400)
+    sup.poll()
+    sup.poll()
+    assert kinds(sup) == ["system"] + ["new_review"] * 20
+    assert seen_count(sup) == 261
+    sup.close()
+
+
+def test_crash_while_marking_seen_never_strands_a_hole(paths, clock, paged_gh, monkeypatch):
+    """A crash mid poll leaves seen ids above an unread hole; the next walk must not stop."""
+    srv, reviews = paged_gh
+    reviews.items.extend(_history(241, clock))
+    sup = build_monitor(paths, clock, _rest(srv))
+    watch(sup, baseline=True)
+    sup.poll()
+    sup.poll()                                                 # settled
+    clock.advance(60)
+    reviews.items.extend(_gh_review(i, clock.now() + i) for i in range(242, 492))  # 25 pages
+
+    marks = []
+    real = GitHubMonitorAdapter._mark_seen
+
+    def crash_after_fifty(self, repo, pr, ev):
+        if len(marks) == 50:
+            raise CrashInjected("mid mark seen")
+        marks.append(ev["event_id"])
+        real(self, repo, pr, ev)
+    monkeypatch.setattr(GitHubMonitorAdapter, "_mark_seen", crash_after_fifty)
+    with pytest.raises(CrashInjected):
+        sup.poll()
+    sup.close()
+    monkeypatch.setattr(GitHubMonitorAdapter, "_mark_seen", real)
+
+    sup = build_monitor(paths, clock, _rest(srv))
+    for _ in range(3):
+        sup.poll()
+    assert seen_count(sup) == 491                              # every new review, none stranded
+    assert json.loads(state(sup)["page_cursors"])["reviews"]["backfill"] == 0
     sup.close()

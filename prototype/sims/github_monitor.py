@@ -17,6 +17,11 @@ Correctness shape:
 - GitHub refusing the token (401, 403, 404) enters the inbox as a system event whose
   handler blocks the responsibility and notifies once per episode. Resuming needs an
   explicit operator request; nothing silently restarts or silently stops.
+- Pagination cursors persist with the poll outcome, after every event is marked seen;
+  while marking, the stored cursor is unsettled, so a crash forces a full walk rather than
+  an early stop above an unread hole. A stream a page cap left incomplete enters the inbox
+  as one system warning per episode; later polls finish the backfill instead of treating
+  the stream as complete.
 - A merged or closed pull request notifies and completes the responsibility.
 - A local github.read revocation stops polling with the responsibility intact.
 """
@@ -31,7 +36,7 @@ from gameshark.adapters import AdapterContext
 from gameshark.classify import Decision, classify
 from gameshark.effects import Effect, ProbeResult
 from gameshark.github_client import AuthRevoked, GitHubClient, RateLimited, TransientOutage
-from gameshark.github_events import normalize
+from gameshark.github_events import normalize, stream_event_id
 
 KIND = "monitor_pull_request"
 BACKOFF_BASE_S = 30.0
@@ -208,10 +213,16 @@ class GitHubMonitorAdapter:
     def _poll_one(self, repo: str, pr: int, st, report: dict) -> None:
         assert self.ctx is not None
         now = self._now()
+        seen = {r["event_id"] for r in self.ctx.conn.execute(
+            "SELECT event_id FROM monitor_seen WHERE agent_id=? AND repo=? AND pr=?",
+            (self.ctx.agent_id, repo, pr))}
         try:
             viewer = st["viewer"] or self.client.viewer()
-            snap = self.client.snapshot(repo, pr, json.loads(st["etags"] or "{}"),
-                                        st["head_sha"])
+            snap = self.client.snapshot(
+                repo, pr, json.loads(st["etags"] or "{}"), st["head_sha"],
+                known=lambda stream, item: stream_event_id(stream, item) in seen,
+                cursors=json.loads(st["page_cursors"] or "{}"),
+            )
         except RateLimited as e:
             until = now + e.retry_after_s
             self._update_state(repo, pr, status="backoff", next_poll_at=until,
@@ -240,10 +251,25 @@ class GitHubMonitorAdapter:
             report["blocked"].append(f"{repo}#{pr}:AuthRevoked")
             return
 
-        seen = {r["event_id"] for r in self.ctx.conn.execute(
-            "SELECT event_id FROM monitor_seen WHERE agent_id=? AND repo=? AND pr=?",
-            (self.ctx.agent_id, repo, pr))}
+        for stream in snap.truncated:
+            episode = snap.cursors[stream]["episode"]
+            if stream == "check_runs":
+                summary = "check runs exceed the page cap; older runs not read"
+            else:
+                summary = f"{stream} exceed one poll's page cap; older pages read next poll"
+            self._submit_system(repo, pr, f"pagination_truncated:{stream}:{episode}", {
+                "condition": "pagination_truncated", "stream": stream, "episode": episode,
+                "summary": summary,
+                "reason": "pagination safety limit reached; coverage incomplete until done",
+            })
+
         fresh = [e for e in normalize(snap) if e["event_id"] not in seen]
+        if fresh:
+            # Marking seen is not atomic with the cursor below. A crash in between would
+            # leave seen ids above an unread hole, so until the outcome lands no page may
+            # stop the next walk.
+            self._update_state(repo, pr, page_cursors=json.dumps(
+                {s: {**c, "settled": False} for s, c in snap.cursors.items()}))
         history_before = st["baseline_before"]
         last = st["last_cursor"]
         delivered = 0
@@ -278,7 +304,7 @@ class GitHubMonitorAdapter:
             next_poll_at=now + self.poll_interval_s, last_ok_at=now,
             last_error="CI unavailable to this token" if snap.checks_unavailable else None,
             etags=json.dumps(snap.etags), head_sha=snap.head_sha, viewer=viewer,
-            last_cursor=last,
+            last_cursor=last, page_cursors=json.dumps(snap.cursors),
         )
 
     def _prev_conclusion(self, repo: str, pr: int, name: str) -> str | None:

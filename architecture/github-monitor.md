@@ -52,7 +52,7 @@ snapshot(repo, pr, stored ETags, head sha)
            mark seen (and last conclusion per check name) in one fenced txn
        pr_state event → notify, responsibility done
        offline gap over 1 h with new activity → one catch up notice
-       persist ETags, head sha, viewer, last_ok_at, next_poll_at
+       persist ETags, pagination cursors, head sha, viewer, last_ok_at, next_poll_at
 ```
 
 ## Why no event is lost or doubled
@@ -63,7 +63,9 @@ snapshot(repo, pr, stored ETags, head sha)
 | Crash after inbox submit, before mark seen | resubmit hits the inbox dedup; replay already handled it |
 | Crash inside notification delivery | effect journal intent/outcome plus `op_key` dedup in `notifications` |
 | Crash during backoff | `next_poll_at` and `fail_count` persist; restart keeps waiting |
-| Lists longer than one page | Link pagination; ETags stored only for single page streams, because new items land on the last page |
+| Lists longer than one page | tail first: page 1 for `rel="last"`, then back from the last page until a page whose items are all in `monitor_seen`; ETags stored only for single page streams, because new items land on the last page |
+| Lists longer than the page cap | a capped walk records a durable backfill page per stream, so later polls read pages 2 through it instead of rereading history; deletions only move items lower, so the page stays safe |
+| Truncated discovery | a stream left incomplete enters the inbox as one `pagination_truncated` system event per episode; check runs past the cap warn without backfill |
 | ETag 304 | the stream yields nothing; everything in it was seen when its ETag was stored, and ETags persist only after a fully handled poll |
 | Responsibility row without monitor row | polling derives targets from responsibilities and creates missing state |
 | Token refused | system event enters the inbox before any state change, so its handler completes on replay |

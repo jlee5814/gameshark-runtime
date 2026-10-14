@@ -18,6 +18,13 @@ from gameshark.github_client import Snapshot
 
 FAILED = frozenset({"failure", "timed_out", "action_required", "startup_failure"})
 CANCELLED = "cancelled"                               # did not finish; not a failure verdict
+PREFIX = {"reviews": "review", "review_comments": "review_comment",
+          "issue_comments": "issue_comment"}
+
+
+def stream_event_id(stream: str, item: dict) -> str:
+    """Logical event id of one raw item in an append only stream."""
+    return f"{PREFIX[stream]}:{item.get('id')}"
 
 
 def _login(obj: dict) -> tuple[str, str]:
@@ -44,7 +51,7 @@ def normalize(snap: Snapshot) -> list[dict]:
             continue                                  # an unsubmitted draft is not activity
         login, utype = _login(r)
         events.append(_event(
-            f"review:{r.get('id')}", "review", r.get("submitted_at"),
+            stream_event_id("reviews", r), "review", r.get("submitted_at"),
             state=state, author=login, author_type=utype, body=r.get("body") or "",
             url=r.get("html_url", ""), inline_count=inline_per_review.get(str(r.get("id")), 0),
         ))
@@ -53,7 +60,7 @@ def normalize(snap: Snapshot) -> list[dict]:
         login, utype = _login(c)
         rid = c.get("pull_request_review_id")
         events.append(_event(
-            f"review_comment:{c.get('id')}", "review_comment", c.get("created_at"),
+            stream_event_id("review_comments", c), "review_comment", c.get("created_at"),
             state="commented", author=login, author_type=utype, body=c.get("body") or "",
             url=c.get("html_url", ""), review_id=None if rid is None else str(rid),
         ))
@@ -61,7 +68,7 @@ def normalize(snap: Snapshot) -> list[dict]:
     for c in snap.issue_comments:
         login, utype = _login(c)
         events.append(_event(
-            f"issue_comment:{c.get('id')}", "issue_comment", c.get("created_at"),
+            stream_event_id("issue_comments", c), "issue_comment", c.get("created_at"),
             state="commented", author=login, author_type=utype, body=c.get("body") or "",
             url=c.get("html_url", ""),
         ))
