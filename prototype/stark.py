@@ -148,7 +148,8 @@ def cmd_run(args) -> int:
         active = [r.id for r in sup.responsibilities.outstanding()]
         log(f"Stark {sup.identity.uuid} generation {sup.generation}; "
             f"resuming {len(active)} responsibilities: {', '.join(active) or 'none'}")
-        code = run_forever(sup, stop, args.interval, log=log)
+        code = run_forever(sup, stop, args.interval, log=log,
+                           drain_deadline_s=args.drain_deadline)
         log("stopped")
         sup.close()
         return code
@@ -165,7 +166,7 @@ def cmd_status(args) -> int:
     if lease:
         live = lease["expires_at"] > time.time()
         print(f"lease     generation {lease['generation']} "
-              f"{'held by ' + str(lease['owner_token']) if live else 'free'}")
+              f"{lease['state'] + ' by ' + str(lease['owner_token']) if live else 'free'}")
     print(f"daemon    {'running' if running else 'not running'}")
     rows = conn.execute(
         "SELECT r.id, r.state, r.checkpoint, m.status, m.next_poll_at, m.last_ok_at, "
@@ -222,6 +223,8 @@ def main(argv: list[str] | None = None) -> int:
         sub.add_parser(name).add_argument("target")
     r = sub.add_parser("run", help="serve responsibilities until stopped")
     r.add_argument("--notify", action="store_true", help="macOS banners for new updates")
+    r.add_argument("--drain-deadline", type=float, default=10.0,
+                   help="seconds in flight work may finish after SIGTERM before cancellation")
     sub.add_parser("status")
     f = sub.add_parser("feed")
     f.add_argument("--all", action="store_true")

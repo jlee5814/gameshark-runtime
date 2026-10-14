@@ -21,7 +21,9 @@ import time
 from pathlib import Path
 from typing import Self
 
-from gameshark.errors import FencedError
+from gameshark.errors import Cancelled, FencedError
+from gameshark.heartbeat import Heartbeat
+from gameshark.lifecycle import Phase
 from gameshark.supervisor import AgentSupervisor
 
 
@@ -113,18 +115,38 @@ def next_due(report: dict) -> float | None:
     return min(dues) if dues else None
 
 
-def run_forever(sup: AgentSupervisor, stop: threading.Event, interval_s: float,
-                log=print, max_ticks: int | None = None) -> int:
-    """Serve until stop is set. Return a process exit code.
+EXIT_LOST = 4
+EXIT_DRAIN_CANCELLED = 5
 
-    Unexpected errors in one tick are logged and retried next tick. Losing ownership
-    ends the loop with exit code 4: a renewal or any fenced write that raises FencedError
-    means another owner holds a newer generation, so retrying could never succeed and
-    the stale process must stop instead of holding its instance lock.
+
+def run_forever(sup: AgentSupervisor, stop: threading.Event, interval_s: float,
+                log=print, max_ticks: int | None = None, drain_deadline_s: float = 10.0,
+                hard_exit=None) -> int:
+    """Serve until stop is set, then drain and release. Return a process exit code.
+
+    Unexpected errors in one tick are logged and retried next tick. Exit codes:
+
+    - 0: drained cleanly; in flight work finished and the lease was released.
+    - 4: lost ownership. A renewal or fenced write raised FencedError: another owner holds
+      a newer generation, or ours expired or was released, so retrying can never succeed.
+    - 5: the drain deadline cancelled in flight work at a safe boundary; it stays durable
+      for the successor.
+    - 6: the drain grace ran out on non cooperative work; the heartbeat released the lease
+      and ended the process (see heartbeat.py).
+
+    A heartbeat thread renews the lease throughout, so a tick longer than the TTL, or a
+    drain, never lets a successor in while this owner still commits.
     """
+    beat = Heartbeat(sup, stop, drain_deadline_s, log=log,
+                     **({"hard_exit": hard_exit} if hard_exit else {}))
+    beat.start()
     ticks = 0
+    code = 0
     try:
         while not stop.is_set():
+            if sup.lifecycle.phase is Phase.LOST:
+                log(f"lost ownership, exiting: {sup.lifecycle.token.reason}")
+                return EXIT_LOST
             try:
                 sup.lease.renew(sup.owner_token, sup.generation, sup.lease_ttl_s)
                 for line in apply_controls(sup):
@@ -132,7 +154,14 @@ def run_forever(sup: AgentSupervisor, stop: threading.Event, interval_s: float,
                 report = sup.poll()
             except FencedError as e:
                 log(f"lost ownership, exiting: {e}")
-                return 4
+                return EXIT_LOST
+            except Cancelled as e:
+                if sup.lifecycle.phase is Phase.LOST:
+                    log(f"lost ownership, exiting: {e}")
+                    return EXIT_LOST
+                log(f"drain cancelled in flight work: {e}")
+                code = EXIT_DRAIN_CANCELLED
+                break
             except Exception as e:
                 log(f"tick failed, retrying: {type(e).__name__}: {e}")
                 report = {}
@@ -144,7 +173,17 @@ def run_forever(sup: AgentSupervisor, stop: threading.Event, interval_s: float,
             wait = interval_s if due is None else max(0.0, min(due - now, interval_s))
             # Renew well inside the TTL even when nothing is due for a while.
             stop.wait(min(max(wait, 0.05), sup.lease_ttl_s / 3))
-        return 0
+        if stop.is_set():
+            # The heartbeat records draining; wait briefly so every stop passes through it.
+            end = time.monotonic() + 1.0
+            while sup.lifecycle.phase is Phase.SERVING and time.monotonic() < end:
+                time.sleep(0.01)
+            if sup.lifecycle.phase is Phase.LOST:
+                log(f"lost ownership, exiting: {sup.lifecycle.token.reason}")
+                return EXIT_LOST
+            log(f"drained; releasing generation {sup.generation}")
+        return code
     finally:
+        beat.close()
         sup.stop()
         sys.stdout.flush()

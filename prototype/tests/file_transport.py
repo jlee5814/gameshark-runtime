@@ -27,6 +27,8 @@ class FileClient:
 
     def snapshot(self, repo, pr, etags, head_sha, known=None, cursors=None) -> Snapshot:
         data = self._load()
+        if data.get("snapshot_delay_s"):
+            time.sleep(data["snapshot_delay_s"])    # a non cooperative stall, like a hung GET
         if data.get("revoked"):
             raise AuthRevoked(401, "Bad credentials")
         return Snapshot(

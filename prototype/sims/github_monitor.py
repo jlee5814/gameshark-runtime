@@ -35,6 +35,7 @@ from companion import Companion
 from gameshark.adapters import AdapterContext
 from gameshark.classify import Decision, classify
 from gameshark.effects import Effect, ProbeResult
+from gameshark.errors import Draining
 from gameshark.github_client import AuthRevoked, GitHubClient, RateLimited, TransientOutage
 from gameshark.github_events import normalize, stream_event_id
 
@@ -201,6 +202,14 @@ class GitHubMonitorAdapter:
                         "blocked": [], "next_due": None}
         now = self._now()
         for repo, pr in self._targets():
+            if ctx.cancel is not None:
+                ctx.cancel.check()
+            try:
+                if ctx.admit is not None:
+                    ctx.admit()                     # draining: start no new target
+            except Draining:
+                report["deferred"].append(f"{repo}#{pr}:Draining")
+                continue
             st = self._state(repo, pr)
             if st["next_poll_at"] > now:
                 report["waiting"].append(f"{repo}#{pr}")
@@ -274,6 +283,10 @@ class GitHubMonitorAdapter:
         last = st["last_cursor"]
         delivered = 0
         for ev in fresh:
+            # Safe boundary: an event not yet submitted stays unseen, so a successor
+            # detects it again and nothing is lost or doubled.
+            if self.ctx.cancel is not None:
+                self.ctx.cancel.check()
             payload = {**ev, "repo": repo, "pr": pr, "viewer": viewer}
             if ev["raw_kind"] == "check_run":
                 payload["prev_conclusion"] = self._prev_conclusion(repo, pr, ev["name"])
