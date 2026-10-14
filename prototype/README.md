@@ -43,7 +43,8 @@ recovery is a pure function of the database.
 
 ```sql
 CREATE TABLE identity (agent_id TEXT PRIMARY KEY, uuid TEXT, created REAL);
-CREATE TABLE lease (agent_id TEXT PRIMARY KEY, owner_token TEXT, generation INTEGER, expires_at REAL);
+CREATE TABLE lease (agent_id TEXT PRIMARY KEY, owner_token TEXT, generation INTEGER, expires_at REAL,
+                     state TEXT);   -- held | draining | released
 CREATE TABLE grants (agent_id TEXT, adapter TEXT, cap TEXT, granted INTEGER, updated REAL,
                      PRIMARY KEY (agent_id, adapter, cap));
 CREATE TABLE responsibilities (id TEXT PRIMARY KEY, agent_id TEXT, kind TEXT, state TEXT,
@@ -65,7 +66,9 @@ Agent:
 cold --load identity--> claimed --acquire fenced lease--> active
 active --reconcile effects + replay inbox--> running
 running --consequential action--> effecting --journal outcome--> running
-running --stop--> draining ; crash --> (discard) --> cold (restart)
+running --SIGTERM--> draining --in flight work done--> released
+draining --drain deadline--> cancelled at a safe boundary --> released
+running | draining --crash--> (discard) --> cold (restart)
 ```
 
 Responsibility:
@@ -161,7 +164,7 @@ the property does not hold.
 cd /Users/jaebonglee/Projects/gameshark-research/prototype
 uv venv --python 3.13
 uv pip install pytest
-uv run pytest -v                 # all 61 tests (v0.1 + v0.2 + lease fencing)
+uv run pytest -v                 # all 95 tests (v0.1 + v0.2 + lease fencing + draining)
 uv run python demo.py            # v0.1 narrated Stark run with a real SIGKILL
 uv run python demo_v2.py         # v0.2 PR monitoring across a real SIGKILL and a revoke
 uv run python companion.py <runtime_db>   # render the companion feed for a run
@@ -176,6 +179,10 @@ uv run pytest -v tests/test_github_rest.py
 # lease fencing: stale owner exits and commits nothing
 uv run pytest -v tests/test_lease_fencing.py
 uv run pytest -v tests/test_takeover.py
+
+# graceful draining and fenced handoff
+uv run pytest -v tests/test_lifecycle.py
+uv run pytest -v tests/test_drain.py
 
 # individual critical tests
 uv run pytest -v tests/test_recovery.py::test_real_subprocess_kill_then_recover
@@ -295,6 +302,29 @@ PR #2 is closed unmerged and its branch deleted. The automated twin of this run 
 Unproven: legacy commit statuses, check runs on superseded commits, multi host
 ownership (lease takeover is tested between owner processes on one host), and long soak behavior beyond the session above.
 
+## Graceful drain and handoff
+
+Implements the `draining` lease state from `../architecture/bionic-to-gameshark.md`
+(change 1) and step 0 of `../architecture/inference-router.md`. No router or provider code.
+
+| Step | Mechanism |
+|---|---|
+| Freeze | SIGTERM sets `stop`; the heartbeat moves the lease and the lifecycle to `draining`. `submit` raises `Draining` before anything persists; no new tick, control request, or poll target starts |
+| Drain | in flight work finishes under the still valid generation while a heartbeat thread, on its own SQLite connection, keeps renewing every TTL/3 |
+| Cancel | at `--drain-deadline` (default 10 s) a cancel token stops work at the next safe boundary: before an event dispatches, between poll targets, before a detected event is submitted. Never between an effect's intent and outcome. Exit 5 |
+| Abort | 2 s past the deadline, non cooperative work (a hung GET) loses: the heartbeat releases the lease and ends the process. Exit 6 |
+| Release | `release` sets `released`, clears the owner, and keeps the generation |
+| Fence | `guard_in_txn` rejects a stale generation and a released lease, so the old generation commits nothing even before a successor appears. A successor acquires generation + 1 only after release or expiry; a live draining lease refuses it |
+| Resume | unchanged v0.1 recovery: pending effects reconcile by probe, pending events replay, unseen activity is detected again; `op_key` and effect keys absorb repeats |
+
+Exit codes of `stark run`: 0 drained, 3 another owner, 4 lost ownership, 5 drain
+cancelled at the deadline, 6 drain aborted at the grace limit.
+
+Expiry: `renew` refuses an expired lease, so an expired owner learns of the loss at its next
+heartbeat and exits 4. Until then, if nobody has taken over, it can still commit for at
+most one heartbeat interval (TTL/3); once a successor acquires, the generation fence
+rejects it at once.
+
 ## Actual test results
 
 ```
@@ -303,6 +333,12 @@ tests/test_daemon.py::test_responsibility_survives_sigkill_without_second_prompt
 tests/test_daemon.py::test_second_daemon_refused_and_cli_requests_reach_running_daemon PASSED
 tests/test_daemon.py::test_token_revocation_blocks_survives_restart_and_resumes PASSED
 tests/test_daemon.py::test_actionable_event_survives_restarts_until_acked PASSED
+tests/test_drain.py::test_sigterm_idle_drains_releases_and_successor_fences PASSED
+tests/test_drain.py::test_drain_finishes_in_flight_work_and_refuses_successor_until_release PASSED
+tests/test_drain.py::test_drain_deadline_cancels_and_successor_finishes_exactly_once PASSED
+tests/test_drain.py::test_non_cooperative_stall_aborts_at_grace_and_releases PASSED
+tests/test_drain.py::test_sigkill_mid_drain_keeps_successor_out_until_expiry PASSED
+tests/test_drain.py::test_stale_owner_completion_is_fenced_after_takeover PASSED
 tests/test_github_monitor.py::test_assign_then_quiet_poll_delivers_nothing PASSED
 tests/test_github_monitor.py::test_new_review_delivers_and_dedups_on_repoll PASSED
 tests/test_github_monitor.py::test_classification_kinds_and_relevance PASSED
@@ -365,6 +401,15 @@ tests/test_lease_fencing.py::test_write_txn_keeps_original_exception PASSED
 tests/test_lease_fencing.py::test_run_forever_exits_4_after_takeover PASSED
 tests/test_lease_fencing.py::test_stale_owner_cannot_commit PASSED
 tests/test_lease_fencing.py::test_stale_notification_rejected_then_recovered_once PASSED
+tests/test_lifecycle.py::test_drain_keeps_lease_live_and_renewable PASSED
+tests/test_lifecycle.py::test_release_fences_old_generation_without_successor PASSED
+tests/test_lifecycle.py::test_expired_lease_refuses_renewal PASSED
+tests/test_lifecycle.py::test_same_owner_reclaiming_draining_lease_bumps_generation PASSED
+tests/test_lifecycle.py::test_stopped_supervisor_commits_nothing_more PASSED
+tests/test_lifecycle.py::test_draining_refuses_new_work_before_it_persists PASSED
+tests/test_lifecycle.py::test_cancel_leaves_event_pending_for_successor PASSED
+tests/test_lifecycle.py::test_run_forever_drains_on_stop_and_releases PASSED
+tests/test_lifecycle.py::test_v02_lease_table_migrates_in_place PASSED
 tests/test_recovery.py::test_a_crash_before_intent PASSED
 tests/test_recovery.py::test_b_crash_after_intent_before_dispatch PASSED
 tests/test_recovery.py::test_c_crash_after_remote_before_journal PASSED
@@ -379,7 +424,7 @@ tests/test_recovery.py::test_stale_external_effect_rejected_by_destination PASSE
 tests/test_recovery.py::test_authorization_revocation_survives_restart PASSED
 tests/test_recovery.py::test_real_subprocess_kill_then_recover PASSED
 tests/test_takeover.py::test_stale_owner_exits_and_successor_recovers_after_sigkill PASSED
-80 passed
+95 passed
 ```
 
-All 20 v0.1 tests run unchanged. `uv run ruff check .` reports no findings.
+All 80 tests that predate draining run unchanged. `uv run ruff check .` reports no findings.
