@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.pyc
+*.egg-info/
+
+# Environments and tooling caches
+.venv/
+.pytest_cache/
+.ruff_cache/
+
+# Local durable state (never commit runtime or remote databases)
+*.db
+*.db-wal
+*.db-shm
+
+# Secrets and machine specific
+.env
+.DS_Store

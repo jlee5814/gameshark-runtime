@@ -1,0 +1,29 @@
+[project]
+name = "gameshark-runtime"
+version = "0.1.0"
+description = "Clean room persistent agent runtime prototype: durable identity, fenced ownership, crash recovery"
+requires-python = ">=3.12"
+dependencies = []
+
+[dependency-groups]
+dev = ["pytest>=8.0", "ruff>=0.6"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+# BLE001: the except Exception blocks roll back a transaction or close a connection and
+# then re-raise, so they are deliberate, not silent swallows.
+ignore = ["BLE001"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["gameshark", "sims"]
