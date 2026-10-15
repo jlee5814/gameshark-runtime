@@ -151,7 +151,7 @@ def test_custom_socket_carries_its_token_and_leaves_the_db_dir_alone(env):
 
 # ---------------------------------------------------------------------- paired phone
 def lan(env) -> dict:
-    info = env["sock"].parent / "lan.json"
+    info = ad_path(env)
     wait_for(info.exists)
     return json.loads(info.read_text())
 
@@ -218,11 +218,11 @@ def test_cli_paired_phone_survives_sigkill_and_cli_revocation(env):
 
 def test_busy_lan_port_disables_the_whole_gateway(env):
     """No half started gateway: when the LAN port is taken, the Unix socket closes too and
-    no lan.json advertises an endpoint. The daemon keeps its duties."""
+    no advertisement names an endpoint. The daemon keeps its duties."""
     import socket
 
     env["sock"].parent.mkdir(mode=0o700, exist_ok=True)
-    stale = env["sock"].parent / "lan.json"
+    stale = ad_path(env)
     stale.write_text(json.dumps({"port": 1, "pin": "00" * 32}))
     busy = socket.create_server(("", 0), family=socket.AF_INET6, dualstack_ipv6=True)
     proc = subprocess.Popen([sys.executable, str(ROOT / "stark.py"), "--db", str(env["db"]),
@@ -299,7 +299,7 @@ def test_pair_refuses_lan_json_from_a_killed_daemon(env):
     proc = daemon(env, 0.1, "--lan", "--lan-port", "0")
     lan(env)
     stop(proc, signal.SIGKILL)
-    assert (env["sock"].parent / "lan.json").exists()             # SIGKILL leaves it
+    assert (ad_path(env)).exists()             # SIGKILL leaves it
     out = pair_cli(env)
     assert out.returncode != 0
     assert "starkpocket://" not in out.stdout
@@ -312,7 +312,7 @@ def test_pair_refuses_an_endpoint_the_running_daemon_does_not_serve(env):
 
     proc = daemon(env, 0.1, "--lan", "--lan-port", "0")
     try:
-        info_path = env["sock"].parent / "lan.json"
+        info_path = ad_path(env)
         info = lan(env)
         with socket.socket() as s:
             s.bind(("127.0.0.1", 0))
@@ -329,7 +329,7 @@ def test_pair_refuses_an_endpoint_the_running_daemon_does_not_serve(env):
         assert pairings(env) == 6
     finally:
         assert stop(proc) == 0
-    assert not (env["sock"].parent / "lan.json").exists()         # a clean stop withdraws it
+    assert not (ad_path(env)).exists()         # a clean stop withdraws it
 
 
 def test_a_draft_survives_sigkill_between_ack_and_receipt(env):

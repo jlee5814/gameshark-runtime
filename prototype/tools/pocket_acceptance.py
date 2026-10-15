@@ -67,7 +67,7 @@ class Pocket:
                "--fake-delay", str(self.args.fake_delay)]
         self.daemon = subprocess.Popen(cmd, cwd=ROOT, env=env, stdout=log,
                                        stderr=subprocess.STDOUT)
-        info = self.sock.parent / "lan.json"
+        info = self.sock.with_name(self.sock.name + ".lan.json")
         self.wait(lambda: info.exists() and json.loads(info.read_text())["port"] == self.port
                   and self.sock.exists(), 30, "LAN gateway")
 

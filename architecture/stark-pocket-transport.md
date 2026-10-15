@@ -31,7 +31,7 @@ apply unchanged. The Unix socket and its token are untouched and mean nothing ov
 3. Over pinned TLS it sends `pair {pairing_id, secret, public_key, name}`. The coordinator
    checks the secret in constant time, expiry, and single use, then creates the device in
    one fenced transaction and answers `paired {device_id, surface}`. The session ends.
-4. Every later session: the server sends `challenge {nonce, server_fp}`; the phone answers
+4. Every later session: the server sends `challenge {nonce, server_fp, instance}`; the phone answers
    `hello {device_id, sig}` where `sig` is ECDSA P256 SHA256 over
    `"stark-device" 0 nonce 0 device_id 0 proto 0 server_fp`. The surface (`pocket-xxxxxx`)
    comes from the device row, never from the frame.
@@ -68,12 +68,20 @@ transaction stores it in the handoff row with `draft_state = pending`. Delivery 
 - Until receipt the row redelivers on every snapshot, so a dropped connection, an app
   restart, or a SIGKILLed runtime between `ack_in` and `draft_ack` loses nothing. The client
   resends an unanswered `draft_ack` after reconnecting and drops it on `stale_presence`.
-- The source clears its composer only once Stark has left with exactly that text (the jack
-  resolved away from it); a revert keeps the text where it was typed.
+- The source clears its composer only on the runtime's receipt: `ready_out` answers
+  `draft_carried`, true only when the committed handoff row holds exactly the text sent.
+  Sending is not enough. A request lost on the way, refused, or beaten by the prepare
+  deadline (which commits without a draft) answers false or nothing, and the text stays.
+  A lost reply is reconciled after reconnecting by replaying the same `ready_out`, which the
+  runtime answers from the durable row, across restarts and SIGKILL, without changing it.
+- With that receipt, the source clears only once Stark has left with exactly that text (the
+  jack resolved away from it) and the composer still holds it; a revert or newer typing
+  keeps the text where it was typed.
 - A draft no target confirmed (the jack reverted, or the target moved on first) stays in
   the journal; `stark.py drafts` lists it for the operator.
 
-`draft_ack` is the one command this adds to the closed table.
+`draft_ack` is the one command this adds to the closed table; `draft_carried` is a result
+field, not a command.
 
 ## Threat model
 
@@ -90,7 +98,7 @@ transaction stores it in the handoff row with `draft_state = pending`. Delivery 
 | Revoked device | keep a socket open briefly | send or receive after the next pump; reconnect fails authentication |
 | Stale surface (Mac or phone) | send under an old generation | write: `stale_presence` from the same fenced transaction as before |
 | Database leak | learn device public keys and secret hashes | impersonate a phone: no private key or secret is stored |
-| Other users on the Mac | read world readable files | read the TLS key, certificate, or `lan.json`: 0600 in the 0700 gateway directory |
+| Other users on the Mac | read world readable files | read the TLS key, certificate, or LAN advertisement: 0600 in the 0700 gateway directory |
 
 Trusted, as before: processes running as the same user on the Mac (they can read the
 database and the token), the operator, and the phone's OS.
@@ -98,9 +106,16 @@ database and the token), the operator, and the phone's OS.
 ## Connection requirements
 
 - `stark.py run --lan` (off by default). Port 47820 unless `--lan-port`; the runtime records
-  the port and pin in `gateway/lan.json` for `stark.py pair`, drops it at every boot and
-  clean stop, and `pair` issues no link unless the running daemon answers a pinned TLS
-  probe on that port with that key.
+  its endpoint for `stark.py pair` in an advertisement named after its socket
+  (`gateway/stark.sock.lan.json` by default) holding the port, pin, agent uuid, and a random
+  per boot instance id. Runtimes with different sockets in one directory never touch each
+  other's file: a boot drops only its own socket's stale advertisement (unless another live
+  database owns it), and a clean stop deletes it only when the instance id is still its own.
+  `pair` issues no link unless the database's daemon is running, the advertisement names
+  that database's agent uuid, and the process answering a pinned TLS probe on that port
+  presents the same instance id in its challenge. Runtimes sharing a directory share its
+  TLS key, so the pin alone cannot tell them apart. A legacy `gateway/lan.json` from an
+  older runtime is ignored and left in place.
 - Same LAN or a link local path. No relay, no cloud, no port forwarding, no UPnP.
 - macOS may ask once to allow incoming connections for Python.
 - iOS asks for local network permission on first connect (`NSLocalNetworkUsageDescription`).

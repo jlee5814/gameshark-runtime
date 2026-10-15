@@ -103,7 +103,7 @@ final class IntegrationTests {
 
     // MARK: paired device over the LAN gateway
 
-    var lanInfo: URL { dir.appendingPathComponent("gateway/lan.json") }
+    var lanInfo: URL { dir.appendingPathComponent("gateway/stark.sock.lan.json") }
 
     func lanPort() throws -> UInt16 {
         struct Info: Decodable { var port: UInt16 }

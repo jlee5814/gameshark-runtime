@@ -22,7 +22,8 @@ token comes from GITHUB_TOKEN, else `gh auth token`. Every GitHub call is a GET.
 beside the database, gateway/stark.sock, authenticated by gateway.token beside it. Replies come from a deterministic local fake
 model unless --inference-url names an OpenAI compatible server such as SGLang. With --lan it
 also serves paired devices over pinned TLS 1.3 on the local network (net_gateway.py); the
-listener is off by default and refuses addresses outside private ranges.
+listener is off by default and refuses addresses outside private ranges. Its endpoint is
+advertised for `pair` beside the socket (gateway/stark.sock.lan.json), one file per socket.
 """
 
 from __future__ import annotations
@@ -32,6 +33,7 @@ import importlib
 import json
 import os
 import re
+import secrets
 import signal
 import socket
 import sys
@@ -144,11 +146,50 @@ def build_supervisor(db: Path, interval: float, notifier=None, client=None, chat
 
 
 def lan_info_path(args) -> Path:
-    """Where `run --lan` records its port and pin for `stark.py pair`."""
-    return socket_path(args).parent / "lan.json"
+    """Where `run --lan` records its endpoint for `stark.py pair`: one file per socket, so
+    runtimes sharing a gateway directory never read, replace, or delete each other's."""
+    sock = socket_path(args)
+    return sock.with_name(sock.name + ".lan.json")
 
 
-def start_gateway(sup, chat, args, log):
+def read_lan_info(path: Path) -> dict | None:
+    try:
+        info = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return None
+    return info if isinstance(info, dict) else None
+
+
+def withdraw_stale_lan_info(args) -> None:
+    """Drop this socket's advertisement left by a dead runtime, so a previous instance's
+    endpoint is never advertised. One whose database another live process holds is that
+    runtime's, and stays."""
+    path = lan_info_path(args)
+    if not path.exists():
+        return
+    info = read_lan_info(path) or {}
+    owner = info.get("db")
+    if (isinstance(owner, str) and Path(owner).resolve() != args.db.resolve()
+            and Path(owner).exists() and InstanceLock(owner).held_elsewhere()):
+        return
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def withdraw_lan_info(args, instance: str) -> None:
+    """A clean stop removes only the advertisement this process wrote."""
+    path = lan_info_path(args)
+    info = read_lan_info(path)
+    if info is not None and info.get("instance") == instance:
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def start_gateway(sup, chat, args, log, instance: str):
     """Serve surfaces, or log why not. The daemon keeps its duties either way."""
     from gameshark.devices import DeviceRegistry
     from gameshark.gateway import GatewayServer, load_or_create_token
@@ -157,11 +198,7 @@ def start_gateway(sup, chat, args, log):
 
     path = socket_path(args)
     lan = None
-    # A previous instance's endpoint is never advertised; this boot rewrites it once served.
-    try:
-        lan_info_path(args).unlink(missing_ok=True)
-    except OSError:
-        pass
+    withdraw_stale_lan_info(args)       # this boot rewrites it once served
     try:
         token = load_or_create_token(token_path(args))
         ident = {"agent_id": sup.identity.agent_id, "uuid": sup.identity.uuid}
@@ -170,7 +207,7 @@ def start_gateway(sup, chat, args, log):
         devices = DeviceRegistry(sup.conn, sup.agent_id, sup.lease, sup.generation, sup.clock)
         if getattr(args, "lan", False):
             identity = load_or_create_identity(path.parent)
-            lan = LanListener(identity, port=args.lan_port)
+            lan = LanListener(identity, port=args.lan_port, instance=instance)
             server.attach(lan)
         server.start()                    # all or nothing: a failure closes every socket
     except (OSError, ValueError, TypeError) as e:
@@ -179,11 +216,14 @@ def start_gateway(sup, chat, args, log):
     log(f"gateway listening on {path}")
     if lan is not None:
         info = lan_info_path(args)
-        tmp = info.with_suffix(".tmp")
+        tmp = info.with_name(f"{info.name}.{os.getpid()}.tmp")
         tmp.unlink(missing_ok=True)
         fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         with os.fdopen(fd, "w") as f:
-            json.dump({"port": lan.port, "pin": lan.identity.pin_hex}, f)
+            # uuid and instance let pair prove which live runtime answers on the port.
+            json.dump({"port": lan.port, "pin": lan.identity.pin_hex,
+                       "uuid": sup.identity.uuid, "instance": instance, "pid": os.getpid(),
+                       "db": str(args.db.resolve())}, f)
         tmp.replace(info)
         log(f"lan gateway on port {lan.port}, pin {lan.identity.pin_hex[:16]}...")
     return SurfaceAPI(sup, server, chat, log=log, devices=devices)
@@ -254,11 +294,12 @@ def cmd_run(args) -> int:
         active = [r.id for r in sup.responsibilities.outstanding()]
         log(f"Stark {sup.identity.uuid} generation {sup.generation}; "
             f"resuming {len(active)} responsibilities: {', '.join(active) or 'none'}")
-        gateway = start_gateway(sup, chat, args, log) if args.gateway else None
+        instance = secrets.token_hex(16)
+        gateway = start_gateway(sup, chat, args, log, instance) if args.gateway else None
         code = run_forever(sup, stop, args.interval, log=log,
                            drain_deadline_s=args.drain_deadline, gateway=gateway)
         if gateway is not None:
-            lan_info_path(args).unlink(missing_ok=True)   # nothing serves it any more
+            withdraw_lan_info(args, instance)   # nothing serves it any more
         log("stopped")
         sup.close()
         return code
@@ -278,9 +319,10 @@ def lan_address() -> str:
         s.close()
 
 
-def lan_served(port: int, pin: bytes) -> bool:
-    """Whether this Mac answers on port with the pinned key and a device challenge. Closes
-    before any hello, which the gateway counts as a disconnect, not a failed handshake."""
+def lan_served(port: int, pin: bytes, instance: str) -> bool:
+    """Whether this Mac answers on port with the pinned key and a device challenge from the
+    runtime instance that wrote the advertisement. Closes before any hello, which the
+    gateway counts as a disconnect, not a failed handshake."""
     from gameshark.gateway import FrameError, read_frame
     from gameshark.gateway_client import GatewayError, tls_connect
 
@@ -291,7 +333,8 @@ def lan_served(port: int, pin: bytes) -> bool:
             first = read_frame(s, alive)
     except (OSError, GatewayError, FrameError):
         return False
-    return first.get("type") == "challenge" and first.get("server_fp") == pin.hex()
+    return (first.get("type") == "challenge" and first.get("server_fp") == pin.hex()
+            and first.get("instance") == instance)
 
 
 def cmd_pair(args) -> int:
@@ -304,16 +347,26 @@ def cmd_pair(args) -> int:
         print("no LAN gateway yet: start `stark.py run --lan` first", file=sys.stderr)
         return 2
     if not InstanceLock(args.db).held_elsewhere():
-        print("the daemon is not running, so lan.json is stale: start `stark.py run --lan` "
-              "first", file=sys.stderr)
+        print(f"the daemon is not running, so {info.name} is stale: start "
+              "`stark.py run --lan` first", file=sys.stderr)
         return 2
     try:
         lan = json.loads(info.read_text())
         port, pin = int(lan["port"]), bytes.fromhex(lan["pin"])
+        owner, instance = str(lan["uuid"]), str(lan["instance"])
     except (OSError, ValueError, KeyError, TypeError) as e:
         print(f"unreadable {info}: {e}", file=sys.stderr)
         return 2
-    if not lan_served(port, pin):
+    conn = connect(args.db)
+    try:
+        row = conn.execute("SELECT uuid FROM identity WHERE agent_id=?", (AGENT,)).fetchone()
+    finally:
+        conn.close()
+    if row is None or row[0] != owner:
+        print(f"{info} names another runtime than {args.db}; restart this one with "
+              "`stark.py run --lan`", file=sys.stderr)
+        return 2
+    if not lan_served(port, pin, instance):
         print(f"the running daemon does not serve LAN port {port} with this pin; restart it "
               "with `stark.py run --lan`", file=sys.stderr)
         return 2
