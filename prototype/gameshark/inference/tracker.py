@@ -226,6 +226,12 @@ class Use:
 
     token is a child of the caller's token: the caller's cancel reaches the provider, and a
     replacement can cancel this call alone at its drain deadline (evicted is then True).
+    Cancellation is a request: a remote server may keep executing and even answer.
+
+    The commit boundary is the tracker lock. A finished call must seal its use before its
+    result commits; eviction takes the same lock and skips a sealed use. Exactly one wins:
+    a sealed call counts as drained and commits on this incarnation, and an evicted call's
+    late result, successful or not, is discarded and its attempt settled lost.
     """
 
     def __init__(self, tracker: ModelTracker, record: ModelRecord, cancel: CancelToken) -> None:
@@ -235,12 +241,26 @@ class Use:
         self.instance_ref = record.instance_ref
         self.token = CancelToken()
         self.evicted = False
+        self.sealed = False
         self._released = False
         self._unlink = cancel.on_cancel(lambda: self.token.cancel(cancel.reason))
 
-    def evict(self, reason: str) -> None:
-        self.evicted = True
-        self.token.cancel(reason)
+    def seal(self) -> bool:
+        """Claim the right to commit. False when a replacement evicted this call first."""
+        with self.tracker._cond:
+            if self.evicted:
+                return False
+            self.sealed = True
+            return True
+
+    def evict(self, reason: str) -> bool:
+        """Cancel this call for a replacement. False, and no cancel, when already sealed."""
+        with self.tracker._cond:
+            if self.sealed:
+                return False
+            self.evicted = True
+        self.token.cancel(reason)  # outside the lock: token callbacks may take it
+        return True
 
     def watch(self, call: ProviderCall) -> ProviderCall:
         """Wrap a call so its first chunk confirms residency for this incarnation."""
@@ -587,8 +607,16 @@ class ModelTracker:
         drain_timeout_s or are cancelled through their own tokens. The successor starts at
         discovered and loads on the next demand. Callers waiting meanwhile get ModelReplaced
         and select again.
+
+        Every successor setting is validated before the old record changes, so a malformed
+        cfg raises ValueError and leaves the active model serving. Once the old record is
+        unloading the transition only moves forward: an exception during the drain still
+        installs the successor before it propagates, so the name never stays unloading and
+        the retired configuration never serves again.
         """
         name = cfg.name
+        slots = cfg.slots or cfg.provider.capabilities().max_concurrency
+        self.scheduler.check(slots, cfg.queue_depth)
         with self._cond:
             old = self._active.get(name)
             if old is None:
@@ -598,27 +626,33 @@ class ModelTracker:
             old.replacing = True
             self._move(old, ModelState.UNLOADING, "replacement requested")
             admitted = old.in_flight
-            deadline = time.monotonic() + drain_timeout_s
-            while old.in_flight and (left := deadline - time.monotonic()) > 0:
-                self._cond.wait(left)
-            stuck = list(old.uses)
-        for use in stuck:
-            use.evict(f"replaced: {name} gen {old.generation} drain deadline")
-        with self._cond:
-            deadline = time.monotonic() + self.policy.drain_grace_s
-            while old.in_flight and (left := deadline - time.monotonic()) > 0:
-                self._cond.wait(left)
-            abandoned = old.in_flight
-            old.readiness = None
-            self._move(old, ModelState.UNLOADED, f"drained; {abandoned} still running")
-            new = ModelRecord(cfg, generation=old.generation + 1)
-            self.scheduler.configure(name, cfg.slots or cfg.provider.capabilities()
-                                     .max_concurrency, cfg.queue_depth)
-            self.health.reset(name)
-            self._active[name] = new
-            self._known[name].append(cfg)
-            self._cond.notify_all()
-        return ReplaceReport(new.generation, admitted - len(stuck), len(stuck), abandoned)
+        cancelled = abandoned = 0
+        try:
+            with self._cond:
+                deadline = time.monotonic() + drain_timeout_s
+                while old.in_flight and (left := deadline - time.monotonic()) > 0:
+                    self._cond.wait(left)
+                stuck = list(old.uses)
+            for use in stuck:
+                cancelled += use.evict(f"replaced: {name} gen {old.generation} drain deadline")
+            with self._cond:
+                deadline = time.monotonic() + self.policy.drain_grace_s
+                while old.in_flight and (left := deadline - time.monotonic()) > 0:
+                    self._cond.wait(left)
+        finally:
+            with self._cond:
+                # Retire and install in one critical section: admission never sees the old
+                # record unloaded and loadable while it is still active.
+                abandoned = old.in_flight
+                old.readiness = None
+                self._move(old, ModelState.UNLOADED, f"drained; {abandoned} still running")
+                new = ModelRecord(cfg, generation=old.generation + 1)
+                self._active[name] = new
+                self._known[name].append(cfg)
+                self.scheduler.configure(name, slots, cfg.queue_depth)  # checked above
+                self.health.reset(name)
+                self._cond.notify_all()
+        return ReplaceReport(new.generation, admitted - cancelled, cancelled, abandoned)
 
     # ------------------------------------------------------------------ shutdown
     def close(self, timeout_s: float = 5.0) -> None:

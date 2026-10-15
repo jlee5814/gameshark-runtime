@@ -115,11 +115,16 @@ class Scheduler:
         self._conversations: dict[str, int] = {}
 
     # ------------------------------------------------------------------ config
+    @staticmethod
+    def check(slots: int, queue_depth: int) -> None:
+        """Raise ValueError for settings configure would refuse. Touches no state."""
+        if slots < 1 or queue_depth < 0:
+            raise ValueError("slots must be at least 1 and queue_depth not negative")
+
     def configure(self, provider: str, slots: int,
                   queue_depth: int = DEFAULT_QUEUE_DEPTH) -> None:
         """Declare a provider's slots and queue bound. Reconfiguring keeps live counts."""
-        if slots < 1 or queue_depth < 0:
-            raise ValueError("slots must be at least 1 and queue_depth not negative")
+        self.check(slots, queue_depth)
         with self._lock:
             pool = self._pools.get(provider)
             if pool is None:
