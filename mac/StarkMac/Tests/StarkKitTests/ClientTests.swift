@@ -28,6 +28,8 @@ final class FakeRuntime: @unchecked Sendable {
     var activity: [String: Any] = ["working": false]
     /// Every request type received, in order.
     var received: [String] = []
+    /// Paired device names the snapshot reports.
+    var devices: [[String: Any]] = []
 
     func connect() -> FakeTransport {
         let t = FakeTransport(runtime: self)
@@ -53,7 +55,7 @@ final class FakeRuntime: @unchecked Sendable {
                 "presence": ["surface": surface, "home": "mac", "generation": generation],
                 "handoff": handoff.map { $0 as Any } ?? NSNull(),
                 "responsibilities": [], "conversation": ["id": Wire.conversation, "head_seq": rows.count - 1],
-                "activity": activity]])
+                "activity": activity, "devices": devices]])
         case "sync":
             let after = msg["after_seq"] as? Int ?? -1
             t.push(["type": "result", "id": id, "data": [
@@ -103,6 +105,26 @@ final class FakeRuntime: @unchecked Sendable {
             }
             t.push(["type": "result", "id": id, "data": [
                 "handoff_id": h["id"]!, "state": h["state"]!, "to_gen": h["to_gen"] ?? NSNull()]])
+        case "jack":
+            // A silent source: the runtime commits at once and the caller must ack.
+            guard msg["to"] as? String == "self", msg["presence_gen"] as? Int == generation,
+                  surface != "mac"
+            else {
+                t.push(["type": "error", "id": id, "code": "stale_presence", "message": "stale"])
+                return
+            }
+            let from = surface
+            generation += 1
+            surface = "mac"
+            let h: [String: Any] = ["id": msg["handoff_id"]!, "from": from, "to": "mac",
+                                    "state": "committed", "from_gen": generation - 1,
+                                    "to_gen": generation]
+            handoff = h
+            t.push(["type": "result", "id": id, "data": ["handoff_id": h["id"]!,
+                                                         "state": "preparing"]])
+            t.push(["type": "event", "kind": "presence", "rev": 1, "data": [
+                "presence": ["surface": surface, "home": "mac", "generation": generation],
+                "handoff": h]])
         default:
             t.push(["type": "error", "id": id, "code": "unknown_command", "message": type])
         }
@@ -174,6 +196,33 @@ func eventually(_ timeout: TimeInterval = 5, _ cond: () -> Bool) -> Bool {
         let cfg = ClientConfig(socketPath: "/fake", tokenURL: try tokenFile(),
                                backoff: Backoff(base: 0.01, cap: 0.05, jitter: 0))
         return GatewayClient(config: cfg, makeTransport: { _ in rt.connect() })
+    }
+
+    @Test func jackHereOpensTheHandoffThenAcksAsTarget() throws {
+        let rt = FakeRuntime()
+        rt.surface = "pocket-a1b2c3"                  // Stark is on the phone
+        rt.devices = [["surface": "pocket-a1b2c3", "name": "Jae's iPhone"]]
+        let c = try client(rt)
+        c.start()
+        defer { c.stop() }
+        #expect(eventually { c.state.connection == .live })
+        #expect(!c.state.isActiveSurface)
+        #expect(c.state.holderName == "Jae's iPhone")
+        c.jack(.here)
+        #expect(eventually { c.state.isActiveSurface })
+        #expect(eventually { rt.lock.withLock { rt.received.contains("ack_in") } })
+        let order = rt.lock.withLock { rt.received.filter { ["jack", "ack_in"].contains($0) } }
+        #expect(order == ["jack", "ack_in"])
+        #expect(c.state.holderName == nil)
+    }
+
+    @Test func jackWhileDisconnectedSendsNothing() throws {
+        let rt = FakeRuntime()
+        let c = try client(rt)
+        c.jack(.here)                                 // not started
+        Thread.sleep(forTimeInterval: 0.05)
+        #expect(c.state.lastError == "jack: not connected")
+        #expect(rt.lock.withLock { rt.received.isEmpty })
     }
 
     @Test func goesLiveWithIdentityPresenceAndRows() throws {

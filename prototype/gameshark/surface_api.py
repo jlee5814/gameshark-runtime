@@ -194,6 +194,9 @@ class SurfaceAPI:
             "responsibilities": self._responsibilities(),
             "conversation": {"id": CONVERSATION, "head_seq": self._head_seq()},
             "activity": self._activity(),
+            # Display names of paired devices, so a surface can say where Stark is.
+            "devices": [{"surface": k, "name": v} for k, v in
+                        sorted((self.devices.names() if self.devices else {}).items())],
         }
 
     def _sync(self, sess: Session, msg: dict) -> dict:

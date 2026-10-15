@@ -25,6 +25,12 @@ public struct PresenceInfo: Codable, Equatable, Sendable {
     public var surface: String
     public var home: String
     public var generation: Int
+
+    public init(surface: String, home: String, generation: Int) {
+        self.surface = surface
+        self.home = home
+        self.generation = generation
+    }
 }
 
 public struct HandoffInfo: Codable, Equatable, Sendable {
@@ -34,6 +40,21 @@ public struct HandoffInfo: Codable, Equatable, Sendable {
     public var state: String
     public var fromGen: Int
     public var toGen: Int?
+
+    public init(id: String, from: String, to: String, state: String, fromGen: Int, toGen: Int?) {
+        self.id = id
+        self.from = from
+        self.to = to
+        self.state = state
+        self.fromGen = fromGen
+        self.toGen = toGen
+    }
+}
+
+/// A paired device's display name: never a credential.
+public struct DeviceName: Codable, Equatable, Sendable {
+    public var surface: String
+    public var name: String
 }
 
 public struct Responsibility: Codable, Equatable, Sendable, Identifiable {
@@ -144,6 +165,8 @@ public struct Snapshot: Decodable, Equatable, Sendable {
     public var responsibilities: [Responsibility]
     public var conversation: Conversation
     public var activity: Activity
+    /// Paired devices by surface; absent from a runtime before Stark Pocket.
+    public var devices: [DeviceName]?
 }
 
 struct PresenceEvent: Decodable {

@@ -439,3 +439,11 @@ def test_a_request_right_after_the_welcome_is_answered(rt):
     for _ in range(40):
         with rt.device(device_id, key) as phone:
             assert phone.call("ping")["pong"]
+
+
+def test_snapshot_names_live_devices_for_display(rt):
+    device_id, surface, _key = paired(rt, "Jae's iPhone")
+    with rt.client() as mac:
+        assert mac.call("snapshot")["devices"] == [{"surface": surface, "name": "Jae's iPhone"}]
+        operator_revoke(rt, device_id)
+        assert mac.call("snapshot")["devices"] == []

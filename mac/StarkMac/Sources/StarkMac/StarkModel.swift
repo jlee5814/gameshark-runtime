@@ -63,6 +63,16 @@ final class StarkModel {
 
     var canSend: Bool { state.connection.isLive && state.isActiveSurface }
 
+    /// Another surface holds Stark and no jack is open: offer to pull him back here.
+    var canJackIn: Bool {
+        state.connection.isLive && !state.isActiveSurface && state.handoff == nil
+    }
+
+    func jackIn() {
+        guard canJackIn else { return }
+        client.jack(.here)
+    }
+
     var visibleRows: [Row] { state.rows.filter { $0.role != "system" } }
 
     var attention: [OutgoingMessage] {

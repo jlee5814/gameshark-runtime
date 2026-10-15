@@ -1,0 +1,613 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		09BCDC524E760CCFC4E4EF8B /* stark-atlas.png in Resources */ = {isa = PBXBuildFile; fileRef = C688939F1743B67DA7AC022C /* stark-atlas.png */; };
+		141AF45E64556DB3D46385C0 /* Views.swift in Sources */ = {isa = PBXBuildFile; fileRef = A914E09BBDFE62551407CD29 /* Views.swift */; };
+		177B4755AEB099C6B50EE6A0 /* manifest.json in Resources */ = {isa = PBXBuildFile; fileRef = 97D18A7CBDBCF51D7D45C013 /* manifest.json */; };
+		221637BD0988AC04A95FA491 /* CredentialStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = C28D8EC3961803EDEDAF02A0 /* CredentialStore.swift */; };
+		393E068475B6453FC978C9F4 /* StarkPocketApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = FC5DD75DDA61B8B6088280DA /* StarkPocketApp.swift */; };
+		43542E31CD93E03E6428CFAE /* PocketModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 997A7751A077753A832111E4 /* PocketModel.swift */; };
+		962728994671C2BECA2D1964 /* PocketStage.swift in Sources */ = {isa = PBXBuildFile; fileRef = A4A37947410CCAAF59ED11BA /* PocketStage.swift */; };
+		A2227ACD7B2C907C5A7F8D29 /* PocketHandoffUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 478CE09FB466FDC749007054 /* PocketHandoffUITests.swift */; };
+		BCD5BFA6ACC93CA1CF465EA4 /* PresenceSummary.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5CBB4DAAF0DD3FFE975063C7 /* PresenceSummary.swift */; };
+		D6927A7B72525BA63B205707 /* StarkKit in Frameworks */ = {isa = PBXBuildFile; productRef = 8F072172B59FA1CC7813A48F /* StarkKit */; };
+		F5ECD70FC79762FBB6B737CD /* StarkPocketTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20F44EE20CBC2C651F6607E3 /* StarkPocketTests.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		04120B45858A39B3E1B36EEE /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 501C0411192FD6412296A35A /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = A4258C3CDE9F008399DE26E2;
+			remoteInfo = StarkPocket;
+		};
+		078892024D7B35AC089E2734 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 501C0411192FD6412296A35A /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = A4258C3CDE9F008399DE26E2;
+			remoteInfo = StarkPocket;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXFileReference section */
+		20F44EE20CBC2C651F6607E3 /* StarkPocketTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StarkPocketTests.swift; sourceTree = "<group>"; };
+		3B88F63E372862B0AB0CAD0A /* StarkPocketTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = StarkPocketTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		478CE09FB466FDC749007054 /* PocketHandoffUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PocketHandoffUITests.swift; sourceTree = "<group>"; };
+		5CBB4DAAF0DD3FFE975063C7 /* PresenceSummary.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PresenceSummary.swift; sourceTree = "<group>"; };
+		62C53BA124010B81ED1F187A /* StarkPocketUITests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = StarkPocketUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		729BA8D248ABDDBFD3C478E8 /* StarkMac */ = {isa = PBXFileReference; lastKnownFileType = folder; name = StarkMac; path = ../../mac/StarkMac; sourceTree = SOURCE_ROOT; };
+		81D2753F12F81772BB69E85A /* StarkPocket.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = StarkPocket.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		97D18A7CBDBCF51D7D45C013 /* manifest.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = manifest.json; sourceTree = "<group>"; };
+		997A7751A077753A832111E4 /* PocketModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PocketModel.swift; sourceTree = "<group>"; };
+		A4A37947410CCAAF59ED11BA /* PocketStage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PocketStage.swift; sourceTree = "<group>"; };
+		A914E09BBDFE62551407CD29 /* Views.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Views.swift; sourceTree = "<group>"; };
+		C28D8EC3961803EDEDAF02A0 /* CredentialStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CredentialStore.swift; sourceTree = "<group>"; };
+		C688939F1743B67DA7AC022C /* stark-atlas.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "stark-atlas.png"; sourceTree = "<group>"; };
+		FC5DD75DDA61B8B6088280DA /* StarkPocketApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StarkPocketApp.swift; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		F7817775F08FF9AB2A1FCB05 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				D6927A7B72525BA63B205707 /* StarkKit in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		02942FAE3D4556DB46841AB6 /* stark */ = {
+			isa = PBXGroup;
+			children = (
+				97D18A7CBDBCF51D7D45C013 /* manifest.json */,
+				C688939F1743B67DA7AC022C /* stark-atlas.png */,
+			);
+			path = stark;
+			sourceTree = "<group>";
+		};
+		26CF78CA2BF5CCE47C7C76FF /* UITests */ = {
+			isa = PBXGroup;
+			children = (
+				478CE09FB466FDC749007054 /* PocketHandoffUITests.swift */,
+			);
+			path = UITests;
+			sourceTree = "<group>";
+		};
+		2A2D30BE30E3DC4375609C27 /* Assets */ = {
+			isa = PBXGroup;
+			children = (
+				02942FAE3D4556DB46841AB6 /* stark */,
+			);
+			path = Assets;
+			sourceTree = "<group>";
+		};
+		54EE4F817B615962F7D1D1FB /* gameshark-pocket */ = {
+			isa = PBXGroup;
+			children = (
+				CB9A239696FBFC56FAD1D731 /* mac */,
+			);
+			name = "gameshark-pocket";
+			path = ../..;
+			sourceTree = "<group>";
+		};
+		5A8FFDE6815CB796B8899504 /* StarkMac */ = {
+			isa = PBXGroup;
+			children = (
+				2A2D30BE30E3DC4375609C27 /* Assets */,
+			);
+			path = StarkMac;
+			sourceTree = "<group>";
+		};
+		5E821B4309C370AB90CF8083 = {
+			isa = PBXGroup;
+			children = (
+				54EE4F817B615962F7D1D1FB /* gameshark-pocket */,
+				6938B0DAFE7C8339CA7E4106 /* Packages */,
+				F7E4C506D6692E41CC9C140F /* Sources */,
+				FB81F21EEBD4DF0A27A0FDFD /* Tests */,
+				26CF78CA2BF5CCE47C7C76FF /* UITests */,
+				646ED2A3B4CB57E85B685E3D /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		646ED2A3B4CB57E85B685E3D /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				81D2753F12F81772BB69E85A /* StarkPocket.app */,
+				3B88F63E372862B0AB0CAD0A /* StarkPocketTests.xctest */,
+				62C53BA124010B81ED1F187A /* StarkPocketUITests.xctest */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		6938B0DAFE7C8339CA7E4106 /* Packages */ = {
+			isa = PBXGroup;
+			children = (
+				729BA8D248ABDDBFD3C478E8 /* StarkMac */,
+			);
+			name = Packages;
+			sourceTree = "<group>";
+		};
+		CB9A239696FBFC56FAD1D731 /* mac */ = {
+			isa = PBXGroup;
+			children = (
+				5A8FFDE6815CB796B8899504 /* StarkMac */,
+			);
+			path = mac;
+			sourceTree = "<group>";
+		};
+		F7E4C506D6692E41CC9C140F /* Sources */ = {
+			isa = PBXGroup;
+			children = (
+				C28D8EC3961803EDEDAF02A0 /* CredentialStore.swift */,
+				997A7751A077753A832111E4 /* PocketModel.swift */,
+				A4A37947410CCAAF59ED11BA /* PocketStage.swift */,
+				5CBB4DAAF0DD3FFE975063C7 /* PresenceSummary.swift */,
+				FC5DD75DDA61B8B6088280DA /* StarkPocketApp.swift */,
+				A914E09BBDFE62551407CD29 /* Views.swift */,
+			);
+			path = Sources;
+			sourceTree = "<group>";
+		};
+		FB81F21EEBD4DF0A27A0FDFD /* Tests */ = {
+			isa = PBXGroup;
+			children = (
+				20F44EE20CBC2C651F6607E3 /* StarkPocketTests.swift */,
+			);
+			path = Tests;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		62E607E06511F874B8F070AF /* StarkPocketTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 62FB31112E78DB0B5B85CE13 /* Build configuration list for PBXNativeTarget "StarkPocketTests" */;
+			buildPhases = (
+				B179A1BBD29407C617F4F32F /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				6B01354AE5FDB2D93B551FCC /* PBXTargetDependency */,
+			);
+			name = StarkPocketTests;
+			packageProductDependencies = (
+			);
+			productName = StarkPocketTests;
+			productReference = 3B88F63E372862B0AB0CAD0A /* StarkPocketTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+		A4258C3CDE9F008399DE26E2 /* StarkPocket */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 5C55AF9499AF4B150750DF4A /* Build configuration list for PBXNativeTarget "StarkPocket" */;
+			buildPhases = (
+				1BB10D0558DD9A2A668646AB /* Sources */,
+				1CB3E951F1653A9EA173D7A5 /* Resources */,
+				F7817775F08FF9AB2A1FCB05 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = StarkPocket;
+			packageProductDependencies = (
+				8F072172B59FA1CC7813A48F /* StarkKit */,
+			);
+			productName = StarkPocket;
+			productReference = 81D2753F12F81772BB69E85A /* StarkPocket.app */;
+			productType = "com.apple.product-type.application";
+		};
+		CC57095FFCB5ED8B161E3B19 /* StarkPocketUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 5D6E67C50B17A66913557BAA /* Build configuration list for PBXNativeTarget "StarkPocketUITests" */;
+			buildPhases = (
+				73AA994F9E72EA973F9C2D7A /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				C9716363E20DDBA17EA50D63 /* PBXTargetDependency */,
+			);
+			name = StarkPocketUITests;
+			packageProductDependencies = (
+			);
+			productName = StarkPocketUITests;
+			productReference = 62C53BA124010B81ED1F187A /* StarkPocketUITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		501C0411192FD6412296A35A /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = YES;
+				LastUpgradeCheck = 1430;
+				TargetAttributes = {
+					62E607E06511F874B8F070AF = {
+						ProvisioningStyle = Automatic;
+					};
+					A4258C3CDE9F008399DE26E2 = {
+						ProvisioningStyle = Automatic;
+					};
+					CC57095FFCB5ED8B161E3B19 = {
+						ProvisioningStyle = Automatic;
+						TestTargetID = A4258C3CDE9F008399DE26E2;
+					};
+				};
+			};
+			buildConfigurationList = 9085C479B9C0458680C78529 /* Build configuration list for PBXProject "StarkPocket" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				Base,
+				en,
+			);
+			mainGroup = 5E821B4309C370AB90CF8083;
+			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				DF7DF7E2A116706586ABF9AD /* XCLocalSwiftPackageReference "../../mac/StarkMac" */,
+			);
+			preferredProjectObjectVersion = 77;
+			productRefGroup = 646ED2A3B4CB57E85B685E3D /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				A4258C3CDE9F008399DE26E2 /* StarkPocket */,
+				62E607E06511F874B8F070AF /* StarkPocketTests */,
+				CC57095FFCB5ED8B161E3B19 /* StarkPocketUITests */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		1CB3E951F1653A9EA173D7A5 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				177B4755AEB099C6B50EE6A0 /* manifest.json in Resources */,
+				09BCDC524E760CCFC4E4EF8B /* stark-atlas.png in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		1BB10D0558DD9A2A668646AB /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				221637BD0988AC04A95FA491 /* CredentialStore.swift in Sources */,
+				43542E31CD93E03E6428CFAE /* PocketModel.swift in Sources */,
+				962728994671C2BECA2D1964 /* PocketStage.swift in Sources */,
+				BCD5BFA6ACC93CA1CF465EA4 /* PresenceSummary.swift in Sources */,
+				393E068475B6453FC978C9F4 /* StarkPocketApp.swift in Sources */,
+				141AF45E64556DB3D46385C0 /* Views.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		73AA994F9E72EA973F9C2D7A /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A2227ACD7B2C907C5A7F8D29 /* PocketHandoffUITests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		B179A1BBD29407C617F4F32F /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				F5ECD70FC79762FBB6B737CD /* StarkPocketTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		6B01354AE5FDB2D93B551FCC /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = A4258C3CDE9F008399DE26E2 /* StarkPocket */;
+			targetProxy = 04120B45858A39B3E1B36EEE /* PBXContainerItemProxy */;
+		};
+		C9716363E20DDBA17EA50D63 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = A4258C3CDE9F008399DE26E2 /* StarkPocket */;
+			targetProxy = 078892024D7B35AC089E2734 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		02B996C0D007A0F738345AAE /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				INFOPLIST_FILE = Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = dev.gameshark.starkpocket;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Debug;
+		};
+		1156DEB7DB9D3D8E64885ABD /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				CODE_SIGN_STYLE = Automatic;
+				COPY_PHASE_STRIP = NO;
+				CURRENT_PROJECT_VERSION = 1;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MARKETING_VERSION = 0.4;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 6.0;
+			};
+			name = Release;
+		};
+		1BAD5777E8CAB1C52A388293 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = dev.gameshark.StarkPocketTests;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/StarkPocket.app/StarkPocket";
+			};
+			name = Debug;
+		};
+		466BBDF604C6FA6825F83843 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = dev.gameshark.StarkPocketUITests;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = StarkPocket;
+			};
+			name = Debug;
+		};
+		511513C6985A446C54C323E6 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = dev.gameshark.StarkPocketTests;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/StarkPocket.app/StarkPocket";
+			};
+			name = Release;
+		};
+		564D9A804925F71984B0684D /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				CODE_SIGN_STYLE = Automatic;
+				COPY_PHASE_STRIP = NO;
+				CURRENT_PROJECT_VERSION = 1;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"DEBUG=1",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MARKETING_VERSION = 0.4;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 6.0;
+			};
+			name = Debug;
+		};
+		C10CF6686A3B9CE246950229 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = dev.gameshark.StarkPocketUITests;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = StarkPocket;
+			};
+			name = Release;
+		};
+		F946140781A135D8AAD90FCE /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				INFOPLIST_FILE = Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = dev.gameshark.starkpocket;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		5C55AF9499AF4B150750DF4A /* Build configuration list for PBXNativeTarget "StarkPocket" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				02B996C0D007A0F738345AAE /* Debug */,
+				F946140781A135D8AAD90FCE /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		5D6E67C50B17A66913557BAA /* Build configuration list for PBXNativeTarget "StarkPocketUITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				466BBDF604C6FA6825F83843 /* Debug */,
+				C10CF6686A3B9CE246950229 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		62FB31112E78DB0B5B85CE13 /* Build configuration list for PBXNativeTarget "StarkPocketTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				1BAD5777E8CAB1C52A388293 /* Debug */,
+				511513C6985A446C54C323E6 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		9085C479B9C0458680C78529 /* Build configuration list for PBXProject "StarkPocket" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				564D9A804925F71984B0684D /* Debug */,
+				1156DEB7DB9D3D8E64885ABD /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+/* End XCConfigurationList section */
+
+/* Begin XCLocalSwiftPackageReference section */
+		DF7DF7E2A116706586ABF9AD /* XCLocalSwiftPackageReference "../../mac/StarkMac" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = ../../mac/StarkMac;
+		};
+/* End XCLocalSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		8F072172B59FA1CC7813A48F /* StarkKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = StarkKit;
+		};
+/* End XCSwiftPackageProductDependency section */
+	};
+	rootObject = 501C0411192FD6412296A35A /* Project object */;
+}
