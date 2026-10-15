@@ -9,9 +9,14 @@ One prompt assigns a responsibility; the daemon keeps it across restarts.
     uv run python stark.py ack --all                 # mark updates read
     uv run python stark.py resume owner/repo#123     # after fixing a revoked token
     uv run python stark.py unwatch owner/repo#123
+    uv run python stark.py jack ghost                # move presence (demo of stale writes)
 
 State lives in ~/.gameshark/runtime.db (override with --db or GAMESHARK_DB). The GitHub
 token comes from GITHUB_TOKEN, else `gh auth token`. Every GitHub call is a GET.
+
+`run` also serves the surface gateway (StarkMac) on a Unix socket in a private directory
+beside the database, gateway/stark.sock, authenticated by gateway.token beside it. Replies come from a deterministic local fake
+model unless --inference-url names an OpenAI compatible server such as SGLang.
 """
 
 from __future__ import annotations
@@ -83,7 +88,41 @@ class _LazyClient:
         return getattr(self._c, name)
 
 
-def build_supervisor(db: Path, interval: float, notifier=None, client=None):
+HOME_SURFACE = "mac"
+
+
+def socket_path(args, env=os.environ) -> Path:
+    """--socket, else STARK_SOCKET, else gateway/stark.sock beside the database. StarkKit's
+    ClientConfig.fromEnvironment applies the same rule."""
+    if getattr(args, "socket", None):
+        return args.socket
+    if env.get("STARK_SOCKET"):
+        return Path(env["STARK_SOCKET"])
+    return args.db.parent / "gateway" / "stark.sock"
+
+
+def token_path(args, env=os.environ) -> Path:
+    """--token, else STARK_TOKEN, else gateway.token beside the socket."""
+    if getattr(args, "token", None):
+        return args.token
+    if env.get("STARK_TOKEN"):
+        return Path(env["STARK_TOKEN"])
+    return socket_path(args, env).parent / "gateway.token"
+
+
+def make_provider(args):
+    """The model behind Stark's replies: a local fake unless an endpoint is named."""
+    from gameshark.inference import OpenAICompatProvider, ProviderConfig
+    from gameshark.stark_chat import CompanionFakeProvider
+
+    if args.inference_url:
+        return ProviderConfig(OpenAICompatProvider("local", args.inference_url, args.model,
+                                                   args.context_window, max_concurrency=2))
+    return ProviderConfig(CompanionFakeProvider(args.fake_delay))
+
+
+def build_supervisor(db: Path, interval: float, notifier=None, client=None, chat=None):
+    from gameshark.stark_chat import StarkChatAdapter
     from gameshark.supervisor import AgentSupervisor
     from sims.github_monitor import GitHubMonitorAdapter
 
@@ -91,17 +130,41 @@ def build_supervisor(db: Path, interval: float, notifier=None, client=None):
                           lease_ttl_s=max(30.0, 3 * interval))
     sup.add_adapter(GitHubMonitorAdapter(client or _LazyClient(), poll_interval_s=interval,
                                          notifier=notifier))
+    # Without a chat adapter that serves, reply events wait for the daemon.
+    sup.add_adapter(chat or StarkChatAdapter(serve=False))
+    sup.enable_presence(HOME_SURFACE)
     return sup
+
+
+def start_gateway(sup, chat, args, log):
+    """Serve surfaces, or log why not. The daemon keeps its duties either way."""
+    from gameshark.gateway import GatewayServer, load_or_create_token
+    from gameshark.surface_api import SurfaceAPI
+
+    path = socket_path(args)
+    try:
+        token = load_or_create_token(token_path(args))
+        ident = {"agent_id": sup.identity.agent_id, "uuid": sup.identity.uuid}
+        server = GatewayServer(path, token, ident, sup.wake)
+        server.start()
+    except OSError as e:
+        log(f"gateway disabled: {type(e).__name__}: {e}")
+        return None
+    log(f"gateway listening on {path}")
+    return SurfaceAPI(sup, server, chat, log=log)
 
 
 # ---------------------------------------------------------------------- commands
 def cmd_control(args, action: str) -> int:
-    repo, pr = parse_target(args.target)
-    payload = {"repo": repo, "pr": pr}
+    if action == "jack":
+        adapter, payload = "stark", {"to": args.surface}
+    else:
+        repo, pr = parse_target(args.target)
+        adapter, payload = "github", {"repo": repo, "pr": pr}
     if action == "watch":
         payload["baseline"] = not args.backfill
     conn = connect(args.db)
-    rid = enqueue_control(conn, AGENT, "github", action, payload)
+    rid = enqueue_control(conn, AGENT, adapter, action, payload)
     conn.close()
     try:
         with InstanceLock(args.db):
@@ -139,7 +202,15 @@ def cmd_run(args) -> int:
         print(f"Stark is already running: {e}", file=sys.stderr)
         return 3
     try:
-        sup = build_supervisor(args.db, args.interval, notifier=on_new, client=make_client())
+        from gameshark.inference import RouterPolicy
+        from gameshark.stark_chat import StarkChatAdapter
+
+        chat = StarkChatAdapter()
+        sup = build_supervisor(args.db, args.interval, notifier=on_new, client=make_client(),
+                               chat=chat)
+        sup.enable_inference([make_provider(args)],
+                             policy=RouterPolicy(agent_in_flight=2, conversation_in_flight=1),
+                             retry_s=0.25)
         try:
             sup.start()                       # recover: reconcile effects, replay inbox
         except LeaseDenied as e:
@@ -148,8 +219,9 @@ def cmd_run(args) -> int:
         active = [r.id for r in sup.responsibilities.outstanding()]
         log(f"Stark {sup.identity.uuid} generation {sup.generation}; "
             f"resuming {len(active)} responsibilities: {', '.join(active) or 'none'}")
+        gateway = start_gateway(sup, chat, args, log) if args.gateway else None
         code = run_forever(sup, stop, args.interval, log=log,
-                           drain_deadline_s=args.drain_deadline)
+                           drain_deadline_s=args.drain_deadline, gateway=gateway)
         log("stopped")
         sup.close()
         return code
@@ -208,7 +280,7 @@ def cmd_ack(args) -> int:
     return 0
 
 
-def main(argv: list[str] | None = None) -> int:
+def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(prog="stark", description=__doc__.split("\n")[0])
     ap.add_argument("--db", type=Path,
                     default=Path(os.environ.get("GAMESHARK_DB", DEFAULT_DB)))
@@ -225,16 +297,35 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("--notify", action="store_true", help="macOS banners for new updates")
     r.add_argument("--drain-deadline", type=float, default=10.0,
                    help="seconds in flight work may finish after SIGTERM before cancellation")
+    r.add_argument("--no-gateway", dest="gateway", action="store_false",
+                   help="do not serve surfaces on the Unix socket")
+    r.add_argument("--socket", type=Path, default=None,
+                   help="gateway socket path (default: STARK_SOCKET, else "
+                        "gateway/stark.sock beside the database)")
+    r.add_argument("--token", type=Path, default=None,
+                   help="gateway token file (default: STARK_TOKEN, else gateway.token "
+                        "beside the socket)")
+    r.add_argument("--fake-delay", type=float, default=2.0,
+                   help="seconds the local fake model takes per reply")
+    r.add_argument("--inference-url", default=os.environ.get("GAMESHARK_INFERENCE_URL"),
+                   help="OpenAI compatible base URL, for example http://127.0.0.1:30000/v1")
+    r.add_argument("--model", default=os.environ.get("GAMESHARK_INFERENCE_MODEL", "default"))
+    r.add_argument("--context-window", type=int, default=8192)
+    j = sub.add_parser("jack", help="move Stark's presence to another surface")
+    j.add_argument("surface")
     sub.add_parser("status")
     f = sub.add_parser("feed")
     f.add_argument("--all", action="store_true")
     a = sub.add_parser("ack")
     a.add_argument("ids", nargs="*")
     a.add_argument("--all", action="store_true")
+    return ap
 
-    args = ap.parse_args(argv)
+
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
     args.db.parent.mkdir(parents=True, exist_ok=True)
-    if args.cmd in ("watch", "unwatch", "resume"):
+    if args.cmd in ("watch", "unwatch", "resume", "jack"):
         return cmd_control(args, args.cmd)
     return {"run": cmd_run, "status": cmd_status, "feed": cmd_feed, "ack": cmd_ack}[args.cmd](args)
 

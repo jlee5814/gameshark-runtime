@@ -91,7 +91,8 @@ class InferenceExecutor:
     def __init__(self, router: InferenceRouter, cancel: CancelToken,
                  threads: int | None = None, completion_depth: int | None = None,
                  crash: Callable[[str], None] | None = None,
-                 admit: Callable[[], None] | None = None) -> None:
+                 admit: Callable[[], None] | None = None,
+                 wake: threading.Event | None = None) -> None:
         if router.tracker is None:
             raise ValueError("async inference needs a ModelTracker: health probes must run "
                              "on an executor, not inside select on the coordinator")
@@ -105,7 +106,9 @@ class InferenceExecutor:
             raise ValueError("threads and completion_depth must be at least 1")
         self._crash = crash or (lambda _label: None)
         self._admit = admit
-        self.wake = threading.Event()  # set on every completion; the coordinator waits on it
+        # Set on every completion; the coordinator waits on it. The supervisor shares one
+        # event with the gateway, so either source wakes the coordinator.
+        self.wake = wake or threading.Event()
         self._jobs: queue.SimpleQueue[tuple | None] = queue.SimpleQueue()
         self._done: queue.Queue[Completion] = queue.Queue(maxsize=self.depth)
         self._peak_lock = threading.Lock()

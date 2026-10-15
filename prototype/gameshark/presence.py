@@ -261,6 +261,13 @@ class PresenceManager:
             return None
         return self._resolve(h.id, lost=True)
 
+    def next_deadline(self) -> float | None:
+        """The open handoff's next deadline on the clock, for the coordinator's sleep."""
+        h = self.open_handoff()
+        if h is None:
+            return None
+        return h.prepare_deadline if h.state == PREPARING else h.ack_deadline
+
     def tick(self) -> Handoff | None:
         """Apply any passed deadline to the open handoff. Safe to call on every loop."""
         h = self.open_handoff()

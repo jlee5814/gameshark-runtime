@@ -33,6 +33,7 @@ class AdapterContext:
     admit: Callable[[], None] | None = None    # raises Draining once admission is frozen
     cancel: object = None                      # lifecycle CancelToken, checked at safe points
     inference: object = None                   # InferenceJournal for durable model calls
+    presence: object = None                    # PresenceManager when presence is enabled
 
 
 class Adapter(Protocol):
