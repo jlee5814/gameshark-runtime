@@ -214,3 +214,34 @@ def test_cli_paired_phone_survives_sigkill_and_cli_revocation(env):
     finally:
         if proc.poll() is None:
             stop(proc)
+
+
+def test_busy_lan_port_disables_the_whole_gateway(env):
+    """No half started gateway: when the LAN port is taken, the Unix socket closes too and
+    no lan.json advertises an endpoint. The daemon keeps its duties."""
+    import socket
+
+    env["sock"].parent.mkdir(mode=0o700, exist_ok=True)
+    stale = env["sock"].parent / "lan.json"
+    stale.write_text(json.dumps({"port": 1, "pin": "00" * 32}))
+    busy = socket.create_server(("", 0), family=socket.AF_INET6, dualstack_ipv6=True)
+    proc = subprocess.Popen([sys.executable, str(ROOT / "stark.py"), "--db", str(env["db"]),
+                             "--interval", "0.5", "run", "--lan", "--lan-port",
+                             str(busy.getsockname()[1])],
+                            env=env["env"], cwd=ROOT, stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT, text=True)
+    try:
+        for line in proc.stdout:
+            assert "gateway listening" not in line
+            if "gateway disabled" in line:
+                break
+        else:
+            raise AssertionError("daemon exited without reporting the gateway")
+        assert not env["sock"].exists()
+        assert not stale.exists()
+        time.sleep(1.0)
+        assert proc.poll() is None                                # duties keep running
+    finally:
+        busy.close()
+        if proc.poll() is None:
+            stop(proc)

@@ -453,11 +453,18 @@ class LanListener:
                                      dualstack_ipv6=True)
         else:
             s = socket.create_server((self.host, self.requested_port))
-        s.settimeout(IO_TIMEOUT_S)
-        self._sock = s
-        self._alive.set()
-        self._thread = threading.Thread(target=self._accept, name="lan-accept", daemon=True)
-        self._thread.start()
+        try:
+            s.settimeout(IO_TIMEOUT_S)
+            self._sock = s
+            self._alive.set()
+            self._thread = threading.Thread(target=self._accept, name="lan-accept",
+                                            daemon=True)
+            self._thread.start()
+        except BaseException:
+            self._alive.clear()
+            self._sock = None
+            s.close()
+            raise
 
     def stop(self) -> None:
         self._alive.clear()

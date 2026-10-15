@@ -181,6 +181,31 @@ def test_missing_socket_dir_is_created_private_without_touching_its_parent():
         server.close()
 
 
+def test_lan_start_failure_leaves_no_listening_socket():
+    """A LAN listener that cannot bind takes the Unix socket down with it: nothing would
+    pump an authenticated session, so nothing may accept one."""
+    from gameshark.net_gateway import LanListener, load_or_create_identity
+
+    d = short_dir()
+    before = set(threading.enumerate())
+    busy = socket.create_server(("127.0.0.1", 0))
+    try:
+        lan = LanListener(load_or_create_identity(d), port=busy.getsockname()[1],
+                          host="127.0.0.1")
+        server = gw.GatewayServer(d / "stark.sock", KAT_TOKEN, {}, threading.Event())
+        server.attach(lan)
+        with pytest.raises(OSError):
+            server.start()
+        assert not server.alive.is_set()
+        assert not (d / "stark.sock").exists()
+        with pytest.raises(OSError), socket.socket(socket.AF_UNIX) as s:
+            s.connect(str(d / "stark.sock"))
+        wait_for(lambda: not [t for t in set(threading.enumerate()) - before
+                              if t.name in ("gateway-accept", "lan-accept")])
+    finally:
+        busy.close()
+
+
 # ---------------------------------------------------------------------- command set
 def test_unknown_commands_are_refused_and_change_nothing(rt):
     with rt.client() as c:

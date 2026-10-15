@@ -156,6 +156,11 @@ def start_gateway(sup, chat, args, log):
 
     path = socket_path(args)
     lan = devices = None
+    # A previous instance's endpoint is never advertised; this boot rewrites it once served.
+    try:
+        lan_info_path(args).unlink(missing_ok=True)
+    except OSError:
+        pass
     try:
         token = load_or_create_token(token_path(args))
         ident = {"agent_id": sup.identity.agent_id, "uuid": sup.identity.uuid}
@@ -166,8 +171,8 @@ def start_gateway(sup, chat, args, log):
             server.attach(lan)
             devices = DeviceRegistry(sup.conn, sup.agent_id, sup.lease, sup.generation,
                                      sup.clock)
-        server.start()
-    except OSError as e:
+        server.start()                    # all or nothing: a failure closes every socket
+    except (OSError, ValueError, TypeError) as e:
         log(f"gateway disabled: {type(e).__name__}: {e}")
         return None
     log(f"gateway listening on {path}")
