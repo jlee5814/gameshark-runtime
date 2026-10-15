@@ -402,6 +402,35 @@ def test_revoking_a_phone_mid_jack_home_keeps_stark_home(rt):
                  presence_gen=p["generation"])
 
 
+def test_drafts_travel_both_ways_and_only_the_target_takes_them(rt):
+    device_id, _surface, key = paired(rt)
+    with rt.client() as mac, rt.device(device_id, key) as phone:
+        # Mac -> iPhone: the Mac's unsent text reaches the phone.
+        g = presence(phone)["generation"]
+        phone.call("jack", handoff_id="in1", to="self", presence_gen=g)
+        out = mac.call("ready_out", handoff_id="in1", presence_gen=g, draft="from my mac")
+        got = phone.call("ack_in", handoff_id="in1", presence_gen=out["to_gen"])
+        assert got["draft"] == "from my mac"
+        with pytest.raises(GatewayError) as e:
+            mac.call("draft_ack", handoff_id="in1", presence_gen=out["to_gen"])
+        assert e.value.code == "stale_presence"
+        phone.call("draft_ack", handoff_id="in1", presence_gen=out["to_gen"])
+        # iPhone -> Mac (Jack In Here): the phone's unsent text reaches the Mac.
+        g = out["to_gen"]
+        mac.call("jack", handoff_id="here1", to="self", presence_gen=g)
+        out = phone.call("ready_out", handoff_id="here1", presence_gen=g,
+                         draft="from my pocket")
+        got = mac.call("ack_in", handoff_id="here1", presence_gen=out["to_gen"])
+        assert got["draft"] == "from my pocket"
+        assert phone.call("snapshot")["draft"] is None
+        with pytest.raises(GatewayError) as e:
+            phone.call("draft_ack", handoff_id="here1", presence_gen=out["to_gen"])
+        assert e.value.code == "stale_presence"
+        assert mac.call("snapshot")["draft"]["text"] == "from my pocket"
+        mac.call("draft_ack", handoff_id="here1", presence_gen=out["to_gen"])
+        assert mac.call("snapshot")["draft"] is None
+
+
 def test_late_ack_from_the_phone_reverts_home(rt):
     device_id, _surface, key = paired(rt)
     with rt.client() as mac, rt.device(device_id, key) as phone:

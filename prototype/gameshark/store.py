@@ -293,6 +293,10 @@ MIGRATIONS: dict[str, list[tuple[str, str]]] = {
     "inference_calls": [
         ("finish_reason", "TEXT"),                      # stop | length | tool_calls
     ],
+    # v0.4: a carried draft waits for its target's receipt.
+    "handoffs": [
+        ("draft_state", "TEXT"),                        # NULL (no draft) | pending | delivered
+    ],
 }
 
 

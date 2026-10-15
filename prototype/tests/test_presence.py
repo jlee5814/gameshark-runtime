@@ -360,3 +360,80 @@ def test_evicting_an_uninvolved_surface_changes_nothing(pm):
     assert pm.evict("tablet") is False
     assert pm.handoff("h1").state == PREPARING
     assert pm.current().generation == 1
+
+
+# ---------------------------------------------------------------------- draft continuity
+def jack_with_draft(pm: PresenceManager, draft: str | None = "half typed",
+                    hid: str = "h1") -> int:
+    """mac -> phone, the Mac carrying draft; returns the phone's generation."""
+    pm.request_jack(hid, "phone")
+    to_gen = pm.ready_out(hid, "mac", pm.current().generation, draft).to_gen
+    pm.ack_in(hid, "phone", to_gen)
+    return to_gen
+
+
+def test_a_carried_draft_waits_for_its_target_until_receipt(pm):
+    gen = jack_with_draft(pm)
+    h = pm.pending_draft("phone", gen)
+    assert (h.id, h.draft, h.draft_state) == ("h1", "half typed", "pending")
+    assert pm.draft_ack("h1", "phone", gen).draft_state == "delivered"
+    assert pm.pending_draft("phone", gen) is None
+    assert pm.draft_ack("h1", "phone", gen).draft_state == "delivered"     # idempotent
+    assert pm.handoff("h1").draft == "half typed"                          # kept in the journal
+
+
+def test_no_draft_and_an_empty_draft_leave_nothing_to_deliver(pm):
+    gen = jack_with_draft(pm, None)
+    assert pm.handoff("h1").draft_state is None
+    assert pm.pending_draft("phone", gen) is None
+    pm.request_jack("h2", "mac")
+    gen = pm.ready_out("h2", "phone", gen, "").to_gen
+    pm.ack_in("h2", "mac", gen)
+    assert pm.handoff("h2").draft_state is None
+    assert pm.pending_draft("mac", gen) is None
+
+
+@pytest.mark.parametrize("surface, gen_delta", [("mac", 0), ("phone", -1), ("tablet", 0)])
+def test_only_the_target_at_its_generation_sees_or_acks_the_draft(pm, surface, gen_delta):
+    gen = jack_with_draft(pm)
+    assert pm.pending_draft(surface, gen + gen_delta) is None
+    with pytest.raises(StalePresence):
+        pm.draft_ack("h1", surface, gen + gen_delta)
+    assert pm.handoff("h1").draft_state == "pending"
+
+
+def test_a_target_that_lost_presence_cannot_take_the_draft_but_it_stays_recoverable(pm):
+    gen = jack_with_draft(pm)
+    pm.request_jack("h2", "mac")
+    pm.ready_out("h2", "phone", gen, None)                                 # phone left
+    assert pm.pending_draft("phone", gen) is None
+    with pytest.raises(StalePresence):
+        pm.draft_ack("h1", "phone", gen)
+    assert [h.id for h in pm.undelivered_drafts()] == ["h1"]
+
+
+def test_a_reverted_jack_never_delivers_its_draft(pm, clock):
+    pm.request_jack("h1", "phone")
+    to_gen = pm.ready_out("h1", "mac", 1, "half typed").to_gen
+    clock.advance(ACK_TIMEOUT_S)
+    assert pm.tick().state == REVERTED                                     # back home to mac
+    for surface, gen in (("phone", to_gen), ("mac", pm.current().generation)):
+        assert pm.pending_draft(surface, gen) is None
+    assert [h.id for h in pm.undelivered_drafts()] == ["h1"]
+
+
+def test_an_undelivered_draft_survives_restart(paths, clock, pm):
+    gen = jack_with_draft(pm)
+    pm.conn.close()
+    again = boot(paths["runtime"], clock)
+    assert again.pending_draft("phone", gen).draft == "half typed"
+    assert again.draft_ack("h1", "phone", gen).draft_state == "delivered"
+
+
+def test_draft_ack_needs_an_acked_jack(pm):
+    pm.request_jack("h1", "phone")
+    to_gen = pm.ready_out("h1", "mac", 1, "half typed").to_gen
+    with pytest.raises(StalePresence):
+        pm.draft_ack("h1", "phone", to_gen)                                # committed, unacked
+    with pytest.raises(LookupError):
+        pm.draft_ack("nope", "phone", to_gen)

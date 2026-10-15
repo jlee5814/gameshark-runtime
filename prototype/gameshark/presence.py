@@ -23,6 +23,12 @@ Deadlines persist as absolute times, so a runtime killed mid jack resolves the s
 after restart: tick() finishes whatever the dead process left open (P3). At most one
 handoff is open at a time, and presence always names exactly one surface (P1).
 
+A draft the source carries in ready_out waits in the handoff row (draft_state pending)
+until its target confirms receipt with draft_ack. Only the target of an acked jack, at
+the generation the jack granted and while it still holds presence, may read or confirm
+it, so a stale or other surface never sees it. Receipt survives restart; a draft that
+never reached its target (reverted, or the target moved on) stays in the journal.
+
 Crash points, fired through the supervisor's crash hook:
 
     P1_after_prepare   handoff row is preparing; restart resumes it
@@ -43,6 +49,8 @@ from gameshark.store import write_txn
 PREPARING, COMMITTED, ACKED, REVERTED, ABORTED = (
     "preparing", "committed", "acked", "reverted", "aborted")
 OPEN = (PREPARING, COMMITTED)
+
+PENDING, DELIVERED = "pending", "delivered"
 
 PREPARE_TIMEOUT_S = 3.0   # source plays its exit and flushes its draft
 ACK_TIMEOUT_S = 10.0      # target plays its arrival and confirms
@@ -66,12 +74,13 @@ class Handoff:
     draft: str | None
     prepare_deadline: float
     ack_deadline: float | None
+    draft_state: str | None = None
 
     @classmethod
     def of(cls, row: sqlite3.Row) -> Handoff:
         return cls(row["id"], row["from_surface"], row["to_surface"], row["from_gen"],
                    row["to_gen"], row["state"], row["draft"], row["prepare_deadline"],
-                   row["ack_deadline"])
+                   row["ack_deadline"], row["draft_state"])
 
 
 class PresenceManager:
@@ -245,12 +254,14 @@ class PresenceManager:
                        draft: str | None, now: float) -> Handoff:
         p = self._presence()
         to_gen = p["generation"] + 1
+        draft = draft or None                   # an empty composer carries nothing
         conn.execute("UPDATE presence SET surface=?, generation=?, updated=? "
                      "WHERE agent_id=?", (row["to_surface"], to_gen, now, self.agent_id))
         conn.execute(
-            "UPDATE handoffs SET state=?, to_gen=?, draft=?, ack_deadline=?, updated=? "
-            "WHERE id=?",
-            (COMMITTED, to_gen, draft, now + self.ack_timeout_s, now, row["id"]))
+            "UPDATE handoffs SET state=?, to_gen=?, draft=?, draft_state=?, ack_deadline=?, "
+            "updated=? WHERE id=?",
+            (COMMITTED, to_gen, draft, PENDING if draft else None, now + self.ack_timeout_s,
+             now, row["id"]))
         return Handoff.of(self._handoff_row(row["id"]))
 
     def ack_in(self, handoff_id: str, surface: str, presence_gen: int) -> Handoff:
@@ -319,6 +330,45 @@ class PresenceManager:
             return changed
 
         return bool(self._fenced(body))
+
+    # ------------------------------------------------------------------ drafts
+    def pending_draft(self, surface: str, presence_gen: int) -> Handoff | None:
+        """The draft awaiting surface's receipt: from an acked jack that made surface the
+        active body at presence_gen, which it still is. Anyone else gets None."""
+        row = self.conn.execute(
+            "SELECT h.* FROM handoffs h JOIN presence p ON p.agent_id = h.agent_id "
+            "WHERE h.agent_id=? AND h.state=? AND h.draft_state=? AND h.to_surface=? "
+            "AND h.to_gen=? AND p.surface=h.to_surface AND p.generation=h.to_gen "
+            "ORDER BY h.updated DESC LIMIT 1",
+            (self.agent_id, ACKED, PENDING, surface, presence_gen)).fetchone()
+        return Handoff.of(row) if row else None
+
+    def draft_ack(self, handoff_id: str, surface: str, presence_gen: int) -> Handoff:
+        """The target restored (or knowingly set aside) the carried draft. Only the target
+        of the acked jack, at its granted generation and still active, may confirm; the
+        check runs in the receipt's transaction. A replay returns the delivered row."""
+        now = self.clock.now()
+
+        def body(conn: sqlite3.Connection) -> Handoff:
+            row = self._handoff_row(handoff_id)
+            if (row["state"] != ACKED or row["to_surface"] != surface
+                    or row["to_gen"] != presence_gen):
+                raise StalePresence(f"{surface}@{presence_gen} holds no draft from "
+                                    f"{handoff_id}")
+            self.guard_surface_in_txn(surface, presence_gen)
+            if row["draft_state"] == PENDING:
+                conn.execute("UPDATE handoffs SET draft_state=?, updated=? WHERE id=?",
+                             (DELIVERED, now, handoff_id))
+            return Handoff.of(self._handoff_row(handoff_id))
+
+        return self._fenced(body)
+
+    def undelivered_drafts(self) -> list[Handoff]:
+        """Drafts no target has confirmed, oldest first: the operator's recovery list."""
+        rows = self.conn.execute(
+            "SELECT * FROM handoffs WHERE agent_id=? AND draft_state=? ORDER BY created",
+            (self.agent_id, PENDING)).fetchall()
+        return [Handoff.of(r) for r in rows]
 
     def next_deadline(self) -> float | None:
         """The open handoff's next deadline on the clock, for the coordinator's sleep."""

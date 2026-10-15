@@ -444,3 +444,57 @@ def test_sessions_get_bye_on_shutdown(tmp_path):
         pass
     assert msg["type"] == "bye"
     assert not r.sock.exists()
+
+
+# ---------------------------------------------------------------------- draft continuity
+def pad_jacks_in(mac, pad, draft: str | None, hid: str = "d1") -> int:
+    """pad pulls Stark from the Mac, which carries draft; returns pad's generation."""
+    g = gen(pad)
+    pad.call("jack", handoff_id=hid, to="self", presence_gen=g)
+    to_gen = mac.call("ready_out", handoff_id=hid, presence_gen=g, draft=draft)["to_gen"]
+    out = pad.call("ack_in", handoff_id=hid, presence_gen=to_gen)
+    assert out["draft"] == draft
+    return to_gen
+
+
+def test_the_target_gets_the_draft_until_it_confirms_receipt(rt):
+    with rt.client() as mac, rt.client(surface="pad") as pad:
+        g = pad_jacks_in(mac, pad, "half typed")
+        assert pad.call("snapshot")["draft"] == {"handoff_id": "d1", "text": "half typed"}
+        assert mac.call("snapshot")["draft"] is None                   # the source never
+        for who, at in ((mac, g), (mac, g - 1), (pad, g - 1)):
+            with pytest.raises(GatewayError) as e:
+                who.call("draft_ack", handoff_id="d1", presence_gen=at)
+            assert e.value.code == "stale_presence"
+        assert pad.call("draft_ack", handoff_id="d1", presence_gen=g)["draft_state"] \
+            == "delivered"
+        assert pad.call("draft_ack", handoff_id="d1", presence_gen=g)["draft_state"] \
+            == "delivered"                                             # replay
+        assert pad.call("snapshot")["draft"] is None
+        replay = pad.call("ack_in", handoff_id="d1", presence_gen=g)
+        assert replay["draft"] is None                                 # never offered twice
+
+
+def test_an_unconfirmed_draft_is_redelivered_after_reconnect_and_restart(tmp_path):
+    sock_dir = short_dir()
+    a = Runtime(tmp_path / "runtime.db", sock_dir).start()
+    with a.client() as mac, a.client(surface="pad") as pad:
+        g = pad_jacks_in(mac, pad, "half typed")                      # pad drops before receipt
+    with a.client(surface="pad") as pad:
+        assert pad.call("snapshot")["draft"]["text"] == "half typed"
+    a.close()
+    b = Runtime(tmp_path / "runtime.db", sock_dir).start()
+    try:
+        with b.client(surface="pad") as pad:
+            assert pad.call("snapshot")["draft"]["text"] == "half typed"
+            pad.call("draft_ack", handoff_id="d1", presence_gen=g)
+        with b.client(surface="pad") as pad:
+            assert pad.call("snapshot")["draft"] is None
+    finally:
+        b.close()
+
+
+def test_a_jack_without_a_draft_offers_nothing(rt):
+    with rt.client() as mac, rt.client(surface="pad") as pad:
+        pad_jacks_in(mac, pad, None)
+        assert pad.call("snapshot")["draft"] is None

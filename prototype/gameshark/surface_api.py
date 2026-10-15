@@ -108,6 +108,7 @@ class SurfaceAPI:
             "ready_out": self._ready_out,
             "ack_in": self._ack_in,
             "jack": self._jack,
+            "draft_ack": self._draft_ack,
         }
 
     # ------------------------------------------------------------------ loop hooks
@@ -194,6 +195,8 @@ class SurfaceAPI:
             "responsibilities": self._responsibilities(),
             "conversation": {"id": CONVERSATION, "head_seq": self._head_seq()},
             "activity": self._activity(),
+            # A draft carried here by an acked jack, until this surface confirms it.
+            "draft": self._draft_view(surface),
             # Display names of paired devices, so a surface can say where Stark is.
             "devices": [{"surface": k, "name": v} for k, v in
                         sorted((self.devices.names() if self.devices else {}).items())],
@@ -235,7 +238,16 @@ class SurfaceAPI:
         gen = _int(msg, "presence_gen", 0)
         assert self.sup.presence is not None
         h = self.sup.presence.ack_in(hid, sess.surface, gen)
-        return {"handoff_id": h.id, "state": h.state, "draft": h.draft}
+        # The draft rides along only while it awaits receipt; a confirmed one never returns.
+        draft = h.draft if h.draft_state == "pending" else None
+        return {"handoff_id": h.id, "state": h.state, "draft": draft}
+
+    def _draft_ack(self, sess: Session, msg: dict) -> dict:
+        hid = _id(msg, "handoff_id")
+        gen = _int(msg, "presence_gen", 0)
+        assert self.sup.presence is not None
+        h = self.sup.presence.draft_ack(hid, sess.surface, gen)
+        return {"handoff_id": h.id, "draft_state": h.draft_state}
 
     def _jack(self, sess: Session, msg: dict) -> dict:
         hid = _id(msg, "handoff_id")
@@ -314,6 +326,12 @@ class SurfaceAPI:
             self.log(f"handoff {h.id} {h.state} after {sess.surface} left")
 
     # ------------------------------------------------------------------ views
+    def _draft_view(self, surface: str) -> dict | None:
+        pm = self.sup.presence
+        assert pm is not None
+        h = pm.pending_draft(surface, pm.current().generation)
+        return None if h is None else {"handoff_id": h.id, "text": h.draft}
+
     def _presence_view(self) -> dict:
         pm = self.sup.presence
         assert pm is not None
