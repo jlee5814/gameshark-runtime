@@ -54,6 +54,7 @@ class Script:
     delays: tuple[float, ...] = ()  # seconds before chunk i; missing entries are 0
     fault: Fault | None = None
     finish_reason: FinishReason = FinishReason.STOP
+    usage: Usage | None = None  # reported usage override, e.g. a tokenizer above the estimate
 
 
 def _wait_on_token(seconds: float, token: CancelToken) -> None:
@@ -196,7 +197,8 @@ class FakeCall:
                 attempt=req.attempt,
                 text="".join(emitted),
                 finish_reason=finish,
-                usage=Usage(tokens_in=estimate_tokens(req), tokens_out=len(emitted)),
+                usage=script.usage or Usage(tokens_in=estimate_tokens(req),
+                                            tokens_out=len(emitted)),
                 model=provider.capabilities().model,
                 instance_ref=f"{provider.name}#1",
             )

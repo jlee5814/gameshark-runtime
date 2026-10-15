@@ -187,6 +187,10 @@ uv run pytest -v tests/test_drain.py
 # inference journal: crash points E1 to E4, fencing, races
 uv run pytest -v tests/test_inference_journal.py
 
+# inference router: policy, budgets, slots, failover, 1,000 call soak
+uv run pytest -v tests/test_inference_router.py
+uv run python bench/router_overhead.py
+
 # individual critical tests
 uv run pytest -v tests/test_recovery.py::test_real_subprocess_kill_then_recover
 uv run pytest -v tests/test_recovery.py::test_c_crash_after_remote_before_journal
@@ -397,6 +401,51 @@ action only through a committed message and the effect journal.
 Not guaranteed: exactly once provider execution, exactly once billing, or identical text
 after a rerun. Budget admission arrives with the router (step 3).
 
+## Inference router (v0.3 step 3)
+
+Implements step 3 of `../architecture/inference-router.md` on `FakeProvider` only: no HTTP
+provider, worker executor, or model lifecycle. No schema change; the journal gains
+optional arguments whose defaults keep E1 to E4 unchanged.
+
+| Module | Contents |
+|---|---|
+| `gameshark/inference/router.py` | `InferenceRouter` (select, admit, dispatch, fail over, commit), `ProviderConfig`, `TokenBound`, `RouterPolicy`, `ProviderHealth`, `RouteResult`, `Overrun` |
+| `gameshark/inference/scheduler.py` | `Scheduler`: slots per provider, bounded FIFO queues with direct handoff, per agent and per conversation limits, `Overloaded(retry_after)` |
+| `gameshark/inference/budget.py` | fixed aligned windows; `admit_budget` runs inside the reserve transaction |
+
+Selection runs four filters in order and refuses with a typed error when one empties the
+set: capability (features, the `allowed` model constraint, prompt bound plus `max_tokens`
+within the context window), policy (`LOCAL_ONLY` and the durable grant
+`inference.cloud` gate cloud; a paid provider without a trusted token bound under a budget
+needs `inference.cloud.soft_budget`), ordering (configured preference, then local first,
+then cheapest cloud), and health (rate limit circuits, auth blocks, providers reporting
+down).
+
+Admission takes a slot first, then reserves. The reservation transaction rechecks the
+cloud grant and checks every configured window against settled, lost, and still reserved
+spend before it inserts the ledger row, so concurrent admissions on any connection
+serialize on the SQLite write lock. A refusal rolls back: no attempt and no budget
+consumed. `EgressDenied`, `BudgetExceeded`, and `BudgetUnenforceable` end the walk at
+once, so a policy denial never becomes cloud fallback.
+
+| Failure | Router action |
+|---|---|
+| retryable after dispatch (`ModelCrashed`, `StreamInterrupted`, `Timeout`, `RateLimited`, `ProviderUnavailable`, `ResultMismatch`) | attempt settles `lost` at full reservation; next distinct candidate; `RateLimited` opens a circuit for `retry_after` |
+| `ProviderCancelled`, durable `CallCancelled` | terminal; no fallback |
+| `AuthFailed` | terminal; attempt charged; `error_kind` records provider and config fingerprint; replay refused until the fingerprint changes |
+| `CapabilityUnsupported` or `ContextTooLong` from `generate` | reservation undone; next candidate |
+| other terminal | raised as is |
+
+A committed answer records its provider and `degraded = 1` when it came from a fallback.
+
+Token accounting. `estimate_tokens` counts whitespace words and bounds no real tokenizer.
+Each provider declares a `TokenBound`: `TRUSTED_BYTES` reserves UTF 8 bytes plus template
+overhead, a true upper bound only for byte level tokenizers, which the operator asserts;
+`ESTIMATE` reserves the whitespace count and makes the budget soft. Actual usage always
+settles unmodified, never truncated to the reservation, and an attempt above its
+reservation returns an `Overrun` and appears in `InferenceJournal.overruns()`. A trusted
+provider that overruns is demoted to `ESTIMATE` for the process.
+
 ## Actual test results
 
 ```
@@ -550,6 +599,33 @@ tests/test_inference_journal.py::test_pre_dispatch_refusal_consumes_no_attempt_o
 tests/test_inference_journal.py::test_reservation_is_durable_before_dispatch_and_lost_charges_in_full PASSED
 tests/test_inference_journal.py::test_provider_swap_keeps_identity_and_resends_full_context PASSED
 tests/test_inference_journal.py::test_effect_citing_an_uncommitted_call_is_refused PASSED
+tests/test_inference_router.py::test_local_only_never_reaches_cloud_even_when_local_fails PASSED
+tests/test_inference_router.py::test_egress_revocation_is_durable_and_stops_cloud PASSED
+tests/test_inference_router.py::test_revocation_after_selection_is_caught_inside_the_reserve_txn PASSED
+tests/test_inference_router.py::test_policy_refusal_never_becomes_cloud_fallback PASSED
+tests/test_inference_router.py::test_capability_constraint_and_context_window_filtering PASSED
+tests/test_inference_router.py::test_local_first_by_default_and_configured_preference PASSED
+tests/test_inference_router.py::test_unhealthy_and_rate_limited_providers_are_filtered PASSED
+tests/test_inference_router.py::test_retryable_failure_falls_back_and_records_degraded PASSED
+tests/test_inference_router.py::test_cancellation_mid_stream_is_terminal_without_fallback PASSED
+tests/test_inference_router.py::test_failure_after_dispatch_charges_and_refusal_before_dispatch_does_not PASSED
+tests/test_inference_router.py::test_at_most_three_attempts_across_restart PASSED
+tests/test_inference_router.py::test_auth_failure_is_terminal_until_config_changes PASSED
+tests/test_inference_router.py::test_auth_block_keeps_provider_out_of_other_calls PASSED
+tests/test_inference_router.py::test_budget_exhaustion_refuses_before_dispatch_and_resets PASSED
+tests/test_inference_router.py::test_lost_and_outstanding_reservations_count_across_restart PASSED
+tests/test_inference_router.py::test_concurrent_admissions_never_oversubscribe_the_final_reservation PASSED
+tests/test_inference_router.py::test_untrusted_paid_cloud_needs_soft_grant_and_reports_overrun PASSED
+tests/test_inference_router.py::test_trusted_bound_violation_is_hard_overrun_and_demotes PASSED
+tests/test_inference_router.py::test_local_untrusted_runs_soft_without_a_grant PASSED
+tests/test_inference_router.py::test_fifo_queue_capacity_and_slot_release PASSED
+tests/test_inference_router.py::test_queue_timeout_and_cancel_leave_no_slot_or_waiter PASSED
+tests/test_inference_router.py::test_free_slot_on_later_candidate_and_call_limits PASSED
+tests/test_inference_router.py::test_router_releases_slots_and_tickets_on_every_exit PASSED
+tests/test_inference_router.py::test_same_conversation_second_call_is_overloaded PASSED
+tests/test_inference_router.py::test_routed_answer_keeps_identity_and_commits_once PASSED
+tests/test_inference_router.py::test_provider_failure_never_completes_the_responsibility PASSED
+tests/test_inference_router.py::test_one_thousand_randomized_calls_leak_nothing PASSED
 tests/test_invariants.py::test_i1_identity_stable_across_restart PASSED
 tests/test_invariants.py::test_i2_single_owner PASSED
 tests/test_invariants.py::test_i3_checkpoint_before_effect PASSED
@@ -585,7 +661,7 @@ tests/test_recovery.py::test_stale_external_effect_rejected_by_destination PASSE
 tests/test_recovery.py::test_authorization_revocation_survives_restart PASSED
 tests/test_recovery.py::test_real_subprocess_kill_then_recover PASSED
 tests/test_takeover.py::test_stale_owner_exits_and_successor_recovers_after_sigkill PASSED
-184 passed
+211 passed
 ```
 
-All 154 tests that predate the inference journal run unchanged. `uv run ruff check .` reports no findings.
+All 184 tests that predate the router run unchanged. `uv run ruff check .` reports no findings.

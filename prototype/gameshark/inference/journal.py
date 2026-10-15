@@ -136,6 +136,13 @@ class InferenceJournal:
             raise OwnershipMismatch(f"conversation {conversation_id} belongs to another agent")
         return row
 
+    def conversation(self, conversation_id: str) -> sqlite3.Row:
+        """Read a conversation this agent owns. Raise if it is missing or another agent's."""
+        return self._conversation(conversation_id)
+
+    def call_row(self, call_id: str) -> sqlite3.Row | None:
+        return self._call(call_id)
+
     def _call(self, call_id: str) -> sqlite3.Row | None:
         return self.conn.execute(
             "SELECT * FROM inference_calls WHERE call_id=?", (call_id,)
@@ -233,11 +240,19 @@ class InferenceJournal:
         return row is not None and row["status"] == DONE
 
     def reserve(self, call_id: str, conversation_id: str, provider: str, caps: Capabilities,
-                spec: CallSpec) -> Reservation | Committed:
+                spec: CallSpec,
+                prompt_tokens: Callable[[tuple[Message, ...]], int] | None = None,
+                admit: Callable[[sqlite3.Connection, int, int, float], None] | None = None,
+                ) -> Reservation | Committed:
         """Durably reserve the next attempt before anything leaves the process (R6).
 
         Return the committed message instead when the call is already done (replay short
         circuit). The request is built from journal rows only, never from the caller (R1).
+
+        prompt_tokens sizes the prompt for the reservation (default: estimate_tokens).
+        admit(conn, reserved_tokens, reserved_micros, now) runs inside the same write
+        transaction before any row is written; a refusal it raises rolls everything back, so
+        a refused admission consumes no attempt and no budget.
         """
         self._crash("E1_before_reserve")
         now = self.clock.now()
@@ -276,9 +291,11 @@ class InferenceJournal:
                 privacy=Privacy(conv["privacy"]), temperature=spec.temperature,
                 needs=spec.needs,
             )
-            prompt = estimate_tokens(req)
+            prompt = prompt_tokens(messages) if prompt_tokens else estimate_tokens(req)
             reserved_tokens = prompt + spec.max_tokens
             reserved_micros = cost_micros(caps, prompt, spec.max_tokens)
+            if admit is not None:
+                admit(conn, reserved_tokens, reserved_micros, now)
             request_json = json.dumps({"max_tokens": spec.max_tokens,
                                        "temperature": spec.temperature,
                                        "needs": sorted(spec.needs)})
@@ -330,13 +347,22 @@ class InferenceJournal:
         self._fenced(body)
         self._active.pop((res.call_id, res.attempt), None)
 
-    def abandon(self, res: Reservation) -> None:
+    def abandon(self, res: Reservation, error_kind: str | None = None) -> None:
         """Settle a dispatched attempt that produced no committable result at full charge.
 
         The call stays pending: its owner decides whether to retry, and the durable cap
-        bounds how often it can.
+        bounds how often it can. error_kind, when given, records why on the pending call.
         """
-        self._fenced(lambda conn: self._settle_lost(conn, res.call_id, res.attempt))
+        def body(conn: sqlite3.Connection) -> None:
+            self._settle_lost(conn, res.call_id, res.attempt)
+            if error_kind is not None:
+                conn.execute(
+                    "UPDATE inference_calls SET error_kind=?, updated=? WHERE call_id=? "
+                    "AND status=?",
+                    (error_kind, self.clock.now(), res.call_id, PENDING),
+                )
+
+        self._fenced(body)
         self._active.pop((res.call_id, res.attempt), None)
 
     @staticmethod
@@ -385,12 +411,14 @@ class InferenceJournal:
             raise ResultMismatch(f"result text of {res.call_id} disagrees with its chunks")
         return result
 
-    def commit(self, res: Reservation, result: ProviderResult) -> Committed:
+    def commit(self, res: Reservation, result: ProviderResult,
+               degraded: bool = False) -> Committed:
         """Commit one verified result. At most one assistant message per call_id (R2).
 
         Fails closed on a stale, released, or expired lease (FencedError), a superseded
         attempt (StaleAttempt), a cancelled call (CallCancelled), or a moved conversation
         (ContextConflict). A call already done returns its committed message unchanged.
+        degraded records an answer from a fallback rather than the first chosen provider.
         """
         self._check_identity(res, result.call_id, result.attempt, "result")
         caps = self._active.get((res.call_id, res.attempt))
@@ -439,9 +467,9 @@ class InferenceJournal:
                          (res.base_seq + 1, now, res.conversation_id))
             conn.execute(
                 "UPDATE inference_calls SET status=?, provider=?, model=?, instance_ref=?, "
-                "generation=?, updated=? WHERE call_id=?",
-                (DONE, res.provider, result.model, result.instance_ref, self.generation, now,
-                 res.call_id),
+                "degraded=?, error_kind=NULL, generation=?, updated=? WHERE call_id=?",
+                (DONE, res.provider, result.model, result.instance_ref, int(degraded),
+                 self.generation, now, res.call_id),
             )
             return Committed(res.call_id, res.conversation_id, res.base_seq, result.text,
                              result.model, replayed=False)
@@ -540,3 +568,24 @@ class InferenceJournal:
             (SETTLED, RESERVED, self.agent_id, since),
         ).fetchone()
         return {"tokens": row["tokens"], "micros": row["micros"]}
+
+    def overruns(self, since: float = 0.0) -> list[sqlite3.Row]:
+        """Settled attempts whose actual usage or cost exceeded their reservation.
+
+        The reservation came from a prompt estimate; actual usage is recorded unmodified,
+        so an untrusted estimate shows up here instead of being hidden.
+        """
+        return self.conn.execute(
+            "SELECT call_id, attempt, provider, reserved_tokens, reserved_micros, tokens_in, "
+            "tokens_out, cost_micros FROM budget_ledger WHERE agent_id=? AND status=? AND "
+            "window_start>=? AND (tokens_in + tokens_out > reserved_tokens OR "
+            "cost_micros > reserved_micros) ORDER BY window_start, call_id, attempt",
+            (self.agent_id, SETTLED, since),
+        ).fetchall()
+
+    def budgets(self) -> list[sqlite3.Row]:
+        return self.conn.execute(
+            "SELECT window_s, max_tokens, max_cost_micros FROM agent_budgets WHERE agent_id=? "
+            "ORDER BY window_s",
+            (self.agent_id,),
+        ).fetchall()

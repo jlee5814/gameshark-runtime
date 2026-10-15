@@ -1,6 +1,6 @@
 # GameShark inference router: v0.3 design
 
-Status: design, with steps 0 to 2 of Minimal v0.3 scope implemented (graceful drain; provider contracts and the inference journal in `prototype/gameshark/inference/`). v0.1 and v0.2 runtime code stays unchanged.
+Status: design, with steps 0 to 3 of Minimal v0.3 scope implemented (graceful drain; provider contracts, the inference journal, and the router on `FakeProvider` in `prototype/gameshark/inference/`). v0.1 and v0.2 runtime code stays unchanged.
 
 Stark gains inference without letting any model own Stark. Providers become disposable executors behind one contract; identity, memory, and responsibilities stay in GameShark's SQLite store under the existing fenced lease. The Bionic (LM Studio) study supplies the problem shape (`../research/bionic/deep-analysis.md`); GameShark code stays clean room.
 
@@ -156,18 +156,29 @@ Input: `needs`, conversation privacy, estimated prompt tokens, `max_tokens`. Out
 2. **Policy filter.** Drop cloud candidates when privacy is `LOCAL_ONLY` or the durable grant `inference.cloud` is not effective. If only cloud candidates remained: `EgressDenied`.
 3. **Ordering.** The agent's configured preference list if present; else local first, cheapest cloud second.
 4. **Health filter.** Drop models in `failed` cooldown or with an open circuit after `RateLimited`. Keep `crashed` and `unloaded`; they rematerialize lazily.
-5. **Admission.** Reserve budget, then take a slot or a queue position on the first candidate that has one.
+5. **Admission.** Take a slot or a queue position on the first candidate that has one, then reserve budget. Revised in step 3: slot first, so no reservation sits in a queue, where a crash would charge it as lost without any dispatch.
 
 On a retryable error the router moves to the next candidate. A move counts as an attempt and is a changed plan; the same candidate is retried only after its state changed (crashed instance rebuilt, `retry_after` elapsed). The committed call records `degraded = 1` when the answering model differs from the first candidate, so audit can tell a fallback answer from the requested one (OBSERVED lesson from `recoveryOriginalValues`).
+
+Policy refusals (`EgressDenied`, `BudgetExceeded`, `BudgetUnenforceable`) end the walk at once and never advance to the next candidate, so a policy denial can never turn into cloud fallback. Only a retryable failure after dispatch, or a capability refusal from `generate`, moves on.
 
 ### Budgets and admission
 
 `agent_budgets` sets, per agent and window, `max_tokens` and `max_cost_micros`. Admission writes a `budget_ledger` row with status `reserved` before dispatch:
 
-- reserved tokens = prompt tokens + `max_tokens`
-- reserved cost = prices × reserved tokens (zero for local)
+- reserved tokens = prompt bound + `max_tokens`
+- reserved cost = input price × prompt bound + output price × `max_tokens` (zero for local)
 
-Admission succeeds only if settled plus reserved spend in the window, plus this reservation, stays within limits. Output tokens cannot exceed `max_tokens`, so actual spend never exceeds the reservation and the budget never overruns (R6). On completion the row settles to actual usage; on crash or cancel it settles to the full reservation (`lost`). Spend counts attempts, not commits: cloud providers bill a discarded answer.
+Windows are fixed and aligned: a window of `w` seconds starts at `floor(now / w) * w`, and `BudgetExceeded.reset_at` is the next boundary (infinity when one request alone exceeds a limit). Spend counts settled attempts at actual usage and lost or still reserved attempts at their full reservation. The check and the ledger insert run in the reserve transaction (`BEGIN IMMEDIATE`), so concurrent admissions on any connection or process serialize and cannot both take the last of a budget; a refusal rolls back and consumes no attempt. On completion the row settles to actual usage; on crash or cancel it settles to the full reservation (`lost`). Spend counts attempts, not commits: cloud providers bill a discarded answer. Fixed windows admit up to twice a limit across a boundary.
+
+**Token accounting limitation.** The first draft claimed the budget never overruns because output cannot exceed `max_tokens`. That holds only if the prompt term bounds the provider's real prompt count, and `estimate_tokens` (whitespace words) bounds no real tokenizer: subword splits, punctuation, non Latin text, and chat templates all add tokens. Step 3 makes the prompt bound an explicit per provider policy (`TokenBound`):
+
+| Bound | Reservation | Budget |
+|---|---|---|
+| `TRUSTED_BYTES` | UTF 8 bytes + 8 per message + 16 | hard, valid only for byte level BPE or byte fallback tokenizers (at least one byte per token), which the operator asserts in configuration; roughly 3 to 4 times the true count for English |
+| `ESTIMATE` | whitespace words | soft. A paid provider under any configured budget is refused before dispatch (`BudgetUnenforceable`) unless the durable grant `inference.cloud.soft_budget` is effective. Local providers cost nothing and run soft without a grant |
+
+Actual usage always settles unmodified and is never truncated to fit the reservation. An attempt whose actual tokens or cost exceed its reservation returns an `Overrun` and appears in `InferenceJournal.overruns()`; later admissions see the actual spend, so a soft overrun shrinks what remains of the window. A soft budget can overrun by the estimation error of the attempts in flight when it runs out. A trusted provider that overruns violated its declared bound: the overrun is flagged hard and the provider is demoted to `ESTIMATE` for the process. No cloud budget is hard until a provider reports a trusted bound; increment 4 can tighten this with provider reported prompt counts.
 
 ### Concurrency, queueing, backpressure
 
@@ -176,10 +187,10 @@ Admission succeeds only if settled plus reserved spend in the window, plus this 
 | Slots per provider | `max_concurrency` (SGLang 8, MLX 1, LM Studio 1, cloud 4; config) | enqueue |
 | Queue depth per provider | 16 | `Overloaded(retry_after)` |
 | In flight per agent | 4 | `Overloaded(retry_after)` |
-| In flight per conversation | 1 | caller waits for the prior call's commit |
+| In flight per conversation | 1 | `Overloaded(retry_after)`; the caller reissues after the prior call's commit |
 | Executor threads | sum of slots | never exceeded; slots bound it |
 
-Queues are FIFO per provider. A full queue fails fast rather than blocking the tick thread. The caller does not spin: an inbox event stays pending and replays; a responsibility sets `next_due = now + retry_after`, reusing the v0.2 scheduler. `retry_after` estimates queue depth × median call latency, capped at 60 s.
+Queues are FIFO per provider; a freed slot passes directly to the queue head, so no waiter spins or races a newcomer. Queue waits are bounded (`max_queue_wait_s`, default 0: refuse at once) and wake on cancellation. A full queue fails fast rather than blocking the tick thread. The caller does not spin: an inbox event stays pending and replays; a responsibility sets `next_due = now + retry_after`, reusing the v0.2 scheduler. `retry_after` estimates queue depth × median call latency, capped at 60 s.
 
 The per conversation limit keeps context linear: a call snapshots `base_seq`, and its commit requires `conversations.next_seq == base_seq`; a mismatch raises `ContextConflict`, and the caller reissues with fresh context.
 
@@ -240,7 +251,8 @@ The tracker keeps one in memory record per configured model. No lifecycle state 
 | `ContextTooLong` | terminal | never (no silent truncation) | `blocked`, one notification |
 | `BudgetExceeded(reset_at)` | terminal for the window | resumes after `reset_at` | `next_due = reset_at`, one notification |
 | `EgressDenied` | terminal | after the grant returns | `blocked`, one notification |
-| `AuthFailed` | terminal | after operator `resume` | `blocked`, one notification (v0.2 pattern) |
+| `BudgetUnenforceable` | terminal, before dispatch | after a trusted bound or the soft budget grant | `blocked`, one notification |
+| `AuthFailed` | terminal, no failover | replay refused until the provider's config fingerprint changes (recorded in `error_kind`) | `blocked`, one notification (v0.2 pattern) |
 | `InvalidRequest` | terminal | never; a bug | `blocked`, logged |
 | `Cancelled` | terminal | never (operator intent, OBSERVED `isExplicitModelUnloadError` lesson) | as requested by the operator |
 | `AttemptsExhausted` | terminal | never | `blocked`, one notification |
@@ -334,7 +346,7 @@ These extend I1 to I7 in `continuity-invariants.md`.
 - **R3 Linear context.** An assistant message commits only at `seq = base_seq = next_seq`; message sequences stay contiguous.
 - **R4 Fenced writes.** Every inference write carries the current lease generation; a stale, released, or expired owner commits nothing. `guard_in_txn` checks expiry against the injected clock inside the write transaction, so a late completion after expiry fails closed even with no successor (issue #10).
 - **R5 No effect from uncommitted output.** An `EffectJournal` intent derived from model output must reference a `done` `call_id`. Streamed chunks never reach an external surface.
-- **R6 Reserve before spend.** A ledger reservation commits before any request leaves the process, and admitted spend never exceeds the window budget.
+- **R6 Reserve before spend.** A ledger reservation commits before any request leaves the process, and reserved spend never exceeds the window budget. Actual spend stays within it only under a trusted token bound; see the token accounting limitation.
 - **R7 Egress under grant.** No request byte reaches a cloud provider unless the conversation is `cloud_ok` and `inference.cloud` is effective at dispatch time.
 - **R8 Bounded work.** Attempts per call ≤ 3 across restarts; queue depth per provider ≤ its bound; in flight per provider ≤ its slots; in flight per conversation ≤ 1.
 - **R9 Operator intent is terminal.** Cancel, unwatch, and grant revocation are never retried or resurrected by recovery.
@@ -378,7 +390,7 @@ Ordered increments; each lands with its own tests and leaves the suite green.
 0. **Prerequisites.** Done. PR #6 fixed the `LeaseManager.renew` double rollback that could mask `FencedError`. Graceful draining added the `draining` lease state, a heartbeat that renews through the drain, bounded drain deadlines, and release fencing; see `prototype/README.md`, Graceful drain and handoff.
 1. **Contracts.** Done. `inference/types.py` (immutable values, error taxonomy), `inference/provider.py` (`Provider`, request scoped `ProviderCall`), `inference/fake.py` (`FakeProvider` with deterministic text, scripted delays, faults per chunk index, invocation counts). Reuses the existing `CancelToken`. Pure unit tests in `tests/test_inference_contracts.py`.
 2. **Journal.** Done. Tables plus `InferenceJournal` (reserve, commit, short circuit, recovery settlement) with crash points E1 to E4 using the existing `crash_at` hook; `collect` verifies chunk and result identity; new errors `ResultMismatch`, `StaleAttempt`, `OwnershipMismatch`, `CallCancelled`; effects citing an uncommitted `call_id` are refused (R5). Tests in `tests/test_inference_journal.py`; see `prototype/README.md`, Inference journal.
-3. **Router.** Capability, policy, ordering, health, admission, bounded queues, failover, degraded flag. Fake providers only.
+3. **Router.** Done. `inference/router.py` (selection, policy, failover, degraded flag, `TokenBound`), `inference/scheduler.py` (slots, bounded FIFO queues, per agent and per conversation limits), `inference/budget.py` (fixed window admission inside the reserve transaction). Journal additions are optional arguments (`prompt_tokens`, `admit`, `error_kind`, `degraded`); E1 to E4 unchanged. Fake providers only; no worker executor (step 6) or lifecycle tracker (step 5): health is a cached `health()` probe plus rate limit circuits and auth blocks. Tests in `tests/test_inference_router.py`; see `prototype/README.md`, Inference router.
 4. **OpenAI compatible provider.** stdlib HTTP plus SSE; tested against a local HTTP fixture in the style of `tests/test_github_rest.py`. No new runtime dependency.
 5. **Lifecycle tracker.** Health probes, crashed, failed with cooldown, lazy load, replacement drain. Externally managed servers only.
 6. **Worker integration.** Executor, completion queue, tick thread commits, handoff steps 1 to 6; subprocess SIGKILL tests in the style of `tests/test_daemon.py`.

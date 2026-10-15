@@ -99,8 +99,24 @@ class ProviderRequest:
 
 
 def estimate_tokens(req: ProviderRequest) -> int:
-    """Prompt size in whitespace words: a stand in until a provider reports a tokenizer."""
+    """Prompt size in whitespace words: a stand in until a provider reports a tokenizer.
+
+    Not an upper bound. A real tokenizer splits words, punctuation, and non Latin text
+    into many tokens and adds chat template tokens, so actual prompt usage can exceed this
+    figure several times over. Budgets built on it are soft; see router.TokenBound.
+    """
     return sum(len(m.content.split()) for m in req.messages)
+
+
+def prompt_bytes_bound(messages: Iterable[Message], per_message: int, fixed: int) -> int:
+    """Upper bound on prompt tokens for a byte level tokenizer.
+
+    Byte level BPE and byte fallback tokenizers emit at least one byte per token, so the
+    UTF 8 byte count bounds content tokens; per_message and fixed cover chat template
+    tokens. Valid only when the operator asserts the provider's tokenizer has this property.
+    """
+    msgs = tuple(messages)
+    return sum(len(m.content.encode()) for m in msgs) + per_message * len(msgs) + fixed
 
 
 @dataclass(frozen=True)
@@ -210,6 +226,13 @@ class BudgetExceeded(ProviderError):
 
 
 class EgressDenied(ProviderError):
+    before_dispatch = True
+
+
+class BudgetUnenforceable(ProviderError):
+    """A paid provider has no trusted token upper bound, a budget applies, and soft budget
+    mode is not durably authorized. Refused before dispatch; never a cloud fallback."""
+
     before_dispatch = True
 
 
