@@ -8,6 +8,8 @@ Reports p50 and p99 in milliseconds for:
     select+slot   InferenceRouter.select plus Scheduler.admit_call and acquire/release
     durable       one InferenceRouter.complete with a zero delay FakeProvider: two fenced
                   writes (reserve, commit) with synchronous=FULL, plus provider and checks
+    tracker       ModelTracker.admit plus release on an idle model (no probe)
+    durable+trk   the durable path with a ModelTracker attached
 """
 
 from __future__ import annotations
@@ -28,8 +30,11 @@ from gameshark.inference import (
     FakeProvider,
     InferenceRouter,
     Locality,
+    ModelTracker,
     ProviderConfig,
+    ProviderHealth,
     Role,
+    Scheduler,
     TokenBound,
 )
 from gameshark.lifecycle import CancelToken
@@ -52,9 +57,11 @@ def main(n: int) -> None:
             for name in ("a", "b", "c")
         ]
         router = InferenceRouter(j, providers)
+        tracker = ModelTracker(Scheduler(), ProviderHealth())
+        tracked = InferenceRouter(j, providers, tracker=tracker)
         j.set_budget(3600.0, 10**12, 10**12)
         spec = CallSpec(max_tokens=16)
-        for i in range(n):
+        for i in range(2 * n + 1):
             j.open_conversation(f"c{i}")
             j.append(f"c{i}", Role.SYSTEM, "you are stark", 0)
             j.append(f"c{i}", Role.USER, f"question {i}", 1)
@@ -71,9 +78,22 @@ def main(n: int) -> None:
             t0 = time.perf_counter()
             router.complete(f"k{i}", f"c{i}", spec, CancelToken())
             durable.append(time.perf_counter() - t0)
+
+        tracked.complete("warm", f"c{n}", spec, CancelToken())  # load once, outside timing
+        admit: list[float] = []
+        durable_trk: list[float] = []
+        for i in range(n):
+            t0 = time.perf_counter()
+            tracker.admit("a", 1, CancelToken()).release()
+            admit.append(time.perf_counter() - t0)
+
+            t0 = time.perf_counter()
+            tracked.complete(f"t{i}", f"c{n + 1 + i}", spec, CancelToken())
+            durable_trk.append(time.perf_counter() - t0)
         sup.close()
 
-    for name, s in (("select+slot", select), ("durable", durable)):
+    for name, s in (("select+slot", select), ("durable", durable), ("tracker", admit),
+                    ("durable+trk", durable_trk)):
         print(f"{name:12s} n={len(s)} p50={pct(s, 50):.3f} ms p99={pct(s, 99):.3f} ms")
 
 

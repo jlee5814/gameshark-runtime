@@ -164,7 +164,7 @@ the property does not hold.
 cd /Users/jaebonglee/Projects/gameshark-research/prototype
 uv venv --python 3.13
 uv pip install pytest
-uv run pytest -v                 # all 184 tests (v0.1 + v0.2 + lease fencing + draining + expiry + v0.3 contracts + journal)
+uv run pytest -v                 # all 316 tests (v0.1, v0.2, fencing, draining, expiry, v0.3 steps 1 to 5)
 uv run python demo.py            # v0.1 narrated Stark run with a real SIGKILL
 uv run python demo_v2.py         # v0.2 PR monitoring across a real SIGKILL and a revoke
 uv run python companion.py <runtime_db>   # render the companion feed for a run
@@ -194,6 +194,9 @@ uv run python bench/router_overhead.py
 # OpenAI compatible provider: SSE, usage, cancellation, locality, redaction, E1 to E4
 uv run pytest -v tests/test_openai_compat.py
 uv run python bench/openai_compat.py
+
+# model lifecycle tracker: lazy readiness, crash versus failure, cooldown, replacement
+uv run pytest -v tests/test_model_tracker.py
 
 # individual critical tests
 uv run pytest -v tests/test_recovery.py::test_real_subprocess_kill_then_recover
@@ -505,6 +508,107 @@ bound only under a `TRUSTED_BYTES` bound (the server receives `max_tokens`); und
 `ESTIMATE` the budget stays soft and the existing `BudgetUnenforceable` gate still applies
 to paid providers.
 
+## Model lifecycle tracker (v0.3 step 5)
+
+Implements step 5 of `../architecture/inference-router.md`: `ModelTracker` in
+`gameshark/inference/tracker.py`. It makes availability, crash, recovery, and replacement
+explicit for externally managed servers. GameShark never starts, kills, restarts, or
+unloads an SGLang, MLX, or LM Studio process: loading is a readiness check and unloading
+only stops routing. The tracker is opt in (`InferenceRouter(..., tracker=...)`); without
+one the router behaves exactly as in step 4. Worker and daemon wiring land in step 6.
+
+Everything here lives in memory. A restart builds every configured model at `discovered`;
+identity, conversations, messages, responsibilities, and the ledger stay in SQLite, which
+the tracker never reads or writes.
+
+| State | Meaning | Leaves for |
+|---|---|---|
+| `discovered` | configured, never probed by this process | `loading` on first demand |
+| `loading` | a load plan is probing the endpoint | `ready`, next plan (`loading`), `failed` |
+| `ready` | probe passed; no token served on this incarnation yet | `executing`, `crashed`, `unloaded` |
+| `executing` | at least one admitted call | `idle`, or `ready` if no token streamed |
+| `idle` | served a token, none in flight | `executing`, `crashed`, `unloaded` |
+| `unloading` | replacement requested; admits nothing; in flight calls drain | `unloaded` |
+| `unloaded` | drained (retired by a replacement) or evicted externally | `loading` on demand |
+| `crashed` | a probe found the endpoint gone after it served | `loading` on demand, new incarnation |
+| `failed` | three plans failed, or the crash cycle bound was hit | `discovered` after the cooldown |
+
+Readiness has three levels, and the tracker never treats one as another:
+
+| Level | Evidence | What it proves |
+|---|---|---|
+| Endpoint ready | `GET /v1/models` answers 200 | the server process accepts HTTP |
+| Model available | the configured model id appears in that list | the server routes the name. LM Studio with JIT lists downloaded models that are not loaded, and `mlx_lm.server` loads on first request |
+| GPU resident | a call on this incarnation streamed its first chunk | weights served a token. The OpenAI API exposes no residency query, so this is the only evidence; the tracker records it as `Readiness.RESIDENT` and never assumes it from a probe |
+
+Lazy readiness. The first demand starts one load job per model (single flight); every
+concurrent caller waits on it, bounded by `load_wait_s` and woken at once by its own
+cancel token. A load cycle runs at most three plans, each materially different; a policy
+that repeats a plan, or lists more than three, is refused at construction.
+
+| Plan | Probe timeout | Delay | Accepts |
+|---|---|---|---|
+| `probe` | 1 s | none | model listed |
+| `patient` | 10 s | 2 s | model listed (SGLang still loading weights) |
+| `endpoint_only` | 10 s | 2 s | endpoint up, model unlisted (LM Studio JIT loads on the first request) |
+
+After the third failure the model is `failed` for `cooldown_s` (300 s): routing skips it,
+admission raises `ModelUnavailable(retry_after)` with no probe, and nothing reaches the
+ledger. A `ready` or `idle` model unused for `verify_ttl_s` (30 s) is probed again on
+demand: endpoint gone means `crashed`; model no longer listed means `unloaded` (LM Studio
+auto evict), and the same demand reloads it.
+
+Crash versus request failure. The tracker never calls a model crashed because a request
+failed.
+
+| Call outcome | Tracker action |
+|---|---|
+| `Timeout`, `RateLimited`, `InvalidRequest`, `AuthFailed`, `ResultMismatch` | request failure counted; state unchanged; no probe |
+| `ProviderCancelled` (operator) | nothing |
+| `ProviderUnavailable`, `StreamInterrupted`, `ModelCrashed` | suspicion recorded; in flight calls continue; the next demand probes first |
+| probe after suspicion answers | suspicion cleared; same incarnation |
+| probe after suspicion finds the endpoint gone | `crashed`; reload on that demand; new incarnation |
+
+Bounded recovery. Each crash then reload cycle counts; a completed call resets the count.
+At `max_recoveries` (3) the model goes `failed` with cooldown, so a server that loads and
+dies on every call stops being retried. The durable cap of three attempts per `call_id`
+still applies on top.
+
+Replacement. `tracker.replace(new_config, drain_timeout_s)`:
+
+1. The old record moves to `unloading`; it admits nothing new.
+2. Admitted calls finish on the old configuration until `drain_timeout_s`. Calls still
+   running then are cancelled through their own child `CancelToken`; the router settles
+   that attempt `lost` and reruns the call on the successor, not as an operator cancel.
+3. The old record moves to `unloaded`; the successor starts at `discovered` with the next
+   generation. `Scheduler.configure` takes its slot count; `ProviderHealth.reset` clears
+   circuits, demotion, and cached health for the name.
+4. A call arriving during the drain waits up to `replace_wait_s` for the successor, then
+   selects again: capability, privacy, and the egress grant are judged against the new
+   configuration, so a replacement can neither bypass `inference.cloud` nor silently
+   truncate context. With no wait budget it fails over to the next candidate. Either way
+   no attempt or budget is consumed before dispatch.
+
+Conversations need no migration: the next call resends the full context from SQLite. A
+committed call records the tracker incarnation in `inference_calls.instance_ref`
+(`name:generation.incarnation`), so audit can tell answers from different incarnations.
+
+The tracker reuses `Scheduler` (sole owner of slots and queues), `ProviderHealth`
+(circuits and auth blocks; `blocked` now separates them from the eager probe), and
+`CancelToken`. Its `in_flight` count limits nothing; it only tells a replacement when the
+drain finished.
+
+### Manual live smoke (observed, not CI)
+
+After PR #15 merged, a manual run routed a call through `OpenAICompatProvider` to an
+externally managed SGLang/MLX server serving `mlx-community/Qwen3-4B-4bit`. The answer
+committed durably to SQLite, and constructing a new supervisor and replaying the same
+call returned the committed answer with zero provider calls. This is observed evidence
+from one operator run on one host. CI never contacts a model server and does not
+guarantee this behavior; the deterministic suite proves the same properties against
+`FakeProvider` and the loopback fixture. The tracker itself has not yet run against a live
+server.
+
 ## Actual test results
 
 ```
@@ -706,6 +810,29 @@ tests/test_lifecycle.py::test_draining_refuses_new_work_before_it_persists PASSE
 tests/test_lifecycle.py::test_cancel_leaves_event_pending_for_successor PASSED
 tests/test_lifecycle.py::test_run_forever_drains_on_stop_and_releases PASSED
 tests/test_lifecycle.py::test_v02_lease_table_migrates_in_place PASSED
+tests/test_model_tracker.py::test_models_start_discovered_and_nothing_probes_before_demand PASSED
+tests/test_model_tracker.py::test_transition_table_plans_and_wiring_are_validated PASSED
+tests/test_model_tracker.py::test_concurrent_first_demand_loads_once PASSED
+tests/test_model_tracker.py::test_ready_is_not_resident_until_a_token_streams PASSED
+tests/test_model_tracker.py::test_unlisted_http_model_loads_only_through_the_endpoint_only_plan PASSED
+tests/test_model_tracker.py::test_verify_ttl_reprobes_and_detects_external_eviction PASSED
+tests/test_model_tracker.py::test_unavailable_http_endpoint_fails_after_three_plans_with_zero_requests PASSED
+tests/test_model_tracker.py::test_cooldown_elapses_then_the_model_loads_again PASSED
+tests/test_model_tracker.py::test_request_failures_never_suspect_the_model PASSED
+tests/test_model_tracker.py::test_transport_failure_is_suspected_then_cleared_by_a_probe PASSED
+tests/test_model_tracker.py::test_confirmed_crash_rematerializes_a_new_incarnation PASSED
+tests/test_model_tracker.py::test_http_server_gone_is_suspected_then_crashed_then_failed PASSED
+tests/test_model_tracker.py::test_crash_loop_stops_at_max_recoveries_and_success_resets PASSED
+tests/test_model_tracker.py::test_cancel_while_waiting_for_a_load_costs_nothing_and_the_load_finishes PASSED
+tests/test_model_tracker.py::test_operator_cancel_mid_call_is_terminal_and_leaves_the_model_healthy PASSED
+tests/test_model_tracker.py::test_replacement_drains_the_active_call_and_serves_new_arrivals PASSED
+tests/test_model_tracker.py::test_drain_deadline_cancels_the_old_call_and_reruns_it_on_the_successor PASSED
+tests/test_model_tracker.py::test_arrival_during_replacement_without_wait_fails_over_without_an_attempt PASSED
+tests/test_model_tracker.py::test_replacement_mid_load_is_judged_again_against_the_new_window PASSED
+tests/test_model_tracker.py::test_replacement_that_turns_cloud_still_needs_the_egress_grant PASSED
+tests/test_model_tracker.py::test_replacement_keeps_identity_and_conversation_and_resends_full_context PASSED
+tests/test_model_tracker.py::test_restart_rebuilds_lifecycle_and_replays_without_provider_calls PASSED
+tests/test_model_tracker.py::test_concurrent_calls_faults_and_replacements_leak_nothing PASSED
 tests/test_openai_compat.py::test_sse_decoder_whole_stream PASSED
 tests/test_openai_compat.py::test_sse_decoder_every_split_point_and_bytewise PASSED
 tests/test_openai_compat.py::test_sse_decoder_rejects_bad_utf8_truncated_sequence_and_oversize PASSED
@@ -802,7 +929,7 @@ tests/test_recovery.py::test_stale_external_effect_rejected_by_destination PASSE
 tests/test_recovery.py::test_authorization_revocation_survives_restart PASSED
 tests/test_recovery.py::test_real_subprocess_kill_then_recover PASSED
 tests/test_takeover.py::test_stale_owner_exits_and_successor_recovers_after_sigkill PASSED
-293 passed
+316 passed
 ```
 
-All 211 tests that predate the HTTP provider run unchanged. `uv run ruff check .` reports no findings.
+All 293 tests that predate the lifecycle tracker run unchanged. `uv run ruff check .` reports no findings.
