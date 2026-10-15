@@ -7,6 +7,9 @@ in the same messages table the inference journal uses, so a surface message is o
 context for the next model call and the assistant reply still commits only through the
 journal.
 
+A resend must carry the original conversation and text; a reused id with other text is
+rejected, never acknowledged as the old message.
+
 A dedup hit wins over the presence check: a message that landed before a jack stays
 landed, and its resend returns the same seq instead of StalePresence.
 
@@ -59,12 +62,16 @@ class SurfaceConversation:
         with write_txn(self.conn):
             self.lease.guard_in_txn(self.generation)
             seen = self.conn.execute(
-                "SELECT conversation_id, seq FROM surface_writes "
-                "WHERE agent_id=? AND client_msg_id=?", (self.agent_id, client_msg_id),
+                "SELECT w.conversation_id, w.seq, m.content FROM surface_writes w "
+                "LEFT JOIN messages m ON m.conversation_id = w.conversation_id "
+                "AND m.seq = w.seq WHERE w.agent_id=? AND w.client_msg_id=?",
+                (self.agent_id, client_msg_id),
             ).fetchone()
             if seen is not None:
                 if seen["conversation_id"] != conversation_id:
                     raise InvalidRequest(f"{client_msg_id} already names another conversation")
+                if seen["content"] != content:
+                    raise InvalidRequest(f"{client_msg_id} was already sent with other text")
                 return Submitted(conversation_id, seen["seq"], replayed=True)
             self.presence.guard_surface_in_txn(surface, presence_gen)
             conv = self.conn.execute(

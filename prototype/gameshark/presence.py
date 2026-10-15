@@ -14,6 +14,11 @@ A jack is a two phase handoff, every transition one fenced transaction:
     committed --ack deadline | target lost-----> reverted  (generation + 1, surface = home,
                                                             or source when home failed)
 
+ready_out comes only from the source surface at the generation the jack started under;
+the prepare deadline is a separate trusted path that tick() alone drives. An ack_in at or
+past its deadline reverts in its own transaction, so a late ack never lands even when
+tick() has not run.
+
 Deadlines persist as absolute times, so a runtime killed mid jack resolves the same way
 after restart: tick() finishes whatever the dead process left open (P3). At most one
 handoff is open at a time, and presence always names exactly one surface (P1).
@@ -172,49 +177,82 @@ class PresenceManager:
         self._crash("P1_after_prepare")
         return h
 
-    def ready_out(self, handoff_id: str, draft: str | None = None) -> Handoff:
-        """Source finished its exit: move presence to the target. Idempotent after commit."""
-        h = self._commit(handoff_id, draft, carry_draft=True)
+    def ready_out(self, handoff_id: str, surface: str, presence_gen: int,
+                  draft: str | None = None) -> Handoff:
+        """Source finished its exit: move presence to the target.
+
+        Only the jack's source at the generation the jack started under may call this, and
+        the check runs in the commit transaction. A replay from that source after commit
+        returns the committed handoff unchanged; anyone else gets StalePresence.
+        """
+        now = self.clock.now()
+
+        def body(conn: sqlite3.Connection) -> Handoff:
+            row = self._handoff_row(handoff_id)
+            if row["from_surface"] != surface or row["from_gen"] != presence_gen:
+                raise StalePresence(f"{surface}@{presence_gen} is not the source of "
+                                    f"{handoff_id}")
+            if row["state"] != PREPARING:
+                return Handoff.of(row)          # already committed, acked, or resolved
+            self.guard_surface_in_txn(surface, presence_gen)
+            return self._commit_in_txn(conn, row, draft, now)
+
+        h = self._fenced(body)
         self._crash("P2_after_commit")
         return h
 
-    def _commit(self, handoff_id: str, draft: str | None, carry_draft: bool) -> Handoff:
+    def _expire_prepare(self, handoff_id: str) -> Handoff:
+        """Trusted deadline path, reached only from tick(): commit without a draft."""
         now = self.clock.now()
 
         def body(conn: sqlite3.Connection) -> Handoff:
             row = self._handoff_row(handoff_id)
-            if row["state"] != PREPARING:
-                return Handoff.of(row)          # already committed, acked, or resolved
-            p = self._presence()
-            to_gen = p["generation"] + 1
-            conn.execute("UPDATE presence SET surface=?, generation=?, updated=? "
-                         "WHERE agent_id=?", (row["to_surface"], to_gen, now, self.agent_id))
-            conn.execute(
-                "UPDATE handoffs SET state=?, to_gen=?, draft=?, ack_deadline=?, updated=? "
-                "WHERE id=?",
-                (COMMITTED, to_gen, draft if carry_draft else None,
-                 now + self.ack_timeout_s, now, handoff_id))
-            return Handoff.of(self._handoff_row(handoff_id))
+            if row["state"] != PREPARING or now < row["prepare_deadline"]:
+                return Handoff.of(row)
+            return self._commit_in_txn(conn, row, None, now)
 
         return self._fenced(body)
 
+    def _commit_in_txn(self, conn: sqlite3.Connection, row: sqlite3.Row,
+                       draft: str | None, now: float) -> Handoff:
+        p = self._presence()
+        to_gen = p["generation"] + 1
+        conn.execute("UPDATE presence SET surface=?, generation=?, updated=? "
+                     "WHERE agent_id=?", (row["to_surface"], to_gen, now, self.agent_id))
+        conn.execute(
+            "UPDATE handoffs SET state=?, to_gen=?, draft=?, ack_deadline=?, updated=? "
+            "WHERE id=?",
+            (COMMITTED, to_gen, draft, now + self.ack_timeout_s, now, row["id"]))
+        return Handoff.of(self._handoff_row(row["id"]))
+
     def ack_in(self, handoff_id: str, surface: str, presence_gen: int) -> Handoff:
-        """Target finished its arrival. Rejects a target that already lost presence."""
+        """Target finished its arrival. Rejects a target that already lost presence.
+
+        An ack at or past the ack deadline loses even when tick() has not run yet: the
+        same transaction reverts the jack, commits, and the caller gets StalePresence.
+        """
         now = self.clock.now()
 
-        def body(conn: sqlite3.Connection) -> Handoff:
+        def body(conn: sqlite3.Connection) -> Handoff | None:
             row = self._handoff_row(handoff_id)
-            if row["state"] == ACKED and row["to_gen"] == presence_gen:
+            if (row["state"] == ACKED and row["to_surface"] == surface
+                    and row["to_gen"] == presence_gen):
                 return Handoff.of(row)
             if row["state"] != COMMITTED or row["to_surface"] != surface:
                 raise StalePresence(f"handoff {handoff_id} is {row['state']}, not awaiting "
                                     f"{surface}")
             self.guard_surface_in_txn(surface, presence_gen)
+            if now >= row["ack_deadline"]:
+                self._revert_in_txn(conn, row, now)
+                return None                     # commit the revert, then reject
             conn.execute("UPDATE handoffs SET state=?, updated=? WHERE id=?",
                          (ACKED, now, handoff_id))
             return Handoff.of(self._handoff_row(handoff_id))
 
-        return self._fenced(body)
+        h = self._fenced(body)
+        if h is None:
+            raise StalePresence(f"handoff {handoff_id} ack deadline passed; reverted")
+        return h
 
     def surface_lost(self, surface: str) -> Handoff | None:
         """A surface disconnected. Abort or revert an open jack that targets it."""
@@ -232,7 +270,7 @@ class PresenceManager:
         if h.state == PREPARING and now >= h.prepare_deadline:
             # The source never confirmed; it may be dead. The target is live, so commit
             # without a draft rather than strand the jack.
-            return self._commit(h.id, None, carry_draft=False)
+            return self._expire_prepare(h.id)
         if h.state == COMMITTED and h.ack_deadline is not None and now >= h.ack_deadline:
             return self._resolve(h.id, lost=False)
         return None
@@ -246,17 +284,19 @@ class PresenceManager:
                 conn.execute("UPDATE handoffs SET state=?, updated=? WHERE id=?",
                              (ABORTED, now, handoff_id))
             elif row["state"] == COMMITTED:
-                p = self._presence()
-                # Fall back home, unless home is the target that just failed.
-                back = row["from_surface"] if row["to_surface"] == p["home"] else p["home"]
-                conn.execute("UPDATE presence SET surface=?, generation=?, updated=? "
-                             "WHERE agent_id=?",
-                             (back, p["generation"] + 1, now, self.agent_id))
-                conn.execute("UPDATE handoffs SET state=?, updated=? WHERE id=?",
-                             (REVERTED, now, handoff_id))
+                self._revert_in_txn(conn, row, now)
             return Handoff.of(self._handoff_row(handoff_id))
 
         return self._fenced(body)
+
+    def _revert_in_txn(self, conn: sqlite3.Connection, row: sqlite3.Row, now: float) -> None:
+        p = self._presence()
+        # Fall back home, unless home is the target that just failed.
+        back = row["from_surface"] if row["to_surface"] == p["home"] else p["home"]
+        conn.execute("UPDATE presence SET surface=?, generation=?, updated=? "
+                     "WHERE agent_id=?", (back, p["generation"] + 1, now, self.agent_id))
+        conn.execute("UPDATE handoffs SET state=?, updated=? WHERE id=?",
+                     (REVERTED, now, row["id"]))
 
     def _handoff_row(self, handoff_id: str) -> sqlite3.Row:
         row = self.conn.execute(
