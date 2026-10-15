@@ -480,6 +480,13 @@ class InferenceRouter:
         finally:
             call.close()
         if use is not None:
+            if not use.seal():
+                # Evicted before it could commit: a provider that ignored the cancel answered
+                # for the retired incarnation. Settle lost and rerun on the successor.
+                journal.abandon(res, ModelReplaced.__name__)
+                if cancel.cancelled:
+                    raise ProviderCancelled(cancel.reason)
+                return ModelReplaced(f"{cand.name} replaced during call {call_id}")
             use.observe(None)
             # Audit the tracker's incarnation: providers of external servers cannot see one.
             result = dataclasses.replace(result, instance_ref=use.instance_ref)
