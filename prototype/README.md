@@ -198,6 +198,9 @@ uv run python bench/openai_compat.py
 # model lifecycle tracker: lazy readiness, crash versus failure, cooldown, replacement
 uv run pytest -v tests/test_model_tracker.py
 
+# inference executor and daemon: deferred events, bounds, fencing, SIGKILL, SIGTERM
+uv run pytest -v tests/test_inference_executor.py tests/test_daemon_inference.py -s
+
 # individual critical tests
 uv run pytest -v tests/test_recovery.py::test_real_subprocess_kill_then_recover
 uv run pytest -v tests/test_recovery.py::test_c_crash_after_remote_before_journal
@@ -515,7 +518,7 @@ Implements step 5 of `../architecture/inference-router.md`: `ModelTracker` in
 explicit for externally managed servers. GameShark never starts, kills, restarts, or
 unloads an SGLang, MLX, or LM Studio process: loading is a readiness check and unloading
 only stops routing. The tracker is opt in (`InferenceRouter(..., tracker=...)`); without
-one the router behaves exactly as in step 4. Worker and daemon wiring land in step 6.
+one the router behaves exactly as in step 4. Step 6 makes it mandatory on the async path.
 
 Everything here lives in memory. A restart builds every configured model at `discovered`;
 identity, conversations, messages, responsibilities, and the ledger stay in SQLite, which
@@ -620,6 +623,75 @@ guarantee this behavior; the deterministic suite proves the same properties agai
 `FakeProvider` and the loopback fixture. The tracker itself has not yet run against a live
 server.
 
+## Inference executor and daemon integration (v0.3 step 6)
+
+Implements step 6 of `../architecture/inference-router.md`. A model call can take 30 to
+120 s; the daemon must keep renewing its lease, polling GitHub, and applying operator
+requests meanwhile, without giving up single writer SQLite, fencing, replay, replacement
+safety, or cancellation.
+
+Threads and ownership:
+
+| Thread | Owns | Never does |
+|---|---|---|
+| coordinator (`run_forever`) | the supervisor connection: select, reserve, commit, continuation, ack | provider I/O, probes, waits on a model |
+| executor pool (`InferenceExecutor`) | `tracker.admit` (load, probe, replacement wait) and stream collection | any SQLite access; a typed `Completion` is its only output |
+| heartbeat | its own connection: renewals, drain deadline, grace abort | anything else |
+
+`InferenceRouter` now runs one attempt as phases (`begin`, `claim`, `load`, `reserve`,
+`execute`, `settle`, `advance`). `complete()` runs them inline with unchanged behavior; the
+executor runs `load` and `execute` on its threads and the rest on the coordinator, so both
+paths share one scheduler, one budget, and the PR #17 seal before commit ordering.
+`check_same_thread` makes an executor touching the coordinator's connection an error, and
+a test traces every statement to the coordinator thread.
+
+Bounds. Executor threads default to the provider slot total and never grow. Slots are
+claimed without queueing, so every job belongs to a call that already holds a slot and no
+executor waits on another job: no deadlock. Calls in flight are capped at
+`completion_depth`, one job each, so a completion never blocks. A full provider or a full
+executor refuses with `Overloaded` before anything is reserved.
+
+Event ownership. A handler returns an `InferenceTask` instead of blocking. The event stays
+`pending` and claimed in memory until the call settles and its continuation runs; only
+then is it acked. Replay and redelivery skip claimed events, so one event never runs
+twice at once. Outcomes:
+
+| Outcome | Event |
+|---|---|
+| committed (or already done on replay) | continuation, then ack |
+| terminal (`AttemptsExhausted`, `CallCancelled`, policy refusal) | error continuation (responsibility blocked), then ack |
+| retryable (`Overloaded`, `ModelUnavailable`, `Timeout` under the cap, ...) | released; redelivered after `retry_after` with the same call_id |
+| cancelled by the drain | released; the successor replays it |
+| `FencedError` | dropped without any write; no ack, no effect |
+
+Restart recovery is unchanged: it settles abandoned reservations, then replays pending
+events, and the replayed handler reissues its call. Recovery never dispatches a call by
+itself.
+
+Shutdown:
+
+| Signal | Behavior | Exit |
+|---|---|---|
+| SIGTERM, calls finish inside the deadline | admission frozen, lease renewed, completions commit and ack | 0 |
+| SIGTERM, a call outlives the deadline | cancelled through its token, settled lost, event pending | 5 |
+| SIGTERM, provider ignores cancel | dropped and settled lost 0.5 s before the heartbeat's grace abort; its thread holds no connection | 5 |
+| SIGKILL | nothing assumed; the successor settles the reservation lost and replays the event | n/a |
+| lease lost or taken over | late completion fails the fence; no message, ack, or effect | 4 |
+
+Output safety. Commits record `finish_reason`, and a replay sees it. The demonstration
+adapter (`tests/inference_adapter.py`, `AsyncAssistantAdapter`) posts a reply through the
+effect journal only for a complete, plain answer. A `length` or `tool_calls` finish, an
+empty answer, or text with a `<think>` marker stays committed as data and blocks the
+responsibility. Model text is never parsed into a command. Reasoning extraction is model
+specific and tracked separately.
+
+Evidence (`test_monitoring_and_controls_continue_while_inference_blocks`, local run): with
+one call blocked in the provider, the daemon completed 5 GitHub polls 0.05 to 0.10 s
+apart, delivered a new review notification 0.38 s after the block began, and applied a
+`watch` control 0.43 s after. The call then committed once and its event acked once.
+
+`stark.py` is unchanged: no provider is configured for the real CLI in this step.
+
 ## Actual test results
 
 ```
@@ -628,6 +700,15 @@ tests/test_daemon.py::test_responsibility_survives_sigkill_without_second_prompt
 tests/test_daemon.py::test_second_daemon_refused_and_cli_requests_reach_running_daemon PASSED
 tests/test_daemon.py::test_token_revocation_blocks_survives_restart_and_resumes PASSED
 tests/test_daemon.py::test_actionable_event_survives_restarts_until_acked PASSED
+tests/test_daemon_inference.py::test_monitoring_and_controls_continue_while_inference_blocks PASSED
+tests/test_daemon_inference.py::test_sigkill_at_crash_point_in_the_daemon_recovers_to_one_answer[E1_before_reserve] PASSED
+tests/test_daemon_inference.py::test_sigkill_at_crash_point_in_the_daemon_recovers_to_one_answer[E2_after_reserve] PASSED
+tests/test_daemon_inference.py::test_sigkill_at_crash_point_in_the_daemon_recovers_to_one_answer[E3_after_provider] PASSED
+tests/test_daemon_inference.py::test_sigkill_at_crash_point_in_the_daemon_recovers_to_one_answer[E4_after_commit] PASSED
+tests/test_daemon_inference.py::test_sigkill_during_active_http_inference_recovers_without_duplicates PASSED
+tests/test_daemon_inference.py::test_sigterm_drains_a_short_call_and_cancels_a_long_one PASSED
+tests/test_daemon_inference.py::test_sigterm_with_a_provider_ignoring_cancel_ends_before_the_grace_abort PASSED
+tests/test_daemon_inference.py::test_stale_owner_completion_after_takeover_writes_nothing PASSED
 tests/test_drain.py::test_sigterm_idle_drains_releases_and_successor_fences PASSED
 tests/test_drain.py::test_drain_finishes_in_flight_work_and_refuses_successor_until_release PASSED
 tests/test_drain.py::test_drain_deadline_cancels_and_successor_finishes_exactly_once PASSED
@@ -743,6 +824,26 @@ tests/test_inference_contracts.py::test_error_classification[ProviderCancelled-F
 tests/test_inference_contracts.py::test_error_classification[AttemptsExhausted-False-False] PASSED
 tests/test_inference_contracts.py::test_errors_carry_retry_hints PASSED
 tests/test_inference_contracts.py::test_health_is_scripted_and_counted PASSED
+tests/test_inference_executor.py::test_event_stays_pending_during_inference_then_acks_once PASSED
+tests/test_inference_executor.py::test_only_the_coordinator_thread_touches_the_connection PASSED
+tests/test_inference_executor.py::test_retryable_failure_releases_the_event_and_redelivery_reuses_the_call_id PASSED
+tests/test_inference_executor.py::test_retries_exhaust_to_a_blocked_responsibility_and_one_ack PASSED
+tests/test_inference_executor.py::test_draining_owner_starts_no_inference_and_keeps_the_event PASSED
+tests/test_inference_executor.py::test_concurrent_calls_stay_within_provider_slots PASSED
+tests/test_inference_executor.py::test_completion_depth_bounds_calls_in_flight PASSED
+tests/test_inference_executor.py::test_late_completion_after_lease_loss_commits_and_acks_nothing[expired] PASSED
+tests/test_inference_executor.py::test_late_completion_after_lease_loss_commits_and_acks_nothing[takeover] PASSED
+tests/test_inference_executor.py::test_replacement_evicts_an_unsealed_completion_and_the_successor_answers PASSED
+tests/test_inference_executor.py::test_sealed_completion_drains_on_the_old_configuration PASSED
+tests/test_inference_executor.py::test_unusable_answers_commit_as_data_but_cause_no_effect[script0-IncompleteAnswer] PASSED
+tests/test_inference_executor.py::test_unusable_answers_commit_as_data_but_cause_no_effect[script1-UnvalidatedReasoning] PASSED
+tests/test_inference_executor.py::test_unusable_answers_commit_as_data_but_cause_no_effect[script2-UnvalidatedReasoning] PASSED
+tests/test_inference_executor.py::test_unusable_answers_commit_as_data_but_cause_no_effect[script3-EmptyAnswer] PASSED
+tests/test_inference_executor.py::test_unusable_answers_commit_as_data_but_cause_no_effect[script4-UnsupportedFinish:tool_calls] PASSED
+tests/test_inference_executor.py::test_crash_point_in_the_async_path_recovers_to_one_answer[E1_before_reserve] PASSED
+tests/test_inference_executor.py::test_crash_point_in_the_async_path_recovers_to_one_answer[E2_after_reserve] PASSED
+tests/test_inference_executor.py::test_crash_point_in_the_async_path_recovers_to_one_answer[E3_after_provider] PASSED
+tests/test_inference_executor.py::test_crash_point_in_the_async_path_recovers_to_one_answer[E4_after_commit] PASSED
 tests/test_inference_journal.py::test_ask_commits_one_message_settles_ledger_and_posts_once PASSED
 tests/test_inference_journal.py::test_crash_point_recovers_to_one_answer_50_seeds[E1_before_reserve] PASSED
 tests/test_inference_journal.py::test_crash_point_recovers_to_one_answer_50_seeds[E2_after_reserve] PASSED
@@ -847,8 +948,8 @@ tests/test_model_tracker.py::test_deaf_call_finishing_inside_the_drain_window_co
 tests/test_model_tracker.py::test_eviction_at_the_commit_boundary_discards_the_result PASSED
 tests/test_model_tracker.py::test_seal_before_eviction_commits_and_eviction_is_a_no_op PASSED
 tests/test_model_tracker.py::test_completion_and_eviction_race_linearizes PASSED
-tests/test_model_tracker.py::test_invalid_successor_leaves_the_active_model_usable
-tests/test_model_tracker.py::test_invalid_successor_leaves_the_active_model_usable
+tests/test_model_tracker.py::test_invalid_successor_leaves_the_active_model_usable[negative queue depth] PASSED
+tests/test_model_tracker.py::test_invalid_successor_leaves_the_active_model_usable[negative slots] PASSED
 tests/test_model_tracker.py::test_invalid_successor_during_an_active_call_does_not_disturb_it PASSED
 tests/test_model_tracker.py::test_failed_replacement_can_be_retried_with_a_valid_config PASSED
 tests/test_model_tracker.py::test_exception_during_the_drain_still_installs_the_successor PASSED
@@ -951,7 +1052,7 @@ tests/test_recovery.py::test_stale_external_effect_rejected_by_destination PASSE
 tests/test_recovery.py::test_authorization_revocation_survives_restart PASSED
 tests/test_recovery.py::test_real_subprocess_kill_then_recover PASSED
 tests/test_takeover.py::test_stale_owner_exits_and_successor_recovers_after_sigkill PASSED
-316 passed
+356 passed
 ```
 
-All 293 tests that predate the lifecycle tracker run unchanged. `uv run ruff check .` reports no findings.
+All 327 tests that predate step 6 run unchanged. `uv run ruff check .` reports no findings.
