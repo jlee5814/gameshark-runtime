@@ -1,11 +1,16 @@
-"""Provider independent inference contracts (v0.3 step 1). No transport, journal, or router."""
+"""Provider independent inference contracts (v0.3 step 1) and the durable journal (step 2).
+
+No transport or router yet.
+"""
 
 from gameshark.inference.fake import FakeCall, FakeProvider, Fault, Script
+from gameshark.inference.journal import CallSpec, Committed, InferenceJournal, Reservation
 from gameshark.inference.provider import Provider, ProviderCall, complete
 from gameshark.inference.types import (
     AttemptsExhausted,
     AuthFailed,
     BudgetExceeded,
+    CallCancelled,
     Capabilities,
     Capability,
     CapabilityUnsupported,
@@ -21,6 +26,7 @@ from gameshark.inference.types import (
     Message,
     ModelCrashed,
     Overloaded,
+    OwnershipMismatch,
     Privacy,
     ProviderCancelled,
     ProviderError,
@@ -28,21 +34,27 @@ from gameshark.inference.types import (
     ProviderResult,
     ProviderUnavailable,
     RateLimited,
+    ResultMismatch,
     Role,
+    StaleAttempt,
     StreamInterrupted,
     StreamNotFinished,
     Timeout,
     Usage,
+    estimate_tokens,
 )
 
 __all__ = [
     "AttemptsExhausted",
     "AuthFailed",
     "BudgetExceeded",
+    "CallCancelled",
+    "CallSpec",
     "Capabilities",
     "Capability",
     "CapabilityUnsupported",
     "Chunk",
+    "Committed",
     "ContextConflict",
     "ContextTooLong",
     "EgressDenied",
@@ -52,11 +64,13 @@ __all__ = [
     "FinishReason",
     "Health",
     "HealthStatus",
+    "InferenceJournal",
     "InvalidRequest",
     "Locality",
     "Message",
     "ModelCrashed",
     "Overloaded",
+    "OwnershipMismatch",
     "Privacy",
     "Provider",
     "ProviderCall",
@@ -66,11 +80,15 @@ __all__ = [
     "ProviderResult",
     "ProviderUnavailable",
     "RateLimited",
+    "Reservation",
+    "ResultMismatch",
     "Role",
     "Script",
+    "StaleAttempt",
     "StreamInterrupted",
     "StreamNotFinished",
     "Timeout",
     "Usage",
     "complete",
+    "estimate_tokens",
 ]

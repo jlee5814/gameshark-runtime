@@ -57,3 +57,10 @@ class Cancelled(Exception):
     Terminal for this process only. Nothing partial commits; the work stays durable and
     the successor replays it.
     """
+
+
+class UncommittedOutput(Exception):
+    """An effect cited model output whose call has not committed (R5).
+
+    Model text reaches a consequential action only after its assistant message is durable.
+    """

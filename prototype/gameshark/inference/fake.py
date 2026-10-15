@@ -32,6 +32,7 @@ from gameshark.inference.types import (
     StreamNotFinished,
     Timeout,
     Usage,
+    estimate_tokens,
 )
 from gameshark.lifecycle import CancelToken
 
@@ -53,10 +54,6 @@ class Script:
     delays: tuple[float, ...] = ()  # seconds before chunk i; missing entries are 0
     fault: Fault | None = None
     finish_reason: FinishReason = FinishReason.STOP
-
-
-def estimate_tokens(req: ProviderRequest) -> int:
-    return sum(len(m.content.split()) for m in req.messages)
 
 
 def _wait_on_token(seconds: float, token: CancelToken) -> None:

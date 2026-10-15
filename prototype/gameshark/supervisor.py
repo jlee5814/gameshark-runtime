@@ -14,9 +14,10 @@ from gameshark.adapters import Adapter, AdapterContext, AdapterRegistry
 from gameshark.authz import GrantStore
 from gameshark.clock import Clock
 from gameshark.effects import Effect, EffectJournal
-from gameshark.errors import CrashInjected
+from gameshark.errors import CrashInjected, UncommittedOutput
 from gameshark.events import EventRouter
 from gameshark.identity import Identity, load_or_create_identity
+from gameshark.inference.journal import InferenceJournal
 from gameshark.lease import LeaseManager
 from gameshark.lifecycle import Lifecycle
 from gameshark.responsibilities import ResponsibilityStore
@@ -48,6 +49,7 @@ class AgentSupervisor:
         self.registry = AdapterRegistry()
         self.responsibilities: ResponsibilityStore | None = None
         self.journal: EffectJournal | None = None
+        self.inference: InferenceJournal | None = None
         self.router: EventRouter | None = None
         self._declared: list[Adapter] = []
         self.started = False
@@ -77,6 +79,10 @@ class AgentSupervisor:
                 raise PermissionError(
                     f"{adapter_name} not authorized for {eff.required_cap}"
                 )
+            # R5: an effect built from model output cites its call, which must have committed.
+            call_id = eff.intent.get("call_id")
+            if call_id is not None and not self.inference.is_done(call_id):
+                raise UncommittedOutput(f"effect {eff.key} cites uncommitted call {call_id}")
             return self.journal.perform_once(eff)
 
         return emit
@@ -96,6 +102,7 @@ class AgentSupervisor:
             clock=self.clock,
             admit=self.lifecycle.admit,
             cancel=self.lifecycle.token,
+            inference=self.inference,
         )
 
     def _fenced(self, fn):
@@ -115,6 +122,10 @@ class AgentSupervisor:
             self.conn, self.agent_id, self.lease, self.generation, self.clock
         )
         self.journal = EffectJournal(
+            self.conn, self.agent_id, self.lease, self.generation, self.clock,
+            crash=self._maybe_crash,
+        )
+        self.inference = InferenceJournal(
             self.conn, self.agent_id, self.lease, self.generation, self.clock,
             crash=self._maybe_crash,
         )
@@ -176,14 +187,20 @@ class AgentSupervisor:
 
     # ------------------------------------------------------------------ recovery
     def recover(self) -> dict:
-        """Reconcile pending effects, then replay unacknowledged events.
+        """Settle abandoned inference reservations, reconcile pending effects, then replay
+        unacknowledged events.
 
-        Pure function of durable state. Returns a small report for observability.
+        Pure function of durable state. Inference calls are never driven from here: the
+        replayed event or responsibility that owns a call reissues it with the same call_id.
+        Returns a small report for observability.
         """
         assert self.journal is not None and self.router is not None
+        assert self.inference is not None
+        lost = self.inference.settle_abandoned()
         reconciled = self._reconcile_pending_effects()
         replayed = self.router.replay()
-        return {"reconciled_effects": reconciled, "replayed_events": replayed}
+        return {"lost_reservations": [f"{c}#{a}" for c, a in lost],
+                "reconciled_effects": reconciled, "replayed_events": replayed}
 
     def _reconcile_pending_effects(self) -> list[str]:
         assert self.journal is not None and self.responsibilities is not None

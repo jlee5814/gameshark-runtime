@@ -138,6 +138,69 @@ CREATE TABLE IF NOT EXISTS control_requests (
     created  REAL NOT NULL,
     applied  REAL
 );
+
+-- v0.3: inference journal. Conversations belong to the agent identity, never to a model.
+CREATE TABLE IF NOT EXISTS conversations (
+    id                TEXT PRIMARY KEY,
+    agent_id          TEXT NOT NULL,          -- owner is the identity, never a model
+    responsibility_id TEXT,                   -- owning duty, if any
+    privacy           TEXT NOT NULL,          -- local_only | cloud_ok
+    next_seq          INTEGER NOT NULL DEFAULT 0,
+    created           REAL NOT NULL,
+    updated           REAL NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS messages (
+    conversation_id TEXT NOT NULL,
+    seq             INTEGER NOT NULL,         -- contiguous from 0
+    role            TEXT NOT NULL,            -- system | user | assistant | tool
+    content         TEXT NOT NULL,
+    call_id         TEXT UNIQUE,              -- set on assistant rows; one per call
+    generation      INTEGER NOT NULL,         -- lease generation that wrote it
+    created         REAL NOT NULL,
+    PRIMARY KEY (conversation_id, seq)
+);
+
+CREATE TABLE IF NOT EXISTS inference_calls (
+    call_id         TEXT PRIMARY KEY,         -- stable: hash of responsibility or event and step
+    agent_id        TEXT NOT NULL,
+    conversation_id TEXT NOT NULL,
+    base_seq        INTEGER NOT NULL,         -- context = messages with seq < base_seq
+    request         TEXT NOT NULL,            -- JSON: needs, max_tokens, temperature; no secrets
+    status          TEXT NOT NULL,            -- pending | done | failed | cancelled
+    attempts        INTEGER NOT NULL DEFAULT 0,
+    provider        TEXT,                     -- answering provider and model, set at done
+    model           TEXT,
+    instance_ref    TEXT,
+    degraded        INTEGER NOT NULL DEFAULT 0,
+    error_kind      TEXT,
+    generation      INTEGER NOT NULL,
+    created         REAL NOT NULL,
+    updated         REAL NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS budget_ledger (
+    call_id        TEXT NOT NULL,
+    attempt        INTEGER NOT NULL,
+    agent_id       TEXT NOT NULL,
+    provider       TEXT NOT NULL,
+    window_start   REAL NOT NULL,
+    reserved_tokens INTEGER NOT NULL,
+    reserved_micros INTEGER NOT NULL,
+    tokens_in      INTEGER,
+    tokens_out     INTEGER,
+    cost_micros    INTEGER,
+    status         TEXT NOT NULL,             -- reserved | settled | lost
+    PRIMARY KEY (call_id, attempt)
+);
+
+CREATE TABLE IF NOT EXISTS agent_budgets (
+    agent_id        TEXT NOT NULL,
+    window_s        REAL NOT NULL,
+    max_tokens      INTEGER NOT NULL,
+    max_cost_micros INTEGER NOT NULL,
+    PRIMARY KEY (agent_id, window_s)
+);
 """
 
 # Columns added after a table first shipped. Applied idempotently so a v0.1 or early v0.2
