@@ -3,7 +3,7 @@ import PackageDescription
 
 let package = Package(
     name: "StarkMac",
-    platforms: [.macOS(.v14)],
+    platforms: [.macOS(.v14), .iOS(.v17)],
     products: [
         .executable(name: "StarkMac", targets: ["StarkMac"]),
         .library(name: "StarkKit", targets: ["StarkKit"]),

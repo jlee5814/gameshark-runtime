@@ -50,3 +50,23 @@ jobs:
 
       - name: Build StarkMac.app
         run: mac/scripts/build-app.sh
+
+  # Stark Pocket (iOS). Not a required check. Unit tests run in a simulator; the live
+  # handoff UI tests skip here because they need a runtime and StarkMac on the same Mac
+  # (ios/scripts/pocket-demo.sh runs them).
+  ios:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Pick an iPhone simulator
+        id: sim
+        run: |
+          name="$(xcrun simctl list devices available -j | python3 -c 'import json,sys; d=json.load(sys.stdin)["devices"]; print(next(x["name"] for k,v in d.items() if "iOS" in k for x in v if x["name"].startswith("iPhone")))')"
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+
+      - name: Build and unit test StarkPocket
+        run: |
+          xcodebuild -project ios/StarkPocket/StarkPocket.xcodeproj -scheme StarkPocket \
+            -destination "platform=iOS Simulator,name=${{ steps.sim.outputs.name }}" \
+            -derivedDataPath ios/StarkPocket/build test -only-testing:StarkPocketTests

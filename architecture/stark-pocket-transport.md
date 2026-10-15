@@ -94,7 +94,8 @@ database and the token), the operator, and the phone's OS.
   listener holds at most 4 of the 8 shared session slots, so a flood cannot lock StarkMac
   out, but it can keep the phone from connecting. Repeated handshake failures from the
   phone's own address (a port scanner on the same host) can block it for 60 s.
-- The simulator and Macs without a Secure Enclave use a software key held in the Keychain.
+- Hardware without a Secure Enclave falls back to a software key in the Keychain. The iOS 27
+  simulator on this Apple silicon Mac reports an enclave and uses it.
 - Bonjour discovery is not built; the link carries a host name and address.
 
 ## Measured (loopback, M series Mac, in process runtime)

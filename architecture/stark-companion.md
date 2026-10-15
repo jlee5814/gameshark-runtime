@@ -169,6 +169,15 @@ chat field's focus; nothing in the animation path can send a frame to the runtim
 scale live in the app's UserDefaults. A visual change can therefore never alter identity,
 ownership, presence, or inference (G3).
 
+## Stark Pocket (`ios/StarkPocket`)
+
+SwiftUI iPhone app on StarkKit: the same sprite atlas and animation rules as StarkMac, the
+conversation, connection and presence state, pairing from a `starkpocket://pair` link, and
+Jack In / Jack Out through the `jack` command. It stores only its pairing (Keychain) and
+presentation facts. StarkMac names the device holding Stark and offers Jack In Here.
+`ios/scripts/pocket-demo.sh` runs the full Mac → simulator → Mac handoff with faults; see
+[ios/StarkPocket/README.md](../ios/StarkPocket/README.md).
+
 ## Not yet built
 
-Stark Pocket (the iPhone app, Phase 3B), Bonjour, voice, system notifications.
+Bonjour, voice, system notifications, a run on a physical iPhone.
