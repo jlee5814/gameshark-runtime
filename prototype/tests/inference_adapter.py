@@ -22,9 +22,12 @@ from gameshark.inference import (
     CallCancelled,
     CallSpec,
     FakeProvider,
+    FinishReason,
     Privacy,
     Role,
+    RouteResult,
 )
+from gameshark.inference.executor import InferenceTask
 from sims.game import GameSimulator
 
 SYSTEM = "you are stark and you answer briefly"
@@ -56,7 +59,7 @@ class AssistantAdapter:
     name = "assistant"
     required_caps = frozenset({"assistant.reply"})
 
-    def __init__(self, provider: FakeProvider, remote: GameSimulator,
+    def __init__(self, provider: FakeProvider | None, remote: GameSimulator,
                  spec: CallSpec = SPEC) -> None:
         self.provider = provider
         self.remote = remote
@@ -107,3 +110,76 @@ class AssistantAdapter:
         self.outcomes.append("replayed" if committed.replayed else "committed")
         ctx.emit_effect(self._effect(call_id, cid, committed.content, rid))
         ctx.responsibilities.transition(rid, "done")
+
+
+# ---------------------------------------------------------------------- async (step 6)
+REASONING_MARKERS = ("<think>", "</think>")
+
+
+def unusable(committed) -> str | None:
+    """Why a committed answer must not drive an effect, or None when it may.
+
+    Model text is data. Only a complete, plain answer is posted as a reply, and never
+    parsed into a command. Reasoning extraction is model specific and out of scope, so any
+    reasoning marker makes the text unvalidated rather than something to strip.
+    """
+    if committed.finish_reason is FinishReason.LENGTH:
+        return "IncompleteAnswer"
+    if committed.finish_reason is not FinishReason.STOP:
+        return f"UnsupportedFinish:{committed.finish_reason and committed.finish_reason.value}"
+    if any(m in committed.content for m in REASONING_MARKERS):
+        return "UnvalidatedReasoning"
+    if not committed.content.strip():
+        return "EmptyAnswer"
+    return None
+
+
+class AsyncAssistantAdapter(AssistantAdapter):
+    """The same ask flow, but the handler returns an InferenceTask instead of blocking.
+
+    The supervisor runs the call on its executor and keeps the event pending until the
+    continuation below ran; providers come from enable_inference, not from the adapter.
+    An ask control turns into an ask event, so operators reach it through control_requests.
+    """
+
+    def __init__(self, remote: GameSimulator, spec: CallSpec = SPEC) -> None:
+        super().__init__(None, remote, spec)
+
+    def apply_control(self, action: str, payload: dict) -> str:
+        if action != "ask":
+            raise ValueError(f"unknown action {action}")
+        assert self.ctx is not None and self.ctx.submit_event is not None
+        return self.ctx.submit_event(ask_event(payload["topic"], payload["question"]))
+
+    def on_event(self, event: dict) -> InferenceTask:
+        ctx = self.ctx
+        assert ctx is not None
+        topic = event["payload"]["topic"]
+        cid, rid, call_id = conversation_for(topic), f"ask:{topic}", call_id_for(event["event_id"])
+        ctx.responsibilities.upsert(rid, kind="assistant", payload={"topic": topic},
+                                    state="active")
+        journal = ctx.inference
+        journal.open_conversation(cid, Privacy.LOCAL_ONLY, responsibility_id=rid)
+        journal.append(cid, Role.SYSTEM, SYSTEM, 0)
+        journal.append(cid, Role.USER, event["payload"]["question"], 1)
+        return InferenceTask(call_id, cid, self.spec,
+                             on_done=lambda r: self._answered(call_id, cid, rid, r),
+                             on_error=lambda e: self._failed(rid, e))
+
+    def _answered(self, call_id: str, cid: str, rid: str, result: RouteResult) -> None:
+        ctx = self.ctx
+        assert ctx is not None
+        committed = result.committed
+        reason = unusable(committed)
+        if reason is not None:
+            ctx.responsibilities.transition(rid, "blocked", checkpoint=reason)
+            self.outcomes.append(reason)
+            return
+        self.outcomes.append("replayed" if committed.replayed else "committed")
+        ctx.emit_effect(self._effect(call_id, cid, committed.content, rid))
+        ctx.responsibilities.transition(rid, "done")
+
+    def _failed(self, rid: str, exc: Exception) -> None:
+        assert self.ctx is not None
+        self.ctx.responsibilities.transition(rid, "blocked", checkpoint=type(exc).__name__)
+        self.outcomes.append(type(exc).__name__)

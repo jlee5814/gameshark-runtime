@@ -39,6 +39,7 @@ from gameshark.inference.types import (
     Capabilities,
     Capability,
     ContextConflict,
+    FinishReason,
     InvalidRequest,
     Message,
     OwnershipMismatch,
@@ -91,6 +92,7 @@ class Committed:
     content: str
     model: str | None
     replayed: bool  # True when this process found the call already done
+    finish_reason: FinishReason | None = None  # None only for rows committed before step 6
 
 
 def _micros(tokens: int, price_per_1k: int) -> int:
@@ -153,12 +155,15 @@ class InferenceJournal:
 
     def _committed(self, call_id: str) -> Committed:
         row = self.conn.execute(
-            "SELECT m.conversation_id, m.seq, m.content, c.model FROM messages m "
+            "SELECT m.conversation_id, m.seq, m.content, c.model, c.finish_reason "
+            "FROM messages m "
             "JOIN inference_calls c ON c.call_id = m.call_id WHERE m.call_id=?",
             (call_id,),
         ).fetchone()
+        finish = row["finish_reason"]
         return Committed(call_id, row["conversation_id"], row["seq"], row["content"],
-                         row["model"], replayed=True)
+                         row["model"], replayed=True,
+                         finish_reason=FinishReason(finish) if finish else None)
 
     # ------------------------------------------------------------------ conversations
     def open_conversation(self, conversation_id: str, privacy: Privacy = Privacy.LOCAL_ONLY,
@@ -368,6 +373,11 @@ class InferenceJournal:
         self._fenced(body)
         self._active.pop((res.call_id, res.attempt), None)
 
+    def forget(self, res: Reservation) -> None:
+        """Drop an attempt from this instance's live set without writing: ownership ended,
+        and the next owner's recovery settles the reservation lost."""
+        self._active.pop((res.call_id, res.attempt), None)
+
     @staticmethod
     def _settle_lost(conn: sqlite3.Connection, call_id: str, attempt: int) -> None:
         conn.execute(
@@ -477,12 +487,13 @@ class InferenceJournal:
                          (res.base_seq + 1, now, res.conversation_id))
             conn.execute(
                 "UPDATE inference_calls SET status=?, provider=?, model=?, instance_ref=?, "
-                "degraded=?, error_kind=NULL, generation=?, updated=? WHERE call_id=?",
+                "degraded=?, finish_reason=?, error_kind=NULL, generation=?, updated=? "
+                "WHERE call_id=?",
                 (DONE, res.provider, result.model, result.instance_ref, int(degraded),
-                 self.generation, now, res.call_id),
+                 result.finish_reason.value, self.generation, now, res.call_id),
             )
             return Committed(res.call_id, res.conversation_id, res.base_seq, result.text,
-                             result.model, replayed=False)
+                             result.model, replayed=False, finish_reason=result.finish_reason)
 
         out = self._fenced(body)
         self._active.pop((res.call_id, res.attempt), None)

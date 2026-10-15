@@ -230,6 +230,11 @@ class Scheduler:
         pool.in_flight -= 1
 
     # ------------------------------------------------------------------ retry_after
+    def retry_after(self, provider: str | None = None) -> float:
+        """Suggested wait before retrying an admission refused on provider (None: any)."""
+        with self._lock:
+            return self._retry_after_locked(provider)
+
     def _median_latency_locked(self, provider: str | None) -> float:
         if provider is not None:
             samples = list(self._pools[provider].latencies)

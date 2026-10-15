@@ -6,6 +6,7 @@ FakeProvider serves tests and fault injection; OpenAICompatProvider reaches exte
 managed SGLang, mlx_lm.server, LM Studio and Bionic, and compatible cloud endpoints.
 """
 
+from gameshark.inference.executor import ExecutorStats, InferenceExecutor, InferenceTask
 from gameshark.inference.fake import FakeCall, FakeProvider, Fault, Script
 from gameshark.inference.journal import CallSpec, Committed, InferenceJournal, Reservation
 from gameshark.inference.openai_compat import (
@@ -101,6 +102,7 @@ __all__ = [
     "ContextTooLong",
     "EgressDenied",
     "Endpoint",
+    "ExecutorStats",
     "FakeCall",
     "FakeProvider",
     "Fault",
@@ -108,8 +110,10 @@ __all__ = [
     "Health",
     "HealthStatus",
     "IllegalTransition",
+    "InferenceExecutor",
     "InferenceJournal",
     "InferenceRouter",
+    "InferenceTask",
     "InvalidRequest",
     "LoadPlan",
     "Locality",

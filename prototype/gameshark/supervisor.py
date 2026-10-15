@@ -3,23 +3,44 @@
 A supervisor instance models one process lifetime. A crash discards the instance; a
 fresh instance on the same database models a restart. Nothing in memory survives, so
 recovery is a pure function of durable SQLite state.
+
+With enable_inference, an event handler may return an InferenceTask instead of finishing
+inline. The supervisor submits it to a bounded executor and leaves the event pending and
+claimed; the event is acknowledged only after the task's continuation ran on this thread,
+which owns the connection. Retryable refusals release the event for redelivery with the
+same call_id; ownership loss drops the task without any write.
 """
 
 from __future__ import annotations
 
+import dataclasses
 import json
+import math
+import time
+from collections.abc import Sequence
 from pathlib import Path
 
 from gameshark.adapters import Adapter, AdapterContext, AdapterRegistry
 from gameshark.authz import GrantStore
 from gameshark.clock import Clock
 from gameshark.effects import Effect, EffectJournal
-from gameshark.errors import CrashInjected, UncommittedOutput
-from gameshark.events import EventRouter
+from gameshark.errors import CrashInjected, Draining, UncommittedOutput
+from gameshark.events import Deferred, EventRouter
 from gameshark.identity import Identity, load_or_create_identity
+from gameshark.inference.executor import InferenceExecutor, InferenceTask
 from gameshark.inference.journal import InferenceJournal
+from gameshark.inference.router import (
+    InferenceRouter,
+    ProviderConfig,
+    ProviderHealth,
+    RouteResult,
+    RouterPolicy,
+)
+from gameshark.inference.scheduler import Scheduler
+from gameshark.inference.tracker import ModelTracker, TrackerPolicy
+from gameshark.inference.types import ProviderCancelled, ProviderError
 from gameshark.lease import LeaseManager
-from gameshark.lifecycle import Lifecycle
+from gameshark.lifecycle import Lifecycle, Phase
 from gameshark.responsibilities import ResponsibilityStore
 from gameshark.store import connect, write_txn
 
@@ -54,6 +75,10 @@ class AgentSupervisor:
         self._declared: list[Adapter] = []
         self.started = False
         self.lifecycle = Lifecycle()
+        self._inference_cfg: dict | None = None
+        self.tracker: ModelTracker | None = None
+        self.inference_router: InferenceRouter | None = None
+        self.executor: InferenceExecutor | None = None
 
     # ------------------------------------------------------------------ crash hook
     def _maybe_crash(self, label: str) -> None:
@@ -65,6 +90,37 @@ class AgentSupervisor:
     def add_adapter(self, adapter: Adapter) -> None:
         """Declare an adapter. Its declared caps are recorded durably at start()."""
         self._declared.append(adapter)
+
+    def enable_inference(self, providers: Sequence[ProviderConfig],
+                         policy: RouterPolicy | None = None,
+                         tracker_policy: TrackerPolicy | None = None,
+                         threads: int | None = None, completion_depth: int | None = None,
+                         retry_s: float = 1.0) -> None:
+        """Serve InferenceTasks returned by event handlers on a bounded executor.
+
+        Call before start(). retry_s is the least delay before a refused or retryable
+        task's event is redelivered.
+        """
+        self._inference_cfg = {"providers": list(providers), "policy": policy,
+                               "tracker_policy": tracker_policy, "threads": threads,
+                               "completion_depth": completion_depth, "retry_s": retry_s}
+
+    def _start_inference(self) -> None:
+        cfg = self._inference_cfg
+        assert cfg is not None and self.inference is not None
+        self.tracker = ModelTracker(Scheduler(), ProviderHealth(), cfg["tracker_policy"])
+        self.inference_router = InferenceRouter(self.inference, cfg["providers"],
+                                                cfg["policy"], tracker=self.tracker,
+                                                grants=self.grants)
+        self.executor = InferenceExecutor(
+            self.inference_router, self.lifecycle.token, threads=cfg["threads"],
+            completion_depth=cfg["completion_depth"], crash=self._maybe_crash,
+            admit=self._admit_inference)
+
+    def _admit_inference(self) -> None:
+        # Recovery replays before serving, so starting admits too; draining does not.
+        if self.lifecycle.phase not in (Phase.STARTING, Phase.SERVING):
+            raise Draining(f"not starting inference while {self.lifecycle.phase.value}")
 
     def _emit_for(self, adapter_name: str):
         """Return a gated emit_effect bound to one adapter.
@@ -129,6 +185,8 @@ class AgentSupervisor:
             self.conn, self.agent_id, self.lease, self.generation, self.clock,
             crash=self._maybe_crash,
         )
+        if self._inference_cfg is not None:
+            self._start_inference()
         self.router = EventRouter(
             self.conn, self.lease, self.generation, self.clock, dispatch=self._dispatch,
             cancel=self.lifecycle.token,
@@ -148,9 +206,77 @@ class AgentSupervisor:
         self.grants.revoke(adapter, cap)
 
     # ------------------------------------------------------------------ routing
-    def _dispatch(self, event: dict) -> None:
+    def _dispatch(self, event: dict) -> Deferred | None:
         adapter = self.registry.get(event["adapter"])
-        adapter.on_event(event)
+        out = adapter.on_event(event)
+        if isinstance(out, InferenceTask):
+            return self._submit_task(event["event_id"], out)
+        return None
+
+    # ------------------------------------------------------------------ inference
+    def _submit_task(self, event_id: str, task: InferenceTask) -> Deferred | None:
+        """Start an event's inference call. None: its outcome ran inline, so the event acks
+        now. Deferred: the event stays pending, claimed until the call settles, or released
+        for redelivery after a retryable refusal."""
+        if self.executor is None:
+            raise RuntimeError("a handler returned an InferenceTask; call enable_inference")
+        assert self.router is not None
+        router = self.router
+        wrapped = dataclasses.replace(
+            task,
+            on_done=lambda r: router.finish(event_id, lambda: task.on_done(r)),
+            on_error=lambda e: self._task_failed(event_id, task, e))
+        try:
+            done = self.executor.submit(wrapped, on_abort=lambda: router.release(event_id))
+        except Draining:
+            return Deferred(math.inf)        # the next owner replays it
+        except ProviderError as exc:
+            delay = self._retry_delay(exc)
+            if delay is None:
+                task.on_error(exc)
+                return None
+            return Deferred(time.monotonic() + delay)
+        if isinstance(done, RouteResult):
+            task.on_done(done)
+            return None
+        return Deferred()
+
+    def _task_failed(self, event_id: str, task: InferenceTask, exc: ProviderError) -> None:
+        assert self.router is not None
+        delay = self._retry_delay(exc)
+        if delay is None:
+            self.router.finish(event_id, lambda: task.on_error(exc))
+        else:
+            self.router.release(event_id, time.monotonic() + delay)
+
+    def _retry_delay(self, exc: ProviderError) -> float | None:
+        """Seconds until the owning event retries, or None when the error is its outcome."""
+        if isinstance(exc, ProviderCancelled) and self.lifecycle.token.cancelled:
+            return math.inf                  # drain or ownership loss: the successor replays
+        if not exc.retryable:
+            return None
+        assert self._inference_cfg is not None
+        return max(getattr(exc, "retry_after", 0.0), self._inference_cfg["retry_s"])
+
+    def pump_inference(self) -> int:
+        """Advance inference calls whose executor work finished. Coordinator thread only."""
+        return self.executor.pump() if self.executor is not None else 0
+
+    def redeliver(self) -> list[str]:
+        """Hand released events back to their handlers once their retry time came."""
+        if self.router is None or self.lifecycle.phase is not Phase.SERVING:
+            return []
+        return self.router.redeliver_due()
+
+    def abandon_inference(self, write: bool = True) -> int:
+        """Drop every call in flight; their events stay pending for replay. write settles
+        held reservations lost and requires the lease; pass False once ownership is lost."""
+        if self.executor is None:
+            return 0
+        dropped = self.executor.abandon_all(write)
+        assert self.router is not None
+        self.router.release_all()
+        return dropped
 
     def submit(self, event: dict) -> str:
         """Accept a new external event durably and handle it.
@@ -227,6 +353,11 @@ class AgentSupervisor:
     def stop(self) -> None:
         if not self.started:
             return
+        if self.executor is not None:
+            self.abandon_inference(write=True)
+            self.executor.close()
+            assert self.tracker is not None
+            self.tracker.close()
         self.registry.teardown_all()
         assert self.generation is not None
         self.lease.release(self.owner_token, self.generation)
