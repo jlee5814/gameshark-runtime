@@ -27,7 +27,9 @@ A draft the source carries in ready_out waits in the handoff row (draft_state pe
 until its target confirms receipt with draft_ack. Only the target of an acked jack, at
 the generation the jack granted and while it still holds presence, may read or confirm
 it, so a stale or other surface never sees it. Receipt survives restart; a draft that
-never reached its target (reverted, or the target moved on) stays in the journal.
+never reached its target (reverted, or the target moved on) stays in the journal. The
+source learns whether its text traveled only from ready_out's answer about the committed
+row (draft_carried), never from having sent it: a deadline commit carries nothing.
 
 Crash points, fired through the supervisor's crash hook:
 
