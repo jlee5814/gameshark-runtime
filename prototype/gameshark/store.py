@@ -226,6 +226,11 @@ MIGRATIONS: dict[str, list[tuple[str, str]]] = {
         ("url", "TEXT"),
         ("read_at", "REAL"),
     ],
+    # v0.3 step 6: the answer's finish reason, so a replayed call can still be judged
+    # complete or truncated before anything acts on it.
+    "inference_calls": [
+        ("finish_reason", "TEXT"),                      # stop | length | tool_calls
+    ],
 }
 
 

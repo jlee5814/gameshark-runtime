@@ -14,6 +14,11 @@ Policy refusals (EgressDenied, BudgetExceeded, BudgetUnenforceable) end the walk
 They never advance to the next candidate, so a denial can never turn into cloud fallback.
 Only a retryable failure after dispatch, or a capability refusal from generate, moves on.
 
+Step 6 splits the attempt into phases (begin, claim, load, reserve, execute, settle,
+advance). complete() runs them inline on one thread; InferenceExecutor runs load and
+execute on executor threads and every other phase on the coordinator, so both paths share
+one scheduler, one budget, and the same seal before commit ordering.
+
 The router reads the journal and the grants table and writes only through the journal.
 Providers see a ProviderRequest built from journal rows and nothing else (R1).
 
@@ -39,15 +44,15 @@ import dataclasses
 import threading
 import time
 from collections.abc import Callable, Sequence
-from contextlib import nullcontext
 from dataclasses import dataclass
 from enum import Enum
+from typing import Self
 
 from gameshark.authz import GrantStore
 from gameshark.inference.budget import admit_budget
 from gameshark.inference.journal import CallSpec, Committed, InferenceJournal, Reservation
-from gameshark.inference.provider import Provider
-from gameshark.inference.scheduler import DEFAULT_QUEUE_DEPTH, Scheduler
+from gameshark.inference.provider import Provider, ProviderCall
+from gameshark.inference.scheduler import DEFAULT_QUEUE_DEPTH, CallTicket, Scheduler, Slot
 from gameshark.inference.tracker import ModelTracker, Use
 from gameshark.inference.types import (
     AuthFailed,
@@ -64,6 +69,7 @@ from gameshark.inference.types import (
     Privacy,
     ProviderCancelled,
     ProviderError,
+    ProviderResult,
     ProviderUnavailable,
     RateLimited,
     prompt_bytes_bound,
@@ -165,6 +171,68 @@ class RouteResult:
     soft_budget: bool  # admitted under an untrusted prompt bound
     overrun: Overrun | None = None
     metered: bool = True  # False: no provider usage; charged its full reservation
+
+
+class RouteState:
+    """One routed call between begin and its final outcome: the candidates of the current
+    walk, the last retryable error, and the per agent and per conversation ticket."""
+
+    def __init__(self, call_id: str, conversation_id: str, spec: CallSpec,
+                 cancel: CancelToken, ticket: CallTicket, first: str) -> None:
+        self.call_id = call_id
+        self.conversation_id = conversation_id
+        self.spec = spec
+        self.cancel = cancel
+        self.ticket = ticket
+        self.first = first  # the first choice of the first walk; others answer degraded
+        self.by_name: dict[str, Candidate] = {}
+        self.remaining: list[str] = []
+        self.last: ProviderError | None = None
+        self.replaced = False
+        self.reselects = 0
+
+    def walk(self, candidates: Sequence[Candidate]) -> None:
+        self.by_name = {c.name: c for c in candidates}
+        self.remaining = [c.name for c in candidates]
+        self.replaced = False
+
+    def note(self, out: RouteResult | ProviderError) -> RouteResult | None:
+        """Record one candidate's outcome; return it when it is the answer."""
+        if isinstance(out, RouteResult):
+            return out
+        self.last = out
+        self.replaced = self.replaced or isinstance(out, ModelReplaced)
+        return None
+
+    def error(self) -> ProviderError:
+        return self.last if self.last is not None else ProviderUnavailable("no candidate ran")
+
+    def close(self) -> None:
+        self.ticket.release()
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        self.close()
+
+
+class Claim:
+    """One candidate's attempt: its slot, tracker use, reservation, and provider call.
+    Release is idempotent: the use first, then the slot, as the nested exits did."""
+
+    def __init__(self, state: RouteState, cand: Candidate, slot: Slot) -> None:
+        self.state = state
+        self.cand = cand
+        self.slot = slot
+        self.use: Use | None = None
+        self.res: Reservation | None = None
+        self.call: ProviderCall | None = None
+
+    def release(self) -> None:
+        if self.use is not None:
+            self.use.release()
+        self.slot.release()
 
 
 class ProviderHealth:
@@ -373,13 +441,13 @@ class InferenceRouter:
         return Overrun(res.call_id, res.attempt, cand.name, res.reserved_tokens, actual,
                        res.reserved_micros, cost, hard=cand.bound.trusted)
 
-    def complete(self, call_id: str, conversation_id: str, spec: CallSpec,
-                 cancel: CancelToken) -> RouteResult:
-        """Return the committed answer for call_id, routing and admitting new attempts.
-
-        Raises a typed ProviderError when no attempt can run or the last one failed; the
-        durable attempt cap (3) holds across calls and restarts.
-        """
+    # ------------------------------------------------------------------ phases
+    # complete() runs these inline. InferenceExecutor runs the same phases split across
+    # threads: load and execute on an executor, every other phase on the coordinator that
+    # owns the journal connection. Neither path has its own scheduler or budget.
+    def begin(self, call_id: str, conversation_id: str, spec: CallSpec,
+              cancel: CancelToken) -> RouteResult | RouteState:
+        """Short circuit a done call, or select candidates and take the call limits."""
         if self._admit is not None:
             self._admit()
         done = self.journal.lookup(call_id)
@@ -388,65 +456,43 @@ class InferenceRouter:
             return RouteResult(done, row["provider"], bool(row["degraded"]), False)
         self._durable_auth_block(call_id)
         candidates = self.select(conversation_id, spec)
-        first = candidates[0].name
-        with self.scheduler.admit_call(self.journal.agent_id, conversation_id,
-                                       self.policy.agent_in_flight,
-                                       self.policy.conversation_in_flight):
-            out, replaced = self._walk(call_id, conversation_id, spec, cancel, candidates, first)
-            for _ in range(MAX_RESELECT):
-                if not replaced or isinstance(out, RouteResult):
-                    break
-                # A configuration changed under the walk: select again, so capability,
-                # policy, and the egress grant are judged against the active configuration.
-                # Bounded: each round waits for the pending activation it raced.
-                out, replaced = self._walk(call_id, conversation_id, spec, cancel,
-                                           self.select(conversation_id, spec), first)
-        if isinstance(out, RouteResult):
-            return out
-        raise out if out is not None else ProviderUnavailable("no candidate ran")
+        ticket = self.scheduler.admit_call(self.journal.agent_id, conversation_id,
+                                           self.policy.agent_in_flight,
+                                           self.policy.conversation_in_flight)
+        state = RouteState(call_id, conversation_id, spec, cancel, ticket, candidates[0].name)
+        state.walk(candidates)
+        return state
 
-    def _walk(self, call_id: str, conversation_id: str, spec: CallSpec, cancel: CancelToken,
-              candidates: list[Candidate], first: str
-              ) -> tuple[RouteResult | ProviderError | None, bool]:
-        by_name = {c.name: c for c in candidates}
-        remaining = [c.name for c in candidates]
-        last: ProviderError | None = None
-        replaced = False
-        while remaining:
-            slot = self.scheduler.acquire(remaining, cancel, self.policy.max_queue_wait_s)
-            with slot:
-                cand = by_name[slot.provider]
-                remaining.remove(cand.name)
-                out = self._attempt(call_id, conversation_id, spec, cancel, cand, first)
-            if isinstance(out, RouteResult):
-                return out, replaced
-            replaced = replaced or isinstance(out, ModelReplaced)
-            last = out
-        return last, replaced
+    def claim(self, state: RouteState, max_wait_s: float) -> Claim:
+        """Take a slot on the first remaining candidate that has one (or queue for one)."""
+        slot = self.scheduler.acquire(state.remaining, state.cancel, max_wait_s)
+        cand = state.by_name[slot.provider]
+        state.remaining.remove(cand.name)
+        return Claim(state, cand, slot)
 
-    def _attempt(self, call_id: str, conversation_id: str, spec: CallSpec,
-                 cancel: CancelToken, cand: Candidate, first: str) -> RouteResult | ProviderError:
-        """Run one attempt on one candidate. Return the result, or a retryable error to fail
-        over on; raise anything terminal."""
-        use: Use | None = None
-        if self.tracker is not None:
-            try:  # lazy load or probe; before reserve, so a refusal costs nothing
-                use = self.tracker.admit(cand.name, cand.generation, cancel)
-            except ModelUnavailable as exc:
-                return exc
-        with use or nullcontext():
-            return self._dispatch(call_id, conversation_id, spec, cancel, cand, first, use)
+    def load(self, claim: Claim) -> ModelUnavailable | None:
+        """Admit the claim on the tracker: lazy load or probe, before any reservation, so a
+        refusal costs nothing. May block on a load or a replacement; touches no SQLite."""
+        if self.tracker is None:
+            return None
+        try:
+            claim.use = self.tracker.admit(claim.cand.name, claim.cand.generation,
+                                           claim.state.cancel)
+        except ModelUnavailable as exc:
+            return exc
+        return None
 
-    def _dispatch(self, call_id: str, conversation_id: str, spec: CallSpec,
-                  cancel: CancelToken, cand: Candidate, first: str,
-                  use: Use | None) -> RouteResult | ProviderError:
-        journal = self.journal
-        token = use.token if use is not None else cancel
-        res = journal.reserve(call_id, conversation_id, cand.name, cand.caps, spec,
-                              prompt_tokens=cand.bound.prompt, admit=self._admission(cand))
+    def reserve(self, claim: Claim) -> RouteResult | ProviderError | None:
+        """Reserve the attempt durably, then build the provider call (no I/O). Return None
+        when the call is ready to execute, else the outcome of this candidate."""
+        state, cand, journal = claim.state, claim.cand, self.journal
+        res = journal.reserve(state.call_id, state.conversation_id, cand.name, cand.caps,
+                              state.spec, prompt_tokens=cand.bound.prompt,
+                              admit=self._admission(cand))
         if isinstance(res, Committed):  # another owner finished it meanwhile
-            row = journal.call_row(call_id)
+            row = journal.call_row(state.call_id)
             return RouteResult(res, row["provider"], bool(row["degraded"]), False)
+        token = claim.use.token if claim.use is not None else state.cancel
         try:
             call = cand.config.provider.generate(res.request, token)
         except ProviderError as exc:
@@ -454,45 +500,115 @@ class InferenceRouter:
             if isinstance(exc, (CapabilityUnsupported, ContextTooLong)):
                 return exc  # this provider disagrees with its declared capabilities
             raise
+        claim.res, claim.call = res, call
+        return None
+
+    @staticmethod
+    def execute(claim: Claim) -> ProviderResult:
+        """Run the provider call and verify every chunk and the result. Pure: no SQLite."""
+        assert claim.res is not None and claim.call is not None
         try:
-            result = journal.collect(res, use.watch(call) if use is not None else call)
-        except ProviderError as exc:
+            call = claim.use.watch(claim.call) if claim.use is not None else claim.call
+            return InferenceJournal.collect(claim.res, call)
+        finally:
+            claim.call.close()
+
+    def settle(self, claim: Claim, outcome: ProviderResult | BaseException
+               ) -> RouteResult | ProviderError:
+        """Commit or abandon the attempt, then release the claim. Return the result, or a
+        retryable error to fail over on; raise anything terminal."""
+        try:
+            return self._settle(claim, outcome)
+        finally:
+            claim.release()
+
+    def _settle(self, claim: Claim, outcome: ProviderResult | BaseException
+                ) -> RouteResult | ProviderError:
+        journal, cand, use, state = self.journal, claim.cand, claim.use, claim.state
+        res = claim.res
+        assert res is not None
+        if isinstance(outcome, BaseException):
+            exc = outcome
+            if not isinstance(exc, ProviderError):
+                journal.abandon(res)
+                raise exc
             if use is not None:
                 use.observe(exc)
-                if use.evicted and not cancel.cancelled:
+                if use.evicted and not state.cancel.cancelled:
                     # The replacement cancelled this call, not the operator: retryable on the
                     # successor configuration.
                     journal.abandon(res, ModelReplaced.__name__)
-                    return ModelReplaced(f"{cand.name} replaced during call {call_id}")
+                    return ModelReplaced(f"{cand.name} replaced during call {state.call_id}")
             if isinstance(exc, AuthFailed):
                 self.health.block_auth(cand.name, cand.config.fingerprint)
                 journal.abandon(res, f"{AUTH_FAILED}:{cand.name}:{cand.config.fingerprint}")
-                raise
+                raise exc
             journal.abandon(res, type(exc).__name__)
             if isinstance(exc, RateLimited):
                 self.health.open_circuit(cand.name, exc.retry_after)
             if isinstance(exc, ProviderCancelled) or not exc.retryable:
-                raise
+                raise exc
             return exc
-        except BaseException:
-            journal.abandon(res)
-            raise
-        finally:
-            call.close()
+        result = outcome
         if use is not None:
             if not use.seal():
                 # Evicted before it could commit: a provider that ignored the cancel answered
                 # for the retired incarnation. Settle lost and rerun on the successor.
                 journal.abandon(res, ModelReplaced.__name__)
-                if cancel.cancelled:
-                    raise ProviderCancelled(cancel.reason)
-                return ModelReplaced(f"{cand.name} replaced during call {call_id}")
+                if state.cancel.cancelled:
+                    raise ProviderCancelled(state.cancel.reason)
+                return ModelReplaced(f"{cand.name} replaced during call {state.call_id}")
             use.observe(None)
             # Audit the tracker's incarnation: providers of external servers cannot see one.
             result = dataclasses.replace(result, instance_ref=use.instance_ref)
-        committed = journal.commit(res, result, degraded=cand.name != first)
+        degraded = cand.name != state.first
+        committed = journal.commit(res, result, degraded=degraded)
         metered = result.usage is not None
-        return RouteResult(committed, cand.name, cand.name != first,
+        return RouteResult(committed, cand.name, degraded,
                            soft_budget=not cand.bound.trusted,
                            overrun=self._overrun(res, cand) if metered else None,
                            metered=metered)
+
+    def advance(self, state: RouteState) -> bool:
+        """Called when a walk ran out of candidates. Start another walk when a replacement
+        raced this one, so capability, privacy, and the egress grant are judged against the
+        active configuration. Bounded by MAX_RESELECT; False means state.error() is final."""
+        if not state.replaced or state.reselects >= MAX_RESELECT:
+            return False
+        state.reselects += 1
+        state.walk(self.select(state.conversation_id, state.spec))
+        return True
+
+    # ------------------------------------------------------------------ routing
+    def complete(self, call_id: str, conversation_id: str, spec: CallSpec,
+                 cancel: CancelToken) -> RouteResult:
+        """Return the committed answer for call_id, routing and admitting new attempts.
+
+        Raises a typed ProviderError when no attempt can run or the last one failed; the
+        durable attempt cap (3) holds across calls and restarts.
+        """
+        state = self.begin(call_id, conversation_id, spec, cancel)
+        if isinstance(state, RouteResult):
+            return state
+        with state:
+            while True:
+                while state.remaining:
+                    claim = self.claim(state, self.policy.max_queue_wait_s)
+                    if (out := state.note(self._run(claim))) is not None:
+                        return out
+                if not self.advance(state):
+                    raise state.error()
+
+    def _run(self, claim: Claim) -> RouteResult | ProviderError:
+        try:
+            if (refused := self.load(claim)) is not None:
+                return refused
+            if (out := self.reserve(claim)) is not None:
+                return out
+            try:
+                outcome: ProviderResult | BaseException = self.execute(claim)
+            except BaseException as exc:
+                outcome = exc
+            return self.settle(claim, outcome)
+        finally:
+            claim.release()
