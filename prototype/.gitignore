@@ -6,3 +6,6 @@ __pycache__/
 *.db
 *.db-wal
 *.db-shm
+
+# Ad hoc live smoke output; curated results are committed by name
+live/results/run-*/
