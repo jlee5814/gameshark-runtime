@@ -187,6 +187,10 @@ uv run pytest -v tests/test_drain.py
 # inference journal: crash points E1 to E4, fencing, races
 uv run pytest -v tests/test_inference_journal.py
 
+# inference router: policy, budgets, slots, failover, 1,000 call soak
+uv run pytest -v tests/test_inference_router.py
+uv run python bench/router_overhead.py
+
 # individual critical tests
 uv run pytest -v tests/test_recovery.py::test_real_subprocess_kill_then_recover
 uv run pytest -v tests/test_recovery.py::test_c_crash_after_remote_before_journal
@@ -396,6 +400,51 @@ action only through a committed message and the effect journal.
 
 Not guaranteed: exactly once provider execution, exactly once billing, or identical text
 after a rerun. Budget admission arrives with the router (step 3).
+
+## Inference router (v0.3 step 3)
+
+Implements step 3 of `../architecture/inference-router.md` on `FakeProvider` only: no HTTP
+provider, worker executor, or model lifecycle. No schema change; the journal gains
+optional arguments whose defaults keep E1 to E4 unchanged.
+
+| Module | Contents |
+|---|---|
+| `gameshark/inference/router.py` | `InferenceRouter` (select, admit, dispatch, fail over, commit), `ProviderConfig`, `TokenBound`, `RouterPolicy`, `ProviderHealth`, `RouteResult`, `Overrun` |
+| `gameshark/inference/scheduler.py` | `Scheduler`: slots per provider, bounded FIFO queues with direct handoff, per agent and per conversation limits, `Overloaded(retry_after)` |
+| `gameshark/inference/budget.py` | fixed aligned windows; `admit_budget` runs inside the reserve transaction |
+
+Selection runs four filters in order and refuses with a typed error when one empties the
+set: capability (features, the `allowed` model constraint, prompt bound plus `max_tokens`
+within the context window), policy (`LOCAL_ONLY` and the durable grant
+`inference.cloud` gate cloud; a paid provider without a trusted token bound under a budget
+needs `inference.cloud.soft_budget`), ordering (configured preference, then local first,
+then cheapest cloud), and health (rate limit circuits, auth blocks, providers reporting
+down).
+
+Admission takes a slot first, then reserves. The reservation transaction rechecks the
+cloud grant and checks every configured window against settled, lost, and still reserved
+spend before it inserts the ledger row, so concurrent admissions on any connection
+serialize on the SQLite write lock. A refusal rolls back: no attempt and no budget
+consumed. `EgressDenied`, `BudgetExceeded`, and `BudgetUnenforceable` end the walk at
+once, so a policy denial never becomes cloud fallback.
+
+| Failure | Router action |
+|---|---|
+| retryable after dispatch (`ModelCrashed`, `StreamInterrupted`, `Timeout`, `RateLimited`, `ProviderUnavailable`, `ResultMismatch`) | attempt settles `lost` at full reservation; next distinct candidate; `RateLimited` opens a circuit for `retry_after` |
+| `ProviderCancelled`, durable `CallCancelled` | terminal; no fallback |
+| `AuthFailed` | terminal; attempt charged; `error_kind` records provider and config fingerprint; replay refused until the fingerprint changes |
+| `CapabilityUnsupported` or `ContextTooLong` from `generate` | reservation undone; next candidate |
+| other terminal | raised as is |
+
+A committed answer records its provider and `degraded = 1` when it came from a fallback.
+
+Token accounting. `estimate_tokens` counts whitespace words and bounds no real tokenizer.
+Each provider declares a `TokenBound`: `TRUSTED_BYTES` reserves UTF 8 bytes plus template
+overhead, a true upper bound only for byte level tokenizers, which the operator asserts;
+`ESTIMATE` reserves the whitespace count and makes the budget soft. Actual usage always
+settles unmodified, never truncated to the reservation, and an attempt above its
+reservation returns an `Overrun` and appears in `InferenceJournal.overruns()`. A trusted
+provider that overruns is demoted to `ESTIMATE` for the process.
 
 ## Actual test results
 
