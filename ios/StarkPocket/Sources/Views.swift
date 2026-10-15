@@ -238,12 +238,24 @@ struct SettingsView: View {
                     }
                 }
                 Section {
-                    Button("Unpair This iPhone", role: .destructive) {
-                        model.unpair()
-                        dismiss()
+                    Button(model.unpairing ? "Sending Stark home…" : "Unpair This iPhone",
+                           role: .destructive) {
+                        Task { if await model.unpair() { dismiss() } }
+                    }
+                    .disabled(model.unpairing)
+                    .accessibilityIdentifier("unpairButton")
+                    if let why = model.unpairError {
+                        Text(why)
+                            .foregroundStyle(.red)
+                            .accessibilityIdentifier("unpairError")
+                        Button("Forget Anyway", role: .destructive) {
+                            model.forgetAnyway()
+                            dismiss()
+                        }
                     }
                 } footer: {
-                    Text("Forgets the pairing and device key on this phone. To cut the phone "
+                    Text("If Stark is here, he goes home to the Mac first; the pairing and "
+                         + "device key are forgotten only once he arrives. To cut the phone "
                          + "off from the Mac too, run stark.py devices revoke on the Mac.")
                 }
             }

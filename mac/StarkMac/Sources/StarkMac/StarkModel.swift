@@ -118,12 +118,3 @@ private final class Relay: @unchecked Sendable {
         }
     }
 }
-
-/// The draft, readable from the gateway queue when a jack asks for it.
-private final class DraftBox: @unchecked Sendable {
-    private let lock = NSLock()
-    private var value = ""
-
-    func set(_ v: String) { lock.withLock { value = v } }
-    func get() -> String? { lock.withLock { value.isEmpty ? nil : value } }
-}

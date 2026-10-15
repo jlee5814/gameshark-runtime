@@ -41,17 +41,38 @@ screen.
 
 ## On a physical iPhone
 
-Not yet run. To try it:
+Not yet run on a device; the simulator acceptance is the only evidence so far. The
+checklist below uses its own database, never `~/.gameshark/runtime.db` or the simulator's
+`~/.gameshark/demo`. Run the Mac commands from `prototype/`.
 
-1. In Xcode, open `StarkPocket.xcodeproj`, select the StarkPocket target, Signing &
-   Capabilities, and choose your personal team (free provisioning works).
-2. Put the iPhone and the Mac on the same Wi-Fi. On the Mac:
-   `cd prototype && uv run python stark.py run --lan` and allow incoming connections if
-   macOS asks. Start StarkMac.
-3. Run the app on the iPhone from Xcode. Then on the Mac:
-   `uv run --with qrcode==8.0 python stark.py pair --name "My iPhone"`.
-4. Scan the QR with the iPhone Camera and open it in Stark Pocket; allow local network
-   access when iOS asks.
-5. Tap Jack In; StarkMac dims. Send a message; the reply arrives on the phone. Tap Jack
-   Out; StarkMac becomes active with the same conversation.
-6. Optional: `stark.py devices revoke <id>` and watch the phone return to pairing.
+```sh
+export DB=~/.gameshark/device-check/runtime.db && mkdir -p "$(dirname "$DB")"
+uv run python stark.py --db "$DB" run --lan          # terminal 1; allow incoming connections
+STARK_SOCKET="$(dirname "$DB")/gateway/stark.sock" \
+  "$(../mac/scripts/build-app.sh | tail -1)/Contents/MacOS/StarkMac" &   # this database's StarkMac
+uv run --with qrcode==8.0 python stark.py --db "$DB" pair --name "My iPhone"
+```
+
+1. Signing: open `StarkPocket.xcodeproj`, StarkPocket target, Signing & Capabilities,
+   choose your personal team. Put the iPhone and the Mac on the same Wi-Fi; run the app
+   on the iPhone from Xcode.
+2. Pair: scan the QR with the iPhone Camera and open it in Stark Pocket; allow local
+   network access. Expect "Stark is on Mac".
+3. Jack In, talk, Jack Out: tap Jack In (StarkMac dims), send a message, see the reply on
+   the phone, tap Jack Out (StarkMac active, same conversation).
+4. Draft on Jack In Here: Jack In on the phone, type text without sending, then press
+   Jack In Here in StarkMac's menu. Expect Stark on the Mac and
+   `sqlite3 "$DB" "SELECT draft FROM handoffs ORDER BY created DESC LIMIT 1"` to print
+   the text.
+5. Re-pair refused: while paired, open a fresh `stark.py pair` link on the phone. Expect
+   "already paired"; the phone stays connected.
+6. Unpair while holding: Jack In, then Settings, Unpair This iPhone. Expect "Sending Stark
+   home…", StarkMac active, then the pairing screen. Repeat with Wi-Fi off on the phone:
+   expect the pairing kept with a recovery message and Forget Anyway.
+7. SIGKILL: pair again, Jack In, then `kill -9` the daemon and restart it with the same
+   command. Expect the phone to reconnect with Stark still here.
+8. Revoke mid jack home: tap Jack Out and run
+   `uv run python stark.py --db "$DB" devices revoke <id>` at once. Expect StarkMac to hold
+   Stark and the phone to return to pairing, never Stark back on the phone.
+9. Stale endpoint: stop the daemon with `kill -9`, then run `stark.py pair` again. Expect a
+   refusal, no link.

@@ -214,3 +214,119 @@ def test_cli_paired_phone_survives_sigkill_and_cli_revocation(env):
     finally:
         if proc.poll() is None:
             stop(proc)
+
+
+def test_busy_lan_port_disables_the_whole_gateway(env):
+    """No half started gateway: when the LAN port is taken, the Unix socket closes too and
+    no lan.json advertises an endpoint. The daemon keeps its duties."""
+    import socket
+
+    env["sock"].parent.mkdir(mode=0o700, exist_ok=True)
+    stale = env["sock"].parent / "lan.json"
+    stale.write_text(json.dumps({"port": 1, "pin": "00" * 32}))
+    busy = socket.create_server(("", 0), family=socket.AF_INET6, dualstack_ipv6=True)
+    proc = subprocess.Popen([sys.executable, str(ROOT / "stark.py"), "--db", str(env["db"]),
+                             "--interval", "0.5", "run", "--lan", "--lan-port",
+                             str(busy.getsockname()[1])],
+                            env=env["env"], cwd=ROOT, stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT, text=True)
+    try:
+        for line in proc.stdout:
+            assert "gateway listening" not in line
+            if "gateway disabled" in line:
+                break
+        else:
+            raise AssertionError("daemon exited without reporting the gateway")
+        assert not env["sock"].exists()
+        assert not stale.exists()
+        time.sleep(1.0)
+        assert proc.poll() is None                                # duties keep running
+    finally:
+        busy.close()
+        if proc.poll() is None:
+            stop(proc)
+
+
+def test_revocation_applies_when_the_daemon_runs_without_lan(env):
+    """A phone holds Stark, the daemon dies, the operator revokes the phone, and the next
+    daemon starts without --lan. Presence still returns home under a new generation."""
+    from urllib.parse import parse_qs, urlsplit
+
+    from gameshark.gateway_client import DeviceClient, pair_device
+
+    proc = daemon(env, 0.1, "--lan", "--lan-port", "0")
+    try:
+        info = lan(env)
+        link = json.loads(cli(env, "pair", "--name", "Test Phone", "--json",
+                              "--address", "127.0.0.1"))["link"]
+        q = {k: v[0] for k, v in parse_qs(urlsplit(link).query).items()}
+        pin = bytes.fromhex(q["fp"])
+        device_id, _surface, key = pair_device("127.0.0.1", info["port"], pin, q["id"],
+                                               q["s"], "Test Phone")
+        with client(env) as mac, DeviceClient("127.0.0.1", info["port"], pin, device_id,
+                                              key) as phone:
+            phone.call("jack", handoff_id="in1", to="self", presence_gen=1)
+            out = mac.call("ready_out", handoff_id="in1", presence_gen=1, draft=None)
+            phone.call("ack_in", handoff_id="in1", presence_gen=out["to_gen"])
+            gen = out["to_gen"]
+        stop(proc, signal.SIGKILL)
+        cli(env, "devices", "revoke", device_id)
+        proc = daemon(env, 0.1)
+        with client(env) as mac:
+            wait_for(lambda: mac.call("snapshot")["presence"]
+                     == {"surface": "mac", "home": "mac", "generation": gen + 1})
+    finally:
+        if proc.poll() is None:
+            stop(proc)
+
+
+def pairings(env) -> int:
+    conn = sqlite3.connect(env["db"], timeout=5)
+    try:
+        return conn.execute("SELECT COUNT(*) FROM pairings").fetchone()[0]
+    finally:
+        conn.close()
+
+
+def pair_cli(env) -> subprocess.CompletedProcess:
+    return subprocess.run([sys.executable, str(ROOT / "stark.py"), "--db", str(env["db"]),
+                           "pair", "--name", "Test Phone", "--json", "--address", "127.0.0.1"],
+                          env=env["env"], cwd=ROOT, capture_output=True, text=True,
+                          timeout=30, check=False)
+
+
+def test_pair_refuses_lan_json_from_a_killed_daemon(env):
+    proc = daemon(env, 0.1, "--lan", "--lan-port", "0")
+    lan(env)
+    stop(proc, signal.SIGKILL)
+    assert (env["sock"].parent / "lan.json").exists()             # SIGKILL leaves it
+    out = pair_cli(env)
+    assert out.returncode != 0
+    assert "starkpocket://" not in out.stdout
+    assert "not running" in out.stderr
+    assert pairings(env) == 0
+
+
+def test_pair_refuses_an_endpoint_the_running_daemon_does_not_serve(env):
+    import socket
+
+    proc = daemon(env, 0.1, "--lan", "--lan-port", "0")
+    try:
+        info_path = env["sock"].parent / "lan.json"
+        info = lan(env)
+        with socket.socket() as s:
+            s.bind(("127.0.0.1", 0))
+            dead = s.getsockname()[1]                             # closed once released
+        for wrong in ({**info, "port": dead}, {**info, "pin": "11" * 32}):
+            info_path.write_text(json.dumps(wrong))
+            out = pair_cli(env)
+            assert out.returncode != 0, wrong
+            assert "does not serve" in out.stderr
+            assert pairings(env) == 0
+        info_path.write_text(json.dumps(info))
+        for _ in range(6):                                        # probes never trip the limiter
+            assert pair_cli(env).returncode == 0
+        assert pairings(env) == 6
+    finally:
+        assert stop(proc) == 0
+    assert not (env["sock"].parent / "lan.json").exists()         # a clean stop withdraws it

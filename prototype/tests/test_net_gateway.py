@@ -376,6 +376,32 @@ def test_phone_jack_authorization(rt):
         assert mac.call("snapshot")["handoff"]["id"] == "j3"
 
 
+def test_revoking_a_phone_mid_jack_home_keeps_stark_home(rt):
+    """The phone sends Stark home and is revoked before the Mac acks. The missed ack must
+    not hand presence back to the revoked phone, even for one pump."""
+    device_id, surface, key = paired(rt)
+    with rt.client() as mac:
+        phone = rt.device(device_id, key)
+        gen = jack_in(rt, mac, phone)
+        phone.call("jack", handoff_id="out1", to="home", presence_gen=gen)
+        out = phone.call("ready_out", handoff_id="out1", presence_gen=gen, draft="half typed")
+        assert out["state"] == "committed"                  # the Mac never acks
+        mac.call("ping")                                    # pushes so far arrive first
+        mac.events.clear()
+        operator_revoke(rt, device_id)
+        mac.call("ping")
+        ended(phone.sock)
+        time.sleep(1.5)                                     # past the 1 s ack deadline
+        p = presence(mac)
+        assert p == {"surface": "mac", "home": "mac", "generation": out["to_gen"] + 1}
+        assert mac.call("snapshot")["handoff"] is None
+        holders = [e["data"]["presence"]["surface"] for e in mac.events
+                   if e.get("kind") == "presence"]
+        assert surface not in holders, holders
+        mac.call("send", conversation_id=CONVERSATION, client_msg_id="m1", text="still here",
+                 presence_gen=p["generation"])
+
+
 def test_late_ack_from_the_phone_reverts_home(rt):
     device_id, _surface, key = paired(rt)
     with rt.client() as mac, rt.device(device_id, key) as phone:

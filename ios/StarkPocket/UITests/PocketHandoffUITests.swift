@@ -60,6 +60,17 @@ final class PocketHandoffUITests: XCTestCase {
         app.buttons["jackButton"].tap()
         waitFor("presenceLabel", label: "Stark is on Mac")
         shot("4-jacked-out")
+        // Jack In again and leave text unsent; the Mac takes Stark back with Jack In Here,
+        // and the phone's draft travels in the handoff journal.
+        guard let signal = ProcessInfo.processInfo.environment["STARK_SIGNAL_DIR"] else { return }
+        app.buttons["jackButton"].tap()
+        waitFor("presenceLabel", label: "Stark is here")
+        field.tap()
+        field.typeText("unsent from my pocket")
+        let marker = URL(fileURLWithPath: signal).appendingPathComponent("draft-typed")
+        try Data().write(to: marker)
+        waitFor("presenceLabel", label: "Stark is on Mac")
+        shot("5-mac-jacked-in-with-draft")
     }
 }
 

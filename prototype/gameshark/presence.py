@@ -291,8 +291,9 @@ class PresenceManager:
 
     def evict(self, surface: str) -> bool:
         """Strip surface of presence and of any open jack it is part of, in one fenced
-        transaction (a revoked device). The holder returns home under generation + 1.
-        Returns whether anything changed."""
+        transaction (a revoked device). A preparing jack aborts; a committed one reverts
+        home, never back to the evicted surface, even when it was the jack's source. The
+        holder returns home under generation + 1. Returns whether anything changed."""
         now = self.clock.now()
 
         def body(conn: sqlite3.Connection) -> bool:
@@ -302,13 +303,12 @@ class PresenceManager:
             changed = False
             h = conn.execute("SELECT * FROM handoffs WHERE agent_id=? AND state IN (?,?)",
                              (self.agent_id, *OPEN)).fetchone()
-            if h is not None and (h["to_surface"] == surface or
-                                  (h["from_surface"] == surface and h["state"] == PREPARING)):
+            if h is not None and surface in (h["from_surface"], h["to_surface"]):
                 if h["state"] == PREPARING:
                     conn.execute("UPDATE handoffs SET state=?, updated=? WHERE id=?",
                                  (ABORTED, now, h["id"]))
                 else:
-                    self._revert_in_txn(conn, h, now)
+                    self._revert_in_txn(conn, h, now, back=p["home"])
                 changed = True
             p = self._presence()
             if p["surface"] == surface:
@@ -355,10 +355,12 @@ class PresenceManager:
 
         return self._fenced(body)
 
-    def _revert_in_txn(self, conn: sqlite3.Connection, row: sqlite3.Row, now: float) -> None:
+    def _revert_in_txn(self, conn: sqlite3.Connection, row: sqlite3.Row, now: float,
+                       back: str | None = None) -> None:
         p = self._presence()
         # Fall back home, unless home is the target that just failed.
-        back = row["from_surface"] if row["to_surface"] == p["home"] else p["home"]
+        if back is None:
+            back = row["from_surface"] if row["to_surface"] == p["home"] else p["home"]
         conn.execute("UPDATE presence SET surface=?, generation=?, updated=? "
                      "WHERE agent_id=?", (back, p["generation"] + 1, now, self.agent_id))
         conn.execute("UPDATE handoffs SET state=?, updated=? WHERE id=?",

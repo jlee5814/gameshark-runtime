@@ -217,23 +217,29 @@ class GatewayServer:
 
     # ------------------------------------------------------------------ lifecycle
     def start(self) -> None:
+        """Bind every transport, then accept. A failure anywhere closes what started, so
+        no socket ever accepts sessions that nothing will pump."""
         _prepare_dir(self.path)
-        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        old = os.umask(0o177)
         try:
-            s.bind(str(self.path))
-        finally:
-            os.umask(old)
-        os.chmod(self.path, 0o600)
-        s.listen(MAX_SESSIONS)
-        s.settimeout(IO_TIMEOUT_S)
-        self._listener = s
-        self._alive.set()
-        self._accept_thread = threading.Thread(target=self._accept, name="gateway-accept",
-                                               daemon=True)
-        self._accept_thread.start()
-        for listener in self._listeners:
-            listener.start(self)
+            s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            self._listener = s
+            old = os.umask(0o177)
+            try:
+                s.bind(str(self.path))
+            finally:
+                os.umask(old)
+            os.chmod(self.path, 0o600)
+            s.listen(MAX_SESSIONS)
+            s.settimeout(IO_TIMEOUT_S)
+            self._alive.set()
+            for listener in self._listeners:
+                listener.start(self)
+            self._accept_thread = threading.Thread(target=self._accept,
+                                                   name="gateway-accept", daemon=True)
+            self._accept_thread.start()
+        except BaseException:
+            self.close()
+            raise
 
     def close(self) -> None:
         self._alive.clear()

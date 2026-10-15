@@ -106,6 +106,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             setClickThrough(args.first != "off")
         case "reconnect":
             model.client.reconnectNow()
+        case "jackin":
+            model.jackIn()
         case "snapshot" where args.count == 1:
             panel.snapshot(to: URL(fileURLWithPath: args[0]))
         case "avatar" where args.count == 1:
