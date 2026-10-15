@@ -201,6 +201,43 @@ CREATE TABLE IF NOT EXISTS agent_budgets (
     max_cost_micros INTEGER NOT NULL,
     PRIMARY KEY (agent_id, window_s)
 );
+
+-- v0.4: presence. One surface (the Mac panel, a paired phone) is Stark's active body.
+-- The generation fences surface writes the way lease.generation fences owners.
+CREATE TABLE IF NOT EXISTS presence (
+    agent_id   TEXT PRIMARY KEY,
+    surface    TEXT NOT NULL,
+    home       TEXT NOT NULL,            -- surface presence reverts to after a failed jack
+    generation INTEGER NOT NULL,
+    updated    REAL NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS handoffs (
+    id             TEXT PRIMARY KEY,     -- chosen by the requester; retries reuse it
+    agent_id       TEXT NOT NULL,
+    from_surface   TEXT NOT NULL,
+    to_surface     TEXT NOT NULL,
+    from_gen       INTEGER NOT NULL,     -- presence generation the jack started under
+    to_gen         INTEGER,              -- generation granted at commit
+    state          TEXT NOT NULL,        -- preparing | committed | acked | reverted | aborted
+    draft          TEXT,                 -- unsent text carried from source to target
+    prepare_deadline REAL NOT NULL,
+    ack_deadline   REAL,
+    created        REAL NOT NULL,
+    updated        REAL NOT NULL
+);
+
+-- v0.4: surface writes, deduplicated by the client chosen id so a resend lands once.
+CREATE TABLE IF NOT EXISTS surface_writes (
+    agent_id        TEXT NOT NULL,
+    client_msg_id   TEXT NOT NULL,
+    surface         TEXT NOT NULL,
+    presence_gen    INTEGER NOT NULL,
+    conversation_id TEXT NOT NULL,
+    seq             INTEGER NOT NULL,
+    created         REAL NOT NULL,
+    PRIMARY KEY (agent_id, client_msg_id)
+);
 """
 
 # Columns added after a table first shipped. Applied idempotently so a v0.1 or early v0.2
