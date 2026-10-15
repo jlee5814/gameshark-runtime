@@ -86,6 +86,7 @@ machinery. Surfaces reach only `stark:main`.
 | `send {client_msg_id, conversation_id, text, presence_gen}` | write | `SurfaceConversation.submit`, then the reply event |
 | `ready_out {handoff_id, draft, presence_gen}` | write | source confirms its exit |
 | `ack_in {handoff_id, presence_gen}` | write | target confirms its arrival |
+| `jack {handoff_id, to: self\|home, presence_gen}` | write | Jack In to the caller, or Jack Out home from the holder |
 
 Pushes (`event` frames with a monotonic `rev`): `presence`, `responsibilities`,
 `messages` (rows after the last seq that session was sent), then `activity`, in that
@@ -104,6 +105,11 @@ Invariants added:
   unanswered head row, so a crash between the user write and the event insert heals on
   the next tick; a user write during a call makes the journal refuse that commit
   (ContextConflict) and the newer seq answers the full context.
+
+Paired phones reach the same queue and table over pinned TLS on the LAN (`stark.py run
+--lan`); pairing, device proofs, revocation, and the threat model are in
+[stark-pocket-transport.md](stark-pocket-transport.md). A Unix surface may not name a
+`pocket-` surface, and a device's surface always comes from its device row.
 
 `stark.py jack <surface>` moves presence through a control request. A silent source
 commits after the prepare deadline; a target that never acks reverts home under a newer
@@ -165,4 +171,4 @@ ownership, presence, or inference (G3).
 
 ## Not yet built
 
-Pinned TLS gateway, device pairing, Bonjour, StarkPhone, voice, system notifications.
+Stark Pocket (the iPhone app, Phase 3B), Bonjour, voice, system notifications.

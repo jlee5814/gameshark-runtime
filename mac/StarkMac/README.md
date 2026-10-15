@@ -95,6 +95,14 @@ never writes identity, presence, duties, or inference. One timer runs at frame r
 Frames render with nearest neighbor sampling at an integer device pixel scale, so 1× is
 one sheet pixel per screen pixel. Without an atlas, the vector avatar draws instead.
 
+## Paired devices (StarkKit)
+
+StarkKit also speaks to the runtime's LAN gateway as a paired phone: `TLSTransport`
+(Network.framework, TLS 1.3, pinned server key), `DeviceSigner` (Secure Enclave or software
+P256), `Pairing.run` for the one time `starkpocket://pair` link, and `GatewayClient.jack`
+for Jack In and Jack Out. StarkMac itself still uses the Unix socket. Threat model and
+setup: [architecture/stark-pocket-transport.md](../../architecture/stark-pocket-transport.md).
+
 ## Click through
 
 Click Through sets `ignoresMouseEvents`, so clicks reach the windows beneath Stark and a

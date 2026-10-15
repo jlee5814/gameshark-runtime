@@ -3,7 +3,9 @@ name = "gameshark-runtime"
 version = "0.2.0"
 description = "Clean room persistent agent runtime prototype: durable identity, fenced ownership, crash recovery"
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+    "cryptography==46.0.3",
+]
 
 [dependency-groups]
 dev = ["pytest>=8.0", "ruff>=0.6"]

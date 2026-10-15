@@ -39,6 +39,7 @@ IO_TIMEOUT_S = 1.0          # reader poll slice; also bounds a blocked send
 HELLO_TIMEOUT_S = 5.0
 SURFACE_RE = re.compile(r"^[a-z][a-z0-9-]{0,31}$")
 TRANSCRIPT_TAG = b"stark-gateway"
+DEVICE_PREFIX = "pocket-"    # surfaces reserved for paired devices (net_gateway.py)
 
 
 class FrameError(Exception):
@@ -72,8 +73,12 @@ def read_frame(sock: socket.socket, alive: threading.Event) -> dict:
     (n,) = struct.unpack(">I", _recv_exact(sock, 4, alive))
     if n == 0 or n > MAX_FRAME:
         raise FrameError(f"frame length {n} outside 1..{MAX_FRAME}")
+    return decode(_recv_exact(sock, n, alive))
+
+
+def decode(body: bytes) -> dict:
     try:
-        msg = json.loads(_recv_exact(sock, n, alive))
+        msg = json.loads(body)
     except (UnicodeDecodeError, json.JSONDecodeError) as e:
         raise FrameError(f"malformed frame: {e}") from None
     if not isinstance(msg, dict) or not isinstance(msg.get("type"), str):
@@ -154,6 +159,7 @@ class Session:
     authed: bool = False
     closed: bool = False
     synced_seq: int | None = None   # coordinator only: highest seq this session was sent
+    revoked: bool = False           # coordinator only: its device was revoked; answer nothing
     lock: threading.Lock = field(default_factory=threading.Lock)
 
     def send(self, msg: dict) -> bool:
@@ -202,6 +208,12 @@ class GatewayServer:
         self._ids = itertools.count(1)
         self._listener: socket.socket | None = None
         self._accept_thread: threading.Thread | None = None
+        self._listeners: list = []
+
+    def attach(self, listener) -> None:
+        """Serve another transport (net_gateway.LanListener) into the same request queue,
+        session table, and session cap. Call before start()."""
+        self._listeners.append(listener)
 
     # ------------------------------------------------------------------ lifecycle
     def start(self) -> None:
@@ -220,9 +232,13 @@ class GatewayServer:
         self._accept_thread = threading.Thread(target=self._accept, name="gateway-accept",
                                                daemon=True)
         self._accept_thread.start()
+        for listener in self._listeners:
+            listener.start(self)
 
     def close(self) -> None:
         self._alive.clear()
+        for listener in self._listeners:
+            listener.stop()
         if self._listener is not None:
             self._listener.close()
             self._listener = None
@@ -265,12 +281,8 @@ class GatewayServer:
             except OSError:
                 return
             conn.settimeout(IO_TIMEOUT_S)
-            sess = Session(f"s{next(self._ids)}", conn)
-            with self._lock:
-                full = len(self.sessions) >= MAX_SESSIONS
-                if not full:
-                    self.sessions[sess.id] = sess
-            if full:
+            sess = Session(self.next_id(), conn)
+            if not self.admit(sess):
                 sess.send({"type": "error", "code": "busy", "message": "too many sessions"})
                 sess.close()
                 continue
@@ -292,11 +304,35 @@ class GatewayServer:
             pass
         finally:
             sess.close()
-            with self._lock:
-                self.sessions.pop(sess.id, None)
-            if sess.authed:
-                self.requests.put((sess, LOST))
-                self.wake.set()
+            self.retire(sess)
+
+    # ------------------------------------------------------------------ shared by listeners
+    def next_id(self) -> str:
+        return f"s{next(self._ids)}"
+
+    def admit(self, sess: Session) -> bool:
+        """Register a new connection unless the shared session cap is reached."""
+        with self._lock:
+            if len(self.sessions) >= MAX_SESSIONS:
+                return False
+            self.sessions[sess.id] = sess
+            return True
+
+    def retire(self, sess: Session) -> None:
+        """Forget a closed connection; tell the coordinator if it had authenticated."""
+        with self._lock:
+            self.sessions.pop(sess.id, None)
+        if sess.authed:
+            self.requests.put((sess, LOST))
+            self.wake.set()
+
+    def submit(self, sess: Session, msg: object) -> None:
+        self.requests.put((sess, msg))
+        self.wake.set()
+
+    @property
+    def alive(self) -> threading.Event:
+        return self._alive
 
     def _reject(self, sess: Session, code: str, message: str) -> bool:
         sess.send({"type": "error", "code": code, "message": message})
@@ -324,6 +360,9 @@ class GatewayServer:
                                 f"server speaks {list(PROTO_VERSIONS)}")
         if not isinstance(surface, str) or not SURFACE_RE.match(surface):
             return self._reject(sess, "invalid", "surface must match [a-z][a-z0-9-]{0,31}")
+        if surface.startswith(DEVICE_PREFIX):
+            return self._reject(sess, "invalid", f"{DEVICE_PREFIX}* surfaces belong to "
+                                "paired devices")
         expected = sign(self.token, nonce, surface, proto)
         if not isinstance(mac, str) or not hmac.compare_digest(mac, expected):
             return self._reject(sess, "auth_failed", "bad token")

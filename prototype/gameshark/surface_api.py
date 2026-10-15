@@ -10,6 +10,11 @@ the session's, bound at hello, never a field of the frame. The write and its pre
 guard run in one transaction (SurfaceConversation.submit, PresenceManager.ready_out and
 ack_in), so a surface jacked out a moment ago writes nothing.
 
+Paired devices (net_gateway.py) authenticate here too: their first frame arrives as an
+AuthRequest, and the device proof or pairing is checked against the database on this
+thread. Each pump first applies operator revocations, closing a revoked device's sessions
+and evicting it from presence before any of its queued requests could be answered.
+
 Pushes are at least once: a session that has synced receives rows after the last seq it
 was sent, plus presence, responsibility, and activity changes. The surface merges by seq,
 so a repeat is harmless and a gap triggers a sync.
@@ -21,9 +26,11 @@ import re
 import uuid
 from collections.abc import Callable
 
+from gameshark.devices import AuthRejected, DeviceRegistry
 from gameshark.errors import Cancelled, Draining, FencedError, HandoffConflict, StalePresence
 from gameshark.gateway import HELLO, LOST, PROTO_VERSIONS, GatewayServer, Session
 from gameshark.inference.types import InvalidRequest, OwnershipMismatch
+from gameshark.net_gateway import AuthRequest, TLSSession
 from gameshark.stark_chat import CONVERSATION, StarkChatAdapter
 from gameshark.supervisor import AgentSupervisor
 
@@ -61,6 +68,16 @@ def _text(msg: dict, key: str, required: bool = True) -> str | None:
     return v
 
 
+def _hex(msg: dict, key: str, max_bytes: int = 128) -> bytes:
+    v = msg.get(key)
+    if not isinstance(v, str) or len(v) > 2 * max_bytes:
+        raise Invalid(f"{key} must be hex of at most {max_bytes} bytes")
+    try:
+        return bytes.fromhex(v)
+    except ValueError:
+        raise Invalid(f"{key} must be hex") from None
+
+
 def _conversation(msg: dict) -> str:
     cid = _id(msg, "conversation_id")
     if cid not in CONVERSATIONS:
@@ -70,13 +87,15 @@ def _conversation(msg: dict) -> str:
 
 class SurfaceAPI:
     def __init__(self, sup: AgentSupervisor, server: GatewayServer,
-                 chat: StarkChatAdapter, log: Callable[[str], None] = lambda _m: None) -> None:
+                 chat: StarkChatAdapter, log: Callable[[str], None] = lambda _m: None,
+                 devices: DeviceRegistry | None = None) -> None:
         if sup.presence is None or sup.surface is None:
             raise ValueError("the surface API needs enable_presence before start")
         self.sup = sup
         self.server = server
         self.chat = chat
         self.log = log
+        self.devices = devices
         self.rev = 0
         self.boot = str(uuid.uuid4())   # this runtime instance; a restart mints a new one
         self._last: dict[str, object] = {}
@@ -88,6 +107,7 @@ class SurfaceAPI:
             "send": self._send,
             "ready_out": self._ready_out,
             "ack_in": self._ack_in,
+            "jack": self._jack,
         }
 
     # ------------------------------------------------------------------ loop hooks
@@ -96,8 +116,14 @@ class SurfaceAPI:
         presence = self.sup.presence
         assert presence is not None
         handled = 0
+        self._enforce_revocations()
         for sess, msg in self.server.take():
             handled += 1
+            if isinstance(msg, AuthRequest):
+                self._authenticate(sess, msg)
+                continue
+            if sess.revoked:
+                continue
             if msg is HELLO:
                 self.log(f"surface {sess.surface} connected as {sess.id}")
                 continue
@@ -207,6 +233,73 @@ class SurfaceAPI:
         assert self.sup.presence is not None
         h = self.sup.presence.ack_in(hid, sess.surface, gen)
         return {"handoff_id": h.id, "state": h.state, "draft": h.draft}
+
+    def _jack(self, sess: Session, msg: dict) -> dict:
+        hid = _id(msg, "handoff_id")
+        to = msg.get("to")
+        if to not in ("self", "home"):
+            raise Invalid("to must be self or home")
+        gen = _int(msg, "presence_gen", 0)
+        assert self.sup.presence is not None
+        h = self.sup.presence.request_jack_by(hid, sess.surface, gen, to)
+        return {"handoff_id": h.id, "state": h.state, "from": h.from_surface,
+                "to": h.to_surface}
+
+    # ------------------------------------------------------------------ devices
+    def _authenticate(self, sess: Session, req: AuthRequest) -> None:
+        assert isinstance(sess, TLSSession)
+        f = req.frame
+        proto = f.get("proto")
+        if not isinstance(proto, int) or isinstance(proto, bool) or proto not in PROTO_VERSIONS:
+            sess.reject("unsupported_version", f"server speaks {list(PROTO_VERSIONS)}")
+            return
+        try:
+            if self.devices is None:
+                raise AuthRejected("device pairing is not enabled")
+            if req.kind == "pair":
+                secret = f.get("secret")
+                if not isinstance(secret, str) or not 0 < len(secret) <= 64:
+                    raise Invalid("secret must be 1 to 64 characters")
+                d = self.devices.complete_pairing(_id(f, "pairing_id"), secret,
+                                                  _hex(f, "public_key"), f.get("name"))
+                self.log(f"paired device {d.id} ({d.name}) as {d.surface} from {sess.peer}")
+                sess.send({"type": "paired", "device_id": d.id, "surface": d.surface,
+                           "identity": self.server.identity})
+                sess.close()
+                return
+            d = self.devices.authenticate(_id(f, "device_id"), req.nonce, proto,
+                                          req.server_fp, _hex(f, "sig"))
+        except (AuthRejected, Invalid) as e:
+            self.log(f"device auth refused from {sess.peer}: {e}")
+            sess.reject("auth_failed", "authentication failed")
+            return
+        except FencedError:
+            sess.reject("fenced", "runtime lost ownership")
+            raise
+        sess.accept(d.surface, d.id, proto, {
+            "type": "welcome", "proto": proto, "session": sess.id, "surface": d.surface,
+            "device_id": d.id, "identity": self.server.identity})
+        self.log(f"device {d.name} connected as {d.surface} ({sess.id})")
+
+    def _enforce_revocations(self) -> None:
+        """Close revoked devices' sessions and take presence back from them."""
+        if self.devices is None:
+            return
+        revoked = self.devices.revoked_surfaces()
+        if not revoked:
+            return
+        for s in self.server.live_sessions():
+            if s.surface in revoked:
+                s.revoked = True
+                s.close()
+                self.log(f"closed {s.id}: device {s.surface} revoked")
+        pm = self.sup.presence
+        assert pm is not None
+        h = pm.open_handoff()
+        involved = {pm.current().surface} | ({h.from_surface, h.to_surface} if h else set())
+        for surface in involved & revoked:
+            if pm.evict(surface):
+                self.log(f"evicted revoked {surface} from presence")
 
     def _lost(self, sess: Session) -> None:
         self.log(f"surface {sess.surface} disconnected ({sess.id})")
