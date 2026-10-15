@@ -13,6 +13,7 @@ from __future__ import annotations
 import random
 import sys
 import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -21,6 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from gameshark.inference import (
     CLOUD_GRANT,
+    AttemptsExhausted,
     Capabilities,
     EgressDenied,
     FakeProvider,
@@ -52,6 +54,7 @@ from gameshark.inference import (
     Timeout,
     TrackerPolicy,
 )
+from gameshark.inference.tracker import Use
 from gameshark.inference.types import ContextTooLong
 from gameshark.lifecycle import CancelToken
 from tests.openai_fixture import OpenAIFixture, Reply, refused_port
@@ -63,6 +66,7 @@ from tests.test_inference_router import (
     cfg,
     grant,
     ledger,
+    reserved_rows,
     seed,
     thread_journal,
     until,
@@ -564,6 +568,316 @@ def test_replacement_that_turns_cloud_still_needs_the_egress_grant(tmp_path, clo
         run(r, "k2", "c2")                                      # cloud ok, grant absent
     grant(sup, CLOUD_GRANT)
     assert run(r, "k2", "c2").provider == "x" and remote.count() == 1
+    sup.close()
+
+
+# ---------------------------------------------------------------------- replacement safety
+class Deaf:
+    """A provider whose server never sees cancellation: generate keeps the router's token
+    for inspection and hands the inner call a token nobody cancels."""
+
+    def __init__(self, inner: FakeProvider) -> None:
+        self.inner = inner
+        self.name = inner.name
+        self.tokens: list[CancelToken] = []
+
+    def capabilities(self) -> Capabilities:
+        return self.inner.capabilities()
+
+    def health(self, timeout_s: float) -> Health:
+        return self.inner.health(timeout_s)
+
+    def generate(self, req, cancel: CancelToken):
+        self.tokens.append(cancel)
+        return self.inner.generate(req, CancelToken())
+
+
+def stale(gate: threading.Event | None = None) -> Deaf:
+    """Deaf old model answering "stale" for call k, blocked on gate when one is given."""
+    kw = {"sleep": lambda _s, _t: gate.wait(5)} if gate is not None else {}
+    base = {"k": Script(chunks=("stale",), delays=(1.0,) if gate is not None else ())}
+    return Deaf(fake(scripts=base, **kw))
+
+
+def assert_no_leaks(sup, tr: ModelTracker, *retired) -> None:
+    assert all(v.in_flight == 0 and v.queued == 0 for v in tr.scheduler.stats().values())
+    assert tr.scheduler.calls_in_flight() == ({}, {})
+    for name, _ in ((c.name, g) for c, g in tr.configs()):
+        rec = tr._active[name]
+        assert rec.in_flight == 0 and not rec.uses and not rec.replacing
+    for rec in retired:
+        assert rec.in_flight == 0 and not rec.uses
+    assert reserved_rows(sup.conn) == 0
+
+
+def generation_of(sup, call_id: str) -> int:
+    return int(call_row(sup.conn, call_id)["instance_ref"].split(":")[1].split(".")[0])
+
+
+def test_evicted_call_returning_late_never_commits_and_reruns_on_the_successor(tmp_path,
+                                                                                clock):
+    sup = boot(tmp_path, clock)
+    seed(sup.inference)
+    gate = threading.Event()
+    old, new = stale(gate), fake()
+    tr, _ = tracker()
+    out, rep = [], []
+    t = spawn(sup, clock, lambda j: run(routed(sup, tr, cfg(old), journal=j), "k"), out)
+    until(lambda: old.inner.in_flight == 1)
+    retired = tr._active["local"]
+    rt = thread_run(lambda: tr.replace(cfg(new), drain_timeout_s=0.05), rep)
+    until(lambda: old.tokens[0].cancelled)                     # evicted, still running
+    gate.set()                                                 # then answers successfully
+    for th in (t, rt):
+        th.join(10)
+    assert out[0].committed.content != "stale" and new.count("k") == 1
+    assert call_row(sup.conn, "k")["instance_ref"] == "local:2.1"
+    assert ledger(sup.conn, "k") == [(1, "local", "lost"), (2, "local", "settled")]
+    assert answers(sup.conn, "k") == 1 and rep[0].cancelled == 1
+    assert_no_leaks(sup, tr, retired)
+    sup.close()
+
+
+def test_evicted_late_result_on_the_last_attempt_exhausts_without_a_successor_call(tmp_path,
+                                                                                    clock):
+    sup = boot(tmp_path, clock)
+    seed(sup.inference)
+    gate = threading.Event()
+    timeout = Script(fault=Fault(0, lambda: Timeout("slow")))
+    old, new = stale(gate), fake()
+    old.inner._scripts.update({("k", 1): timeout, ("k", 2): timeout})
+    tr, _ = tracker()
+    r = routed(sup, tr, cfg(old))
+    for _ in range(2):
+        with pytest.raises(Timeout):
+            run(r, "k")
+    out, rep = [], []
+    t = spawn(sup, clock, lambda j: run(routed(sup, tr, cfg(old), journal=j), "k"), out)
+    until(lambda: old.inner.in_flight == 1)
+    rt = thread_run(lambda: tr.replace(cfg(new), drain_timeout_s=0.05), rep)
+    until(lambda: old.tokens[2].cancelled)
+    gate.set()
+    for th in (t, rt):
+        th.join(10)
+    assert isinstance(out[0], AttemptsExhausted) and new.count() == 0
+    assert ledger(sup.conn, "k") == [(a, "local", "lost") for a in (1, 2, 3)]
+    assert answers(sup.conn, "k") == 0 and call_row(sup.conn, "k")["status"] == "failed"
+    assert_no_leaks(sup, tr)
+    sup.close()
+
+
+def test_deaf_call_finishing_inside_the_drain_window_commits_on_the_old_generation(tmp_path,
+                                                                                  clock):
+    sup = boot(tmp_path, clock)
+    seed(sup.inference)
+    gate = threading.Event()
+    old, new = stale(gate), fake()
+    tr, _ = tracker()
+    out, rep = [], []
+    t = spawn(sup, clock, lambda j: run(routed(sup, tr, cfg(old), journal=j), "k"), out)
+    until(lambda: old.inner.in_flight == 1)
+    rt = thread_run(lambda: tr.replace(cfg(new), drain_timeout_s=10.0), rep)
+    until(lambda: tr.state("local") is UNLOADING)
+    gate.set()
+    for th in (t, rt):
+        th.join(10)
+    assert out[0].committed.content == "stale" and new.count() == 0
+    assert call_row(sup.conn, "k")["instance_ref"] == "local:1.1"
+    assert (rep[0].drained, rep[0].cancelled, rep[0].abandoned) == (1, 0, 0)
+    assert not old.tokens[0].cancelled
+    assert_no_leaks(sup, tr)
+    sup.close()
+
+
+def test_eviction_at_the_commit_boundary_discards_the_result(tmp_path, clock, monkeypatch):
+    sup = boot(tmp_path, clock)
+    seed(sup.inference)
+    old, new = stale(), fake()
+    tr, _ = tracker()
+    at_boundary = threading.Event()
+    seal = Use.seal
+
+    def late_seal(use: Use) -> bool:
+        if use.record.generation == 1:                         # result in hand, not sealed
+            at_boundary.set()
+            until(lambda: use.evicted)
+        return seal(use)
+
+    monkeypatch.setattr(Use, "seal", late_seal)
+    out, rep = [], []
+    t = spawn(sup, clock, lambda j: run(routed(sup, tr, cfg(old), journal=j), "k"), out)
+    at_boundary.wait(10)
+    rt = thread_run(lambda: tr.replace(cfg(new), drain_timeout_s=0.0), rep)
+    for th in (t, rt):
+        th.join(10)
+    assert out[0].committed.content != "stale" and new.count("k") == 1
+    assert ledger(sup.conn, "k") == [(1, "local", "lost"), (2, "local", "settled")]
+    assert call_row(sup.conn, "k")["instance_ref"] == "local:2.1"
+    assert (rep[0].drained, rep[0].cancelled) == (0, 1)
+    assert_no_leaks(sup, tr)
+    sup.close()
+
+
+def test_seal_before_eviction_commits_and_eviction_is_a_no_op(tmp_path, clock):
+    sup = boot(tmp_path, clock)
+    seed(sup.inference)
+    old, new = stale(), fake()
+    tr, _ = tracker(TrackerPolicy(drain_grace_s=10.0))
+    sealed, release = threading.Event(), threading.Event()
+
+    def call(j):
+        commit = j.commit
+
+        def held_commit(*a, **kw):                             # sealed, commit not yet run
+            sealed.set()
+            release.wait(10)
+            return commit(*a, **kw)
+
+        j.commit = held_commit
+        return run(routed(sup, tr, cfg(old), journal=j), "k")
+
+    out, rep = [], []
+    t = spawn(sup, clock, call, out)
+    sealed.wait(10)
+    rt = thread_run(lambda: tr.replace(cfg(new), drain_timeout_s=0.0), rep)
+    until(lambda: tr.state("local") is UNLOADING)
+    time.sleep(0.05)                                           # deadline passes, evict runs
+    assert not old.tokens[0].cancelled
+    release.set()
+    for th in (t, rt):
+        th.join(10)
+    assert out[0].committed.content == "stale" and new.count() == 0
+    assert call_row(sup.conn, "k")["instance_ref"] == "local:1.1"
+    assert (rep[0].drained, rep[0].cancelled, rep[0].abandoned) == (1, 0, 0)
+    assert not old.tokens[0].cancelled
+    assert_no_leaks(sup, tr)
+    sup.close()
+
+
+def test_completion_and_eviction_race_linearizes(tmp_path, clock):
+    rng = random.Random(16)
+    sup = boot(tmp_path, clock)
+    for i in range(50):
+        conv, k = f"r{i}", f"k{i}"
+        seed(sup.inference, conv)
+        delay = rng.uniform(0.0, 0.003)
+        old = Deaf(fake(scripts={k: Script(chunks=("stale",), delays=(delay,))},
+                        sleep=lambda s, _t: time.sleep(s)))
+        new = fake()
+        tr, _ = tracker()
+        out: list = []
+        t = spawn(sup, clock, lambda j, old=old, tr=tr, k=k, conv=conv: run(
+            routed(sup, tr, cfg(old), journal=j), k, conv), out)
+        until(lambda tr=tr, out=out: out or (
+            "local" in tr._active and tr.view("local").in_flight == 1))
+        retired = tr._active["local"]
+        report = tr.replace(cfg(new), drain_timeout_s=rng.uniform(0.0, 0.002))
+        t.join(10)
+        gen = generation_of(sup, k)
+        assert (gen == 1) == (report.cancelled == 0), (i, gen, report)
+        assert (out[0].committed.content == "stale") == (gen == 1)
+        assert answers(sup.conn, k) == 1
+        assert ledger(sup.conn, k) == ([(1, "local", "settled")] if gen == 1 else
+                                       [(1, "local", "lost"), (2, "local", "settled")])
+        assert_no_leaks(sup, tr, retired)
+    sup.close()
+
+
+INVALID = {"negative queue depth": lambda: cfg(fake(), queue_depth=-1),
+           "negative slots": lambda: cfg(fake(), slots=-1)}
+
+
+@pytest.mark.parametrize("bad", INVALID.values(), ids=INVALID.keys())
+def test_invalid_successor_leaves_the_active_model_usable(tmp_path, clock, bad):
+    sup = boot(tmp_path, clock)
+    uuid = sup.identity.uuid
+    seed(sup.inference)
+    tr, _ = tracker()
+    r = routed(sup, tr, cfg(fake()))
+    run(r, "k1")
+    view, path, stats = tr.view("local"), tr.path("local"), tr.scheduler.stats()
+    before = {t: rows(sup.conn, t) for t in ("conversations", "messages", "inference_calls")}
+    with pytest.raises(ValueError):
+        tr.replace(bad(), drain_timeout_s=1.0)
+    assert tr.view("local") == view and tr.path("local") == path
+    assert tr.scheduler.stats() == stats and not tr._active["local"].replacing
+    assert {t: rows(sup.conn, t) for t in before} == before and sup.identity.uuid == uuid
+    sup.inference.append("c", Role.USER, "and then", 3)
+    run(r, "k2")
+    assert call_row(sup.conn, "k2")["instance_ref"] == "local:1.1"
+    assert tr.path("local") == [D, LO, R, E, I, E, I]
+    assert_no_leaks(sup, tr)
+    sup.close()
+
+
+def test_invalid_successor_during_an_active_call_does_not_disturb_it(tmp_path, clock):
+    sup = boot(tmp_path, clock)
+    seed(sup.inference)
+    gate = threading.Event()
+    old = stale(gate)
+    tr, _ = tracker()
+    out: list = []
+    t = spawn(sup, clock, lambda j: run(routed(sup, tr, cfg(old), journal=j), "k"), out)
+    until(lambda: old.inner.in_flight == 1)
+    with pytest.raises(ValueError):
+        tr.replace(cfg(fake(), queue_depth=-1), drain_timeout_s=0.0)
+    assert tr.state("local") is E and not old.tokens[0].cancelled
+    gate.set()
+    t.join(10)
+    assert out[0].committed.content == "stale"
+    assert ledger(sup.conn, "k") == [(1, "local", "settled")]
+    assert call_row(sup.conn, "k")["instance_ref"] == "local:1.1"
+    assert_no_leaks(sup, tr)
+    sup.close()
+
+
+def test_failed_replacement_can_be_retried_with_a_valid_config(tmp_path, clock):
+    sup = boot(tmp_path, clock)
+    seed(sup.inference)
+    seed(sup.inference, "c2")
+    tr, _ = tracker()
+    r = routed(sup, tr, cfg(fake()))
+    run(r, "k1")
+    with pytest.raises(ValueError):
+        tr.replace(cfg(fake(), queue_depth=-1), drain_timeout_s=1.0)
+    new = fake()
+    report = tr.replace(cfg(new, queue_depth=3), drain_timeout_s=1.0)
+    assert report.generation == 2 and tr.scheduler.stats()["local"].queue_depth == 3
+    run(r, "k2", "c2")
+    assert new.count("k2") == 1 and call_row(sup.conn, "k2")["instance_ref"] == "local:2.1"
+    assert_no_leaks(sup, tr)
+    sup.close()
+
+
+def test_exception_during_the_drain_still_installs_the_successor(tmp_path, clock,
+                                                                 monkeypatch):
+    sup = boot(tmp_path, clock)
+    seed(sup.inference)
+    seed(sup.inference, "c2")
+    gate = threading.Event()
+    old, new = stale(gate), fake()
+    tr, _ = tracker()
+    out: list = []
+    t = spawn(sup, clock, lambda j: run(routed(sup, tr, cfg(old), journal=j), "k"), out)
+    until(lambda: old.inner.in_flight == 1)
+    retired = tr._active["local"]
+
+    def boom(_use: Use, _reason: str) -> bool:
+        raise RuntimeError("eviction failed")
+
+    monkeypatch.setattr(Use, "evict", boom)
+    with pytest.raises(RuntimeError, match="eviction failed"):
+        tr.replace(cfg(new), drain_timeout_s=0.0)
+    monkeypatch.undo()
+    assert tr.view("local").generation == 2 and tr.state("local") is D
+    assert tr.path("local", 1)[-1] is UNLOADED
+    gate.set()                                                 # never evicted: it drains
+    t.join(10)
+    assert out[0].committed.content == "stale"
+    run(routed(sup, tr, cfg(old)), "k2", "c2")
+    assert new.count("k2") == 1 and call_row(sup.conn, "k2")["instance_ref"] == "local:2.1"
+    assert tr.replace(cfg(fake()), drain_timeout_s=1.0).generation == 3
+    assert_no_leaks(sup, tr, retired)
     sup.close()
 
 
