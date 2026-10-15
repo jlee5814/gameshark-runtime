@@ -38,7 +38,7 @@ def main() -> None:
     presence = PresenceManager(conn, AGENT, lease, gen, clock, crash=crash)
     presence.ensure_home("mac")
     presence.request_jack("h1", "phone")      # P1_after_prepare fires here
-    presence.ready_out("h1", draft="half typed")  # P2_after_commit fires here
+    presence.ready_out("h1", "mac", 1, draft="half typed")  # P2_after_commit fires here
     sys.exit(99)                               # the kill did not fire
 
 
