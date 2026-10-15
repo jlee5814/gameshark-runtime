@@ -57,6 +57,9 @@ from gameshark.store import write_txn
 
 PENDING, DONE, FAILED, CANCELLED = "pending", "done", "failed", "cancelled"
 RESERVED, SETTLED, LOST = "reserved", "settled", "lost"
+# A completed attempt whose provider reported no usage. Charged its full reservation, like
+# a lost attempt: spend() counts every row except settled ones at reserved figures.
+UNMETERED = "unmetered"
 
 
 @dataclass(frozen=True)
@@ -377,6 +380,13 @@ class InferenceJournal:
     def _settle_actual(conn: sqlite3.Connection, res: Reservation, result: ProviderResult,
                        caps: Capabilities | None) -> None:
         used = result.usage
+        if used is None:
+            conn.execute(
+                "UPDATE budget_ledger SET status=?, cost_micros=reserved_micros "
+                "WHERE call_id=? AND attempt=? AND status=?",
+                (UNMETERED, res.call_id, res.attempt, RESERVED),
+            )
+            return
         cost = cost_micros(caps, used.tokens_in, used.tokens_out) if caps else None
         conn.execute(
             "UPDATE budget_ledger SET status=?, tokens_in=?, tokens_out=?, "

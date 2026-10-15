@@ -28,7 +28,9 @@ tokenizer. A provider's TokenBound says how its prompt is sized for the reservat
                     run soft by default.
 
 Actual usage always settles unmodified; an attempt above its reservation is reported as an
-Overrun. A trusted provider that overruns is demoted to ESTIMATE for this process.
+Overrun. A trusted provider that overruns is demoted to ESTIMATE for this process. An
+attempt whose provider reported no usage settles 'unmetered' at its full reservation, never
+at zero; it is a bound only when the provider's TokenBound is trusted.
 """
 
 from __future__ import annotations
@@ -155,6 +157,7 @@ class RouteResult:
     degraded: bool
     soft_budget: bool  # admitted under an untrusted prompt bound
     overrun: Overrun | None = None
+    metered: bool = True  # False: no provider usage; charged its full reservation
 
 
 class ProviderHealth:
@@ -391,6 +394,8 @@ class InferenceRouter:
         finally:
             call.close()
         committed = journal.commit(res, result, degraded=cand.name != first)
+        metered = result.usage is not None
         return RouteResult(committed, cand.name, cand.name != first,
                            soft_budget=not cand.bound.trusted,
-                           overrun=self._overrun(res, cand))
+                           overrun=self._overrun(res, cand) if metered else None,
+                           metered=metered)
