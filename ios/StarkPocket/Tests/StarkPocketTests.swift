@@ -63,3 +63,193 @@ final class SpriteTests: XCTestCase {
         XCTAssertEqual(atlas.frames.count, atlas.manifest.frames.count)
     }
 }
+
+final class Counter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var n = 0
+    var value: Int { lock.withLock { n } }
+    func add() { lock.withLock { n += 1 } }
+}
+
+/// A scripted connection: records what the model asks and replays runtime states.
+final class FakeClient: PocketClient, @unchecked Sendable {
+    let onChange: @Sendable (ClientState) -> Void
+    var state: ClientState
+    var started = 0
+    var stopped = false
+    var jacks: [GatewayClient.JackDirection] = []
+    var draftProvider: (@Sendable () -> String?)?
+    /// What the runtime does when this surface asks for a jack; nothing by default.
+    var onJack: (FakeClient, GatewayClient.JackDirection) -> Void = { _, _ in }
+
+    init(surface: String, onChange: @escaping @Sendable (ClientState) -> Void) {
+        self.onChange = onChange
+        state = ClientState(surface: surface)
+    }
+
+    func emit(_ change: (inout ClientState) -> Void) {
+        change(&state)
+        onChange(state)
+    }
+
+    func start() { started += 1 }
+    func stop() { stopped = true }
+    func reconnectNow() {}
+    func send(_ text: String, presenceGen: Int?) -> String { "m" }
+    func jack(_ to: GatewayClient.JackDirection) -> String {
+        jacks.append(to)
+        onJack(self, to)
+        return "h"
+    }
+    func setDraftProvider(_ provider: @escaping @Sendable () -> String?) { draftProvider = provider }
+}
+
+@MainActor
+final class PocketModelTests: XCTestCase {
+    let store = CredentialStore(service: "dev.gameshark.starkpocket.modeltests")
+    let surface = "pocket-aaaaaa"
+    var clients: [FakeClient] = []
+    let pairerCalls = Counter()
+
+    override func tearDown() { store.wipe() }
+
+    func credential(_ id: String = String(repeating: "a", count: 32)) -> DeviceCredential {
+        DeviceCredential(deviceID: id, surface: surface, name: "Test", hosts: ["127.0.0.1"],
+                         port: 47820, pin: Data(repeating: 7, count: 32), agentUUID: "uuid")
+    }
+
+    /// A model that finds a stored pairing and connects through a FakeClient.
+    func pairedModel() throws -> PocketModel {
+        let (_, item, blob) = try CredentialStore.newSigner()
+        try store.saveDevice(credential(), keyItem: item, keyData: blob)
+        let model = PocketModel(store: store, environment: [:], makeClient: { cfg, onChange in
+            let c = FakeClient(surface: cfg.surface, onChange: onChange)
+            self.clients.append(c)
+            return c
+        }, pairer: { [calls = pairerCalls, other = credential(String(repeating: "b", count: 32))]
+            _, _, _ in
+            calls.add()
+            return other
+        })
+        XCTAssertEqual(clients.count, 1)
+        return model
+    }
+
+    /// Let the model's main actor hops land.
+    func settle(until done: @escaping () -> Bool = { false }) async {
+        for _ in 0..<50 where !done() {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+    }
+
+    func holding(_ c: FakeClient, live: Bool = true) {
+        c.emit {
+            $0.connection = live ? .live : .disconnected("runtime unreachable")
+            $0.presence = PresenceInfo(surface: surface, home: "mac", generation: 2)
+            $0.handoff = nil
+        }
+    }
+
+    // Finding 5: a Mac initiated Jack In journals the phone's unsent text.
+    func testDraftProviderIsRegisteredAndReadsTheComposer() throws {
+        let model = try pairedModel()
+        let provider = try XCTUnwrap(clients[0].draftProvider, "no draft provider registered")
+        XCTAssertNil(provider())
+        model.draft = "half typed"
+        XCTAssertEqual(provider(), "half typed")
+    }
+
+    // Finding 6: a second pairing never replaces a live connection.
+    func testPairingWhilePairedIsRejectedAndKeepsTheLiveClient() async throws {
+        let model = try pairedModel()
+        let link = "starkpocket://pair?v=1&h=mac.local&a=127.0.0.1&p=47820&fp="
+            + String(repeating: "07", count: 32) + "&id=p2&s=secret"
+        await model.pair(link)
+        XCTAssertEqual(pairerCalls.value, 0)
+        XCTAssertEqual(clients.count, 1)
+        XCTAssertFalse(clients[0].stopped)
+        XCTAssertEqual(store.loadDevice()?.credential, credential())
+        XCTAssertTrue(model.pairingError?.contains("already paired") == true)
+    }
+
+    // Finding 4: unpair sends Stark home before forgetting the pairing.
+    func testUnpairWhileHoldingSendsStarkHomeThenForgets() async throws {
+        let model = try pairedModel()
+        let c = clients[0]
+        holding(c)
+        await settle { model.state?.presence?.surface == self.surface }
+        c.onJack = { c, _ in
+            c.emit { $0.presence = PresenceInfo(surface: "mac", home: "mac", generation: 3) }
+        }
+        await model.unpair()
+        XCTAssertEqual(c.jacks, [.home])
+        XCTAssertTrue(c.stopped)
+        XCTAssertFalse(model.isPaired)
+        XCTAssertNil(store.loadDevice())
+    }
+
+    func testUnpairKeepsCredentialsWhenTheHandoffCannotComplete() async throws {
+        let model = try pairedModel()
+        let c = clients[0]
+        model.unpairTimeout = .milliseconds(300)
+        holding(c, live: false)                    // offline: nobody can take Stark home
+        await settle { model.state?.presence?.surface == self.surface }
+        await model.unpair()
+        XCTAssertEqual(c.jacks, [])
+        XCTAssertTrue(model.isPaired)
+        XCTAssertFalse(c.stopped)
+        XCTAssertNotNil(store.loadDevice())
+        XCTAssertNotNil(model.unpairError)
+
+        holding(c)                                 // live, but the jack never completes
+        await settle { model.state?.connection == .live }
+        await model.unpair()
+        XCTAssertEqual(c.jacks, [.home])
+        XCTAssertTrue(model.isPaired)
+        XCTAssertFalse(c.stopped)
+        XCTAssertNotNil(store.loadDevice())
+        XCTAssertNotNil(model.unpairError)
+    }
+
+    func testUnpairWhileTheMacHoldsStarkForgetsAtOnce() async throws {
+        let model = try pairedModel()
+        let c = clients[0]
+        c.emit {
+            $0.connection = .live
+            $0.presence = PresenceInfo(surface: "mac", home: "mac", generation: 1)
+        }
+        await settle { model.state?.presence != nil }
+        await model.unpair()
+        XCTAssertEqual(c.jacks, [])
+        XCTAssertFalse(model.isPaired)
+        XCTAssertNil(store.loadDevice())
+    }
+
+    func testUnknownHolderKeepsThePairingUntilForgetAnyway() async throws {
+        let model = try pairedModel()                 // launched offline: no snapshot yet
+        let c = clients[0]
+        let forgotten = await model.unpair()
+        XCTAssertFalse(forgotten)
+        XCTAssertTrue(model.isPaired)
+        XCTAssertNotNil(store.loadDevice())
+        XCTAssertNotNil(model.unpairError)
+        model.forgetAnyway()                          // the explicit recovery
+        XCTAssertTrue(c.stopped)
+        XCTAssertFalse(model.isPaired)
+        XCTAssertNil(store.loadDevice())
+    }
+
+    func testRevocationStillForgetsImmediately() async throws {
+        let model = try pairedModel()
+        let c = clients[0]
+        holding(c)
+        c.emit {
+            $0.connection = .disconnected("auth_failed")
+            $0.lastError = "auth_failed: authentication failed"
+        }
+        await settle { !model.isPaired }
+        XCTAssertFalse(model.isPaired)
+        XCTAssertNil(store.loadDevice())
+        XCTAssertEqual(c.jacks, [])
+    }
+}
