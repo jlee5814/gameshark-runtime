@@ -24,6 +24,7 @@ import time
 from collections.abc import Sequence
 from pathlib import Path
 
+from gameshark.activity import ActivityTracker
 from gameshark.adapters import Adapter, AdapterContext, AdapterRegistry
 from gameshark.authz import GrantStore
 from gameshark.clock import Clock
@@ -92,6 +93,8 @@ class AgentSupervisor:
         self._presence_timeouts: dict[str, float] = {}
         self.presence: PresenceManager | None = None
         self.surface: SurfaceConversation | None = None
+        # What runs right now, for surfaces. In memory and read only: never durable state.
+        self.activity = ActivityTracker()
 
     # ------------------------------------------------------------------ crash hook
     def _maybe_crash(self, label: str) -> None:
@@ -137,6 +140,7 @@ class AgentSupervisor:
             self.inference_router, self.lifecycle.token, threads=cfg["threads"],
             completion_depth=cfg["completion_depth"], crash=self._maybe_crash,
             admit=self._admit_inference, wake=self.wake)
+        self.activity.calls = self.executor.calls
 
     def _admit_inference(self) -> None:
         # Recovery replays before serving, so starting admits too; draining does not.
@@ -181,6 +185,7 @@ class AgentSupervisor:
             cancel=self.lifecycle.token,
             inference=self.inference,
             presence=self.presence,
+            activity=self.activity,
         )
 
     def _fenced(self, fn):

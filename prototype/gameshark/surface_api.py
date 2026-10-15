@@ -18,6 +18,7 @@ so a repeat is harmless and a gap triggers a sync.
 from __future__ import annotations
 
 import re
+import uuid
 from collections.abc import Callable
 
 from gameshark.errors import Cancelled, Draining, FencedError, HandoffConflict, StalePresence
@@ -77,7 +78,9 @@ class SurfaceAPI:
         self.chat = chat
         self.log = log
         self.rev = 0
+        self.boot = str(uuid.uuid4())   # this runtime instance; a restart mints a new one
         self._last: dict[str, object] = {}
+        sup.activity.on_begin = self._push_activity
         self.handlers: dict[str, Callable[[Session, dict], dict]] = {
             "ping": self._ping,
             "snapshot": self._snapshot,
@@ -242,7 +245,13 @@ class SurfaceAPI:
         return -1 if row["s"] is None else row["s"]
 
     def _activity(self) -> dict:
-        return {"working": self.chat.pending is not None, "call_id": self.chat.pending}
+        blocked = [r["id"] for r in self.sup.conn.execute(
+            "SELECT id FROM responsibilities WHERE agent_id=? AND state='blocked'",
+            (self.sup.agent_id,))]
+        return {**self.sup.activity.view(blocked), "boot": self.boot,
+                "owner_generation": self.sup.generation,
+                # v1 fields: the companion reply in flight.
+                "working": self.chat.pending is not None, "call_id": self.chat.pending}
 
     @staticmethod
     def _row(r) -> dict:
@@ -283,6 +292,14 @@ class SurfaceAPI:
                     "data": {"conversation_id": CONVERSATION,
                              "rows": [self._row(r) for r in rows]}})
         # After rows, so a surface never shows Stark idle before his reply has arrived.
+        self._push_activity(sessions)
+
+    def _push_activity(self, sessions: list[Session] | None = None) -> None:
+        """Push activity if it changed. Called at once when work begins, since that work
+        may hold the coordinator; the end waits for the pump, after any new rows."""
+        sessions = self.server.live_sessions() if sessions is None else sessions
+        if not sessions:
+            return
         activity = self._activity()
         if self._changed("activity", activity):
             self._push(sessions, "activity", activity)

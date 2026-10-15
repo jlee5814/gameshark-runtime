@@ -11,19 +11,43 @@ public enum StarkAnimation: String, CaseIterable, Sendable {
     /// The animation runtime state calls for. A pure read of ClientState: animation is view
     /// state and never writes identity, presence, duties, or inference.
     ///
-    /// working has no runtime source yet (no per tick execution signal exists, and standing
-    /// duties stay active between polls); it is reachable from the gallery only.
+    /// Working outranks thinking: a poll is short and a reply is long, so the reverse order
+    /// would hide every poll behind a reply. workingHeld keeps a brief poll on screen for
+    /// WorkingHold.minimum (view state only).
     public static func base(for s: ClientState, listening: Bool, viewedSeq: Int,
-                            idleFor: TimeInterval) -> StarkAnimation {
+                            idleFor: TimeInterval, workingHeld: Bool = false) -> StarkAnimation {
         if !s.connection.isLive { return .sleep }
         if !s.isActiveSurface { return .idle }          // ghost: drawn dimmed by the view
         if s.responsibilities.contains(where: { $0.state == "blocked" }) { return .error }
-        if s.working { return .thinking }
+        if s.isWorking || workingHeld { return .working }
+        if s.isThinking { return .thinking }
         if listening { return .listening }
         let newest = s.rows.last { $0.role == "assistant" }?.seq ?? -1
         if newest > viewedSeq { return .notify }
         if idleFor >= dozeAfter { return .sleep }
         return .idle
+    }
+}
+
+/// Minimum dwell for the working animation. A GitHub poll may take 50 ms; without a hold
+/// it would flash for a single frame. The hold counts from when work began, so long work
+/// ends on time. View state only.
+public struct WorkingHold: Sendable {
+    public static let minimum: TimeInterval = 1.2
+    public private(set) var until: TimeInterval = -.infinity
+    private var active = false
+
+    public init() {}
+
+    /// Feed the runtime's working flag; returns whether working should still show.
+    public mutating func observe(working: Bool, at now: TimeInterval) -> Bool {
+        if working {
+            if !active { until = now + Self.minimum }
+            active = true
+            return true
+        }
+        active = false
+        return now < until
     }
 }
 

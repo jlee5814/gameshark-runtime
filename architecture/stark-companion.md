@@ -81,7 +81,7 @@ machinery. Surfaces reach only `stark:main`.
 | Command | Kind | Effect |
 |---|---|---|
 | `ping` | read | liveness |
-| `snapshot` | read | identity, presence, open handoff, responsibilities, head seq, activity |
+| `snapshot` | read | identity, presence, open handoff, responsibilities, head seq, activity projection |
 | `sync {conversation_id, after_seq}` | read | rows after seq, 500 per page |
 | `send {client_msg_id, conversation_id, text, presence_gen}` | write | `SurfaceConversation.submit`, then the reply event |
 | `ready_out {handoff_id, draft, presence_gen}` | write | source confirms its exit |
@@ -109,6 +109,43 @@ Invariants added:
 commits after the prepare deadline; a target that never acks reverts home under a newer
 generation. The acceptance demo uses this to show a live app turn ghost and come back.
 
+## Activity projection (`gameshark/activity.py`)
+
+Stark shows what his runtime is doing now. `ActivityTracker` is in memory and read only:
+it holds no connection, writes nothing durable, and an AST test forbids it from reaching
+SQLite. A restart starts it empty, and replayed events and the next poll rebuild it.
+
+Two live sources. Work spans: an adapter wraps non inference execution of a
+responsibility in `ctx.activity.work(rid, kind)` (the GitHub monitor wraps each due poll
+and each event it handles). Spans form a multiset closed in `finally`, so concurrent
+duties keep Stark working until the last ends, on success, failure, cancellation, or lease
+loss alike. Inference: read from the executor's in flight tasks, which it drops on
+commit, failure, abort, and drain, so nothing drifts from the real call set. Responsibility
+rows cannot serve: a PR watch stays `active` for days between polls.
+
+Wire (v1, additive): `{state, boot, owner_generation, inference: [{call_id,
+conversation_id, stage}], work: [{responsibility_id, kind, count}], blocked: [rid],
+working, call_id}`. `working` and `call_id` keep their v1 meaning, the companion reply in
+flight. `boot` is minted per runtime instance. A span's start pushes at once, because the
+work may hold the coordinator (a GitHub GET runs on it); its end waits for the next pump,
+after any new rows, keeping the rows before activity rule.
+
+StarkMac rebuilds activity from each session's snapshot, ignores pushes before it or from
+another `boot`, and clears it on disconnect. Mapping, first match wins:
+
+| Animation | Condition |
+|---|---|
+| gallery, walk, blink | override, drag, idle beat (unchanged, above the base) |
+| sleep | no live session |
+| idle, dimmed | another surface holds presence |
+| error | a responsibility is blocked |
+| working | `work` non empty, or within a 1.2 s view only hold |
+| thinking | `inference` non empty |
+| listening | chat field focused (local) |
+| notify | unviewed reply (local) |
+| sleep | 10 min quiet |
+| idle | otherwise |
+
 ## StarkMac (`mac/StarkMac`)
 
 SwiftPM package, macOS 14, Swift 6 language mode. `StarkKit` holds framing, auth, the
@@ -121,8 +158,8 @@ listening, working, notification, ghost, and disconnected states. Public APIs on
 [mac/StarkMac/README.md](../mac/StarkMac/README.md).
 
 Stark's sprite animation is view state. `StarkAnimation.base(for:)` reads ClientState
-(connection, presence, reply in flight, blocked duties, unviewed replies) and the chat
-field's focus; nothing in the animation path can send a frame to the runtime. Position and
+(connection, presence, the activity projection, blocked duties, unviewed replies) and the
+chat field's focus; nothing in the animation path can send a frame to the runtime. Position and
 scale live in the app's UserDefaults. A visual change can therefore never alter identity,
 ownership, presence, or inference (G3).
 

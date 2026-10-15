@@ -80,15 +80,16 @@ edit `fps` and rerun. To add an animation, add an entry, add a case to `StarkAni
 | idle | band 0, standing | nothing active |
 | blink, lookAround | band 0 closed eyes; band 9 glances | every 3.5 to 7 s while idle |
 | listening | band 8, attentive nod | chat field focused |
-| thinking | band 7, hand to chin | Stark's reply inference in flight |
-| working | band 6, busy gestures (fallback: no tool pose exists) | none yet; gallery only |
+| thinking | band 7, hand to chin | any inference call in flight (runtime `activity.inference`) |
+| working | band 6, busy gestures (fallback: no tool pose exists) | a duty executing outside inference (runtime `activity.work`), held at least 1.2 s |
 | notify | band 4 hop, then band 3 wave | reply arrived, not yet viewed |
 | walkRight, walkLeft | bands 1 and 2 | dragged right or left |
 | sleep | band 5, dozing | runtime disconnected, or 10 min quiet |
 | error | band 10, head shake (fallback: no distress pose exists) | a responsibility is blocked |
 
 Precedence: gallery override, then walking, then a one shot (blink), then the runtime
-base. A surface without presence draws idle, faded. Animation only reads runtime state; it
+base: sleep (disconnected), ghost, error, working, thinking, listening, notify, sleep
+(quiet), idle. Working outranks thinking so a short poll is visible during a long reply. A surface without presence draws idle, faded. Animation only reads runtime state; it
 never writes identity, presence, duties, or inference. One timer runs at frame rate (3 to
 12 Hz) and pauses while the panel is hidden; idle costs about 0.5 percent of one core.
 Frames render with nearest neighbor sampling at an integer device pixel scale, so 1× is

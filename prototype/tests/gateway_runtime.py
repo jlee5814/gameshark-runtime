@@ -47,7 +47,8 @@ class Gate:
 
 
 class Runtime:
-    def __init__(self, db: Path, sock_dir: Path, gate: Gate | None = None) -> None:
+    def __init__(self, db: Path, sock_dir: Path, gate: Gate | None = None,
+                 github=None) -> None:
         self.db = db
         self.sock = sock_dir / "stark.sock"
         self.token_path = sock_dir / "gateway.token"
@@ -60,6 +61,8 @@ class Runtime:
         self.uuid = ""
         self.chat: StarkChatAdapter | None = None
         self.server: GatewayServer | None = None
+        self.github = github                 # a GitHub client: also serve the PR monitor
+        self.sup: AgentSupervisor | None = None
         self.thread = threading.Thread(target=self._run, name="coordinator", daemon=True)
 
     def _run(self) -> None:
@@ -68,6 +71,11 @@ class Runtime:
                                   lease_ttl_s=6.0)
             self.chat = StarkChatAdapter()
             sup.add_adapter(self.chat)
+            if self.github is not None:
+                from sims.github_monitor import GitHubMonitorAdapter
+
+                sup.add_adapter(GitHubMonitorAdapter(self.github, poll_interval_s=3600.0))
+            self.sup = sup
             sup.enable_presence("mac", prepare_timeout_s=2.0, ack_timeout_s=1.0)
             provider = CompanionFakeProvider(delay_s=0.01, sleep=self.gate.sleep)
             sup.enable_inference([ProviderConfig(provider)],

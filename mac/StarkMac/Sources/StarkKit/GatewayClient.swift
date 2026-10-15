@@ -57,10 +57,14 @@ public struct ClientState: Equatable, Sendable {
     public var responsibilities: [Responsibility] = []
     public var rows: [Row] = []
     public var working = false
+    /// The runtime's activity projection; nil until this session's snapshot lands.
+    public var activity: Activity?
     public var outbox: [OutgoingMessage] = []
     public var lastError: String?
 
     public var isActiveSurface: Bool { presence?.surface == surface }
+    public var isWorking: Bool { activity?.isWorking ?? false }
+    public var isThinking: Bool { activity?.isThinking ?? working }
 
     public init(surface: String) {
         self.surface = surface
@@ -211,6 +215,7 @@ public final class GatewayClient: @unchecked Sendable {
         handoffSent = []
         haveSnapshot = false
         haveSync = false
+        clearActivity()
         st.connection = .authenticating
         publish()
         let thread = Thread { [weak self] in
@@ -231,6 +236,7 @@ public final class GatewayClient: @unchecked Sendable {
         transport?.close()
         transport = nil
         connId += 1
+        clearActivity()
         if st.connection != .disconnected(reason) {
             st.connection = .disconnected(reason)
             publish()
@@ -354,6 +360,7 @@ public final class GatewayClient: @unchecked Sendable {
             st.handoff = s.handoff
             st.responsibilities = s.responsibilities
             st.working = s.activity.working
+            st.activity = s.activity                 // rebuilt wholesale, never merged
             haveSnapshot = true
             followHandoff()
         case .sync:
@@ -420,11 +427,23 @@ public final class GatewayClient: @unchecked Sendable {
             st.responsibilities = try Wire.decode(Event<ResponsibilitiesEvent>.self, from: body)
                 .data.responsibilities
         case "activity":
-            st.working = try Wire.decode(Event<Activity>.self, from: body).data.working
+            // The snapshot is the base; a push before it, or from another runtime
+            // instance than the snapshot's, is ignored.
+            let a = try Wire.decode(Event<Activity>.self, from: body).data
+            guard haveSnapshot, a.boot == nil || a.boot == st.activity?.boot else { return }
+            st.working = a.working
+            st.activity = a
         default:
             return
         }
         publish()
+    }
+
+    /// Nothing the last runtime reported survives a lost session; the next snapshot is the
+    /// only source.
+    private func clearActivity() {
+        st.working = false
+        st.activity = nil
     }
 
     /// Play this surface's part in an open jack: confirm exit as source, arrival as target.
