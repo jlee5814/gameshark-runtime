@@ -41,6 +41,29 @@ final class FakeRuntime: @unchecked Sendable {
     /// Every draft_ack's handoff id, and every ready_out's draft, in order.
     var draftAcks: [String] = []
     var readyOutDrafts: [String?] = []
+    /// The draft the open jack committed with, as the handoff row holds it.
+    var committedDraft: String?
+    /// When set with dropNextHandoff, the prepare deadline commits the jack without a
+    /// draft while the lost ready_out is on its way.
+    var expireOnDrop = false
+    /// When set, the prepare deadline commits the jack without a draft before the next
+    /// ready_out arrives.
+    var deadlineFirst = false
+    /// When set, the next ready_out commits but its reply is lost and the connection drops.
+    var dropReadyOutReply = false
+    /// When set, ready_out is refused as stale.
+    var staleReadyOut = false
+
+    /// The trusted deadline path: commit the open preparing jack without a draft.
+    func expirePrepare() {
+        guard var h = handoff, h["state"] as? String == "preparing" else { return }
+        generation += 1
+        surface = h["to"] as! String
+        h["state"] = "committed"
+        h["to_gen"] = generation
+        handoff = h
+        committedDraft = nil
+    }
 
     func connect() -> FakeTransport {
         let t = FakeTransport(runtime: self)
@@ -112,27 +135,47 @@ final class FakeRuntime: @unchecked Sendable {
             if type == "ready_out" { readyOutDrafts.append(msg["draft"] as? String) }
             if dropNextHandoff {
                 dropNextHandoff = false
+                if expireOnDrop { expirePrepare() }
                 t.hangUp()
+                return
+            }
+            if type == "ready_out" && deadlineFirst {
+                deadlineFirst = false
+                expirePrepare()
+            }
+            if type == "ready_out" && staleReadyOut {
+                t.push(["type": "error", "id": id, "code": "stale_presence", "message": "stale"])
                 return
             }
             guard var h = handoff else {
                 t.push(["type": "error", "id": id, "code": "invalid", "message": "no handoff"])
                 return
             }
+            let sentText = msg["draft"] as? String
             if applyHandoffs {
                 if type == "ready_out" {
-                    generation += 1
-                    surface = h["to"] as! String
-                    h["state"] = "committed"
-                    h["to_gen"] = generation
+                    if h["state"] as? String == "preparing" {
+                        generation += 1
+                        surface = h["to"] as! String
+                        h["state"] = "committed"
+                        h["to_gen"] = generation
+                        committedDraft = sentText.flatMap { $0.isEmpty ? nil : $0 }
+                    }
                 } else {
                     h["state"] = "acked"
                 }
                 handoff = h
             }
+            if type == "ready_out" && dropReadyOutReply {
+                dropReadyOutReply = false
+                t.hangUp()
+                return
+            }
+            let carried = committedDraft != nil && committedDraft == sentText
             t.push(["type": "result", "id": id, "data": [
                 "handoff_id": h["id"]!, "state": h["state"]!, "to_gen": h["to_gen"] ?? NSNull(),
-                "draft": type == "ack_in" ? (draft?["text"] ?? NSNull()) : NSNull()]])
+                "draft": type == "ack_in" ? (draft?["text"] ?? NSNull()) : NSNull(),
+                "draft_carried": carried]])
         case "jack":
             // A silent source: the runtime commits at once and the caller must ack.
             guard msg["to"] as? String == "self", msg["presence_gen"] as? Int == generation,
@@ -590,6 +633,70 @@ extension ClientTests {
         #expect(eventually { c.state.sentDraft == CarriedDraft(handoffId: "h1", text: "half typed") })
         c.clearSentDraft("h1")
         #expect(eventually { c.state.sentDraft == nil })
+    }
+
+    // A source may clear its composer only on the runtime's receipt for that exact text.
+
+    @Test func readyOutLostThenDeadlineCommitKeepsComposer() throws {
+        let rt = FakeRuntime()
+        rt.handoff = Self.preparing
+        rt.dropNextHandoff = true
+        rt.expireOnDrop = true                  // the deadline commits while it is lost
+        let c = try client(rt)
+        c.setDraftProvider { "only copy" }
+        c.start()
+        defer { c.stop() }
+        #expect(eventually { rt.lock.withLock { rt.connections.count == 2 } && c.state.connection == .live })
+        #expect(eventually { rt.lock.withLock { rt.handoffCalls.count == 2 } })   // reconciled
+        Thread.sleep(forTimeInterval: 0.1)
+        #expect(c.state.sentDraft == nil)
+        var s = c.state
+        s.handoff = nil                          // the jack closes at the phone
+        let steps = DraftContinuity.follow(s, composer: "only copy", offered: nil)
+        #expect(steps.composer == nil && steps.clearSent == nil)
+    }
+
+    @Test func readyOutRefusedKeepsComposer() throws {
+        let rt = FakeRuntime()
+        rt.handoff = Self.preparing
+        rt.staleReadyOut = true
+        let c = try client(rt)
+        c.setDraftProvider { "only copy" }
+        c.start()
+        defer { c.stop() }
+        #expect(eventually { rt.lock.withLock { rt.handoffCalls == ["ready_out"] } })
+        Thread.sleep(forTimeInterval: 0.1)
+        #expect(c.state.sentDraft == nil)
+    }
+
+    @Test func readyOutThatLosesToTheDeadlineKeepsComposer() throws {
+        let rt = FakeRuntime()
+        rt.handoff = Self.preparing
+        rt.deadlineFirst = true
+        let c = try client(rt)
+        c.setDraftProvider { "only copy" }
+        c.start()
+        defer { c.stop() }
+        #expect(eventually { rt.lock.withLock { rt.handoffCalls == ["ready_out"] } })
+        Thread.sleep(forTimeInterval: 0.1)
+        #expect(c.state.sentDraft == nil)
+    }
+
+    @Test func lostReadyOutReplyReconcilesOnReconnect() throws {
+        let rt = FakeRuntime()
+        rt.handoff = Self.preparing
+        rt.dropReadyOutReply = true
+        let text = Locked("half typed")
+        let c = try client(rt)
+        c.setDraftProvider { text.value }
+        c.start()
+        defer { c.stop() }
+        #expect(eventually { rt.lock.withLock { rt.connections.count == 2 } })
+        text.value = "typed after the jack"     // newer edits never replace the receipt
+        #expect(eventually { c.state.sentDraft == CarriedDraft(handoffId: "h1", text: "half typed") })
+        rt.lock.withLock { #expect(rt.readyOutDrafts == ["half typed", "half typed"]) }
+        Thread.sleep(forTimeInterval: 0.1)
+        rt.lock.withLock { #expect(rt.handoffCalls == ["ready_out", "ready_out"]) }
     }
 }
 
