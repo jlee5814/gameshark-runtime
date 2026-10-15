@@ -78,6 +78,8 @@ final class SpriteStage {
     @ObservationIgnored private var doze: Cancellable?
     @ObservationIgnored private var cycleTimer: Cancellable?
     @ObservationIgnored private var follow: (ClientState, Bool, Int)?
+    @ObservationIgnored private var hold = WorkingHold()
+    @ObservationIgnored private var holdTimer: Cancellable?
 
     static let cycleOrder: [StarkAnimation] = [.idle, .blink, .listening, .thinking, .working,
                                                .notify, .walkRight, .walkLeft, .sleep, .error]
@@ -102,16 +104,26 @@ final class SpriteStage {
     func follow(_ s: ClientState, listening: Bool, viewedSeq: Int) {
         follow = (s, listening, viewedSeq)
         let inputs: [AnyHashable] = [s.connection.isLive, s.isActiveSurface, s.working,
-                                     listening, s.rows.count, viewedSeq,
-                                     s.responsibilities.map(\.state)]
+                                     s.isWorking, s.isThinking, listening, s.rows.count,
+                                     viewedSeq, s.responsibilities.map(\.state)]
         let now = Self.now()
         if inputs != lastInputs {
             lastInputs = inputs
             lastActivity = now
             scheduleDoze()
         }
+        let held = hold.observe(working: s.isWorking, at: now)
+        holdTimer?.cancel()
+        holdTimer = nil
+        if held && !s.isWorking {
+            // Re-follow once the hold ends, so Stark returns to thinking or idle on time.
+            holdTimer = runLoopScheduler(max(hold.until - now, 0.001)) { [weak self] in
+                guard let self, let f = self.follow else { return }
+                self.follow(f.0, listening: f.1, viewedSeq: f.2)
+            }
+        }
         let base = StarkAnimation.base(for: s, listening: listening, viewedSeq: viewedSeq,
-                                       idleFor: now - lastActivity)
+                                       idleFor: now - lastActivity, workingHeld: held)
         controller.setBase(base, at: now)
         update()
     }

@@ -50,9 +50,49 @@ public struct Row: Codable, Equatable, Sendable, Identifiable {
     public var id: Int { seq }
 }
 
+/// What the runtime is executing now: a read only projection, rebuilt from each snapshot.
+/// working and callId are the v1 reply flag; the rest arrived with Phase 2.5 and decode as
+/// nil from an older runtime.
 public struct Activity: Codable, Equatable, Sendable {
+    public struct Call: Codable, Equatable, Sendable {
+        public var callId: String
+        public var conversationId: String
+        public var stage: String
+    }
+
+    public struct Work: Codable, Equatable, Sendable {
+        public var responsibilityId: String
+        public var kind: String
+        public var count: Int
+    }
+
     public var working: Bool
     public var callId: String?
+    public var state: String?
+    public var boot: String?
+    public var ownerGeneration: Int?
+    public var inference: [Call]?
+    public var work: [Work]?
+    public var blocked: [String]?
+
+    public init(working: Bool = false, callId: String? = nil, state: String? = nil,
+                boot: String? = nil, ownerGeneration: Int? = nil, inference: [Call]? = nil,
+                work: [Work]? = nil, blocked: [String]? = nil) {
+        self.working = working
+        self.callId = callId
+        self.state = state
+        self.boot = boot
+        self.ownerGeneration = ownerGeneration
+        self.inference = inference
+        self.work = work
+        self.blocked = blocked
+    }
+
+    /// A responsibility is executing outside inference (a poll, an event handler).
+    public var isWorking: Bool { !(work ?? []).isEmpty }
+
+    /// Inference is generating. An older runtime reports only its reply flag.
+    public var isThinking: Bool { inference.map { !$0.isEmpty } ?? working }
 }
 
 struct Head: Decodable {

@@ -24,6 +24,10 @@ final class FakeRuntime: @unchecked Sendable {
     var dropNextHandoff = false
     /// When false, a confirmed handoff request leaves the snapshot as it was (a lagging view).
     var applyHandoffs = true
+    /// The activity the snapshot reports, in wire form.
+    var activity: [String: Any] = ["working": false]
+    /// Every request type received, in order.
+    var received: [String] = []
 
     func connect() -> FakeTransport {
         let t = FakeTransport(runtime: self)
@@ -37,6 +41,7 @@ final class FakeRuntime: @unchecked Sendable {
         let id = msg["id"] as? Int ?? 0
         lock.lock()
         defer { lock.unlock() }
+        if type != "hello" { received.append(type) }
         switch type {
         case "hello":
             t.push(["type": "welcome", "proto": 1, "session": "s", "surface": "mac",
@@ -48,7 +53,7 @@ final class FakeRuntime: @unchecked Sendable {
                 "presence": ["surface": surface, "home": "mac", "generation": generation],
                 "handoff": handoff.map { $0 as Any } ?? NSNull(),
                 "responsibilities": [], "conversation": ["id": Wire.conversation, "head_seq": rows.count - 1],
-                "activity": ["working": false]]])
+                "activity": activity]])
         case "sync":
             let after = msg["after_seq"] as? Int ?? -1
             t.push(["type": "result", "id": id, "data": [
@@ -288,6 +293,89 @@ func eventually(_ timeout: TimeInterval = 5, _ cond: () -> Bool) -> Bool {
         #expect(eventually { c.state.connection == .live && rt.lock.withLock { rt.connections.count == 3 } })
         Thread.sleep(forTimeInterval: 0.2)
         rt.lock.withLock { #expect(rt.handoffCalls == ["ack_in", "ack_in"]) }
+    }
+
+    func activity(_ state: String, boot: String, work: Int = 0, inference: Int = 0) -> [String: Any] {
+        ["state": state, "boot": boot, "working": inference > 0, "owner_generation": 1,
+         "inference": (0..<inference).map { ["call_id": "call:\($0)", "conversation_id": "c",
+                                             "stage": "execute"] },
+         "work": (0..<work).map { ["responsibility_id": "monitor:o/r:\($0)",
+                                   "kind": "monitor_pull_request", "count": 1] },
+         "blocked": [String]()]
+    }
+
+    func push(_ rt: FakeRuntime, _ data: [String: Any], rev: Int) {
+        rt.lock.withLock { rt.connections.last }?.push(
+            ["type": "event", "kind": "activity", "rev": rev, "data": data])
+    }
+
+    @Test func snapshotSeedsActivityAndPushesFollow() throws {
+        let rt = FakeRuntime()
+        rt.activity = activity("working", boot: "b1", work: 1, inference: 1)
+        let c = try client(rt)
+        c.start()
+        defer { c.stop() }
+        #expect(eventually { c.state.connection == .live && c.state.activity != nil })
+        #expect(c.state.isWorking && c.state.isThinking)
+        push(rt, activity("thinking", boot: "b1", inference: 1), rev: 1)
+        #expect(eventually { !c.state.isWorking })
+        #expect(c.state.isThinking && c.state.working)
+        push(rt, activity("idle", boot: "b1"), rev: 2)
+        #expect(eventually { !c.state.isThinking && !c.state.working })
+    }
+
+    @Test func pushFromAnotherRuntimeInstanceIsDropped() throws {
+        let rt = FakeRuntime()
+        rt.activity = activity("idle", boot: "b2")
+        let c = try client(rt)
+        c.start()
+        defer { c.stop() }
+        #expect(eventually { c.state.activity?.boot == "b2" })
+        push(rt, activity("working", boot: "b1", work: 1), rev: 1)   // stale instance
+        push(rt, activity("thinking", boot: "b2", inference: 1), rev: 2)
+        #expect(eventually { c.state.isThinking })
+        #expect(!c.state.isWorking && c.state.activity?.boot == "b2")
+    }
+
+    @Test func disconnectClearsActivityAndReconnectRebuildsFromSnapshot() throws {
+        let rt = FakeRuntime()
+        rt.activity = activity("working", boot: "b1", work: 2)
+        let up = Locked(true)
+        let cfg = ClientConfig(socketPath: "/fake", tokenURL: try tokenFile(),
+                               backoff: Backoff(base: 0.01, cap: 0.05, jitter: 0))
+        let c = GatewayClient(config: cfg, makeTransport: { _ in
+            guard up.value else { throw TransportFailure.connect(ECONNREFUSED) }
+            return rt.connect()
+        })
+        c.start()
+        defer { c.stop() }
+        #expect(eventually { c.state.isWorking })
+        up.value = false                                 // runtime restarts
+        rt.lock.withLock { rt.connections.last }?.hangUp()
+        #expect(eventually { !c.state.connection.isLive })
+        #expect(c.state.activity == nil && !c.state.isWorking && !c.state.working)
+        rt.lock.withLock { rt.activity = activity("thinking", boot: "b2", inference: 1) }
+        up.value = true
+        #expect(eventually { c.state.connection == .live && c.state.activity?.boot == "b2" })
+        #expect(c.state.isThinking && !c.state.isWorking)
+    }
+
+    @Test func activityPushesSendNothingToTheRuntime() throws {
+        let rt = FakeRuntime()
+        rt.activity = activity("idle", boot: "b1")
+        let c = try client(rt)
+        c.start()
+        defer { c.stop() }
+        #expect(eventually { c.state.connection == .live })
+        #expect(eventually { rt.lock.withLock { rt.received.count } >= 2 })   // snapshot, sync
+        Thread.sleep(forTimeInterval: 0.1)
+        let before = rt.lock.withLock { rt.received }
+        for i in 1...50 {
+            push(rt, activity(i % 2 == 0 ? "working" : "idle", boot: "b1", work: 1 - i % 2), rev: i)
+        }
+        #expect(eventually { c.state.activity?.state == "working" })
+        Thread.sleep(forTimeInterval: 0.1)
+        #expect(rt.lock.withLock { rt.received } == before)
     }
 
     @Test func runtimeDownKeepsRetryingThenRecovers() throws {

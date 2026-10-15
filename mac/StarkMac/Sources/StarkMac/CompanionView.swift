@@ -137,7 +137,7 @@ struct StatusView: View {
 
     private var connectionText: String {
         switch state.connection {
-        case .live: state.working ? "thinking" : "live"
+        case .live: state.isWorking ? "working" : state.isThinking ? "thinking" : "live"
         case .disconnected(let why): why ?? "offline"
         case .connecting: "connecting"
         case .authenticating: "authenticating"

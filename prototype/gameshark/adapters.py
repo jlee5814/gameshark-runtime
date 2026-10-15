@@ -34,6 +34,7 @@ class AdapterContext:
     cancel: object = None                      # lifecycle CancelToken, checked at safe points
     inference: object = None                   # InferenceJournal for durable model calls
     presence: object = None                    # PresenceManager when presence is enabled
+    activity: object = None                    # ActivityTracker: mark execution, read only
 
 
 class Adapter(Protocol):

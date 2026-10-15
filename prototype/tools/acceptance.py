@@ -209,7 +209,41 @@ class Demo:
                           "the panel to move while working")
         self.wait(lambda: self.rows()[-1][1] == "assistant", 30, "the reply")
         anim = "; thinking animation shown" if self.args.sprites else ""
+        if self.args.sprites:
+            anim += "; " + self.duty_while_thinking()
         return f"worst ping {worst * 1000:.1f} ms; panel moved while working: {bool(moved)}{anim}"
+
+    def duty_while_thinking(self) -> str:
+        """A real GitHub poll (a slow fixture GET) during a reply: working, then thinking
+        again while the reply still generates, then idle once both finish."""
+        fixture = self.dir / "github.json"
+        fixture.write_text('{"snapshot_delay_s": 0.3}')   # a slow GET, shorter than the reply
+        marker = len(self.states())
+        self.ctl("say", "Check my pull request while you think.")
+        self.wait(lambda: any("anim=thinking" in s for s in self.states()[marker:]), 10,
+                  "thinking before the poll")
+        stark = [sys.executable, str(ROOT / "stark.py"), "--db", str(self.db)]
+        subprocess.run([*stark, "watch", "demo/repo#1"], cwd=ROOT, capture_output=True,
+                       timeout=30, check=True)
+        try:
+            self.wait(lambda: any("anim=working" in s for s in self.states()[marker:]), 15,
+                      "the working animation during the poll")
+            self.wait(lambda: self.rows()[-1][1] == "assistant", 30, "the reply")
+        finally:
+            fixture.write_text("{}")
+            subprocess.run([*stark, "unwatch", "demo/repo#1"], cwd=ROOT, capture_output=True,
+                           timeout=30, check=True)
+        self.wait(lambda: "anim=working" not in self.last_state()
+                  and "anim=thinking" not in self.last_state(), 15, "Stark to settle")
+        seq: list[str] = []
+        for s in self.states()[marker:]:
+            a = s.split("anim=")[1].split()[0] if "anim=" in s else "?"
+            if not seq or seq[-1] != a:
+                seq.append(a)
+        span = seq[seq.index("thinking"):seq.index("working") + 1]
+        assert "idle" not in span, f"went idle between the reply and the poll: {seq}"
+        self.ctl("snapshot", str(self.shots / "working.png"))
+        return "duty poll during reply: " + " -> ".join(seq)
 
     def s7_restart(self) -> str:
         with self.client() as c:
@@ -260,7 +294,8 @@ class Demo:
                      ("3 message persists in GameShark", self.s3_send),
                      ("4 disconnect and reconnect keeps the conversation", self.s4_reconnect),
                      ("5 obsolete presence generation is rejected", self.s5_obsolete),
-                     ("6 inference runs while the avatar stays responsive", self.s6_responsive),
+                     ("6 inference and duties run while the avatar stays responsive",
+                      self.s6_responsive),
                      ("7 runtime restart keeps identity", self.s7_restart)]
             if self.args.sprites:
                 steps.append(("8 sprite animations and scales", self.s8_gallery))

@@ -270,6 +270,10 @@ class InferenceExecutor:
     def in_flight(self) -> int:
         return len(self._tasks)
 
+    def calls(self) -> list[tuple[str, str, str]]:
+        """(call_id, conversation_id, stage) for every call in flight. Coordinator only."""
+        return [(t.task.call_id, t.task.conversation_id, t.stage) for t in self._tasks.values()]
+
     def stats(self) -> ExecutorStats:
         alive = sum(t.is_alive() for t in self._workers)
         jobs = self._jobs.qsize()

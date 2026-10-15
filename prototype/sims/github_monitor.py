@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import json
 import time
+from contextlib import nullcontext
 
 from companion import Companion
 from gameshark.adapters import AdapterContext
@@ -214,7 +215,8 @@ class GitHubMonitorAdapter:
             if st["next_poll_at"] > now:
                 report["waiting"].append(f"{repo}#{pr}")
             else:
-                self._poll_one(repo, pr, st, report)
+                with self._working(repo, pr):
+                    self._poll_one(repo, pr, st, report)
         dues = [self._state(repo, pr)["next_poll_at"] for repo, pr in self._targets()]
         report["next_due"] = min(dues) if dues else None
         return report
@@ -401,11 +403,21 @@ class GitHubMonitorAdapter:
             intent["summary"], intent["reason"], intent.get("url", ""),
         )
 
+    def _working(self, repo: str, pr: int):
+        """Show the responsibility as executing on surfaces while the block runs."""
+        activity = self.ctx.activity if self.ctx is not None else None
+        return activity.work(rid_for(repo, pr), KIND) if activity is not None else nullcontext()
+
     def on_event(self, event: dict) -> None:
         assert self.ctx is not None
         if "github.read" not in self.ctx.caps:
             raise PermissionError("github adapter lacks github.read")
         p = event["payload"]
+        with self._working(p["repo"], int(p["pr"])):
+            self._handle(p)
+
+    def _handle(self, p: dict) -> None:
+        assert self.ctx is not None
         repo, pr = p["repo"], int(p["pr"])
         rid = rid_for(repo, pr)
 

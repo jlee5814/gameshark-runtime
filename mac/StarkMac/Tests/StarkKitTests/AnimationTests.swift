@@ -150,12 +150,21 @@ final class Dice: @unchecked Sendable {
 
 @Suite struct RuntimeMappingTests {
     func state(live: Bool = true, surface: String = "mac", working: Bool = false,
-               rows: [Row] = [], blocked: Bool = false) -> ClientState {
+               rows: [Row] = [], blocked: Bool = false, work: Int = 0,
+               inference: Int = 0) -> ClientState {
         var s = ClientState(surface: "mac")
         s.connection = live ? .live : .disconnected("gone")
         s.presence = PresenceInfo(surface: surface, home: "mac", generation: 1)
         s.working = working
         s.rows = rows
+        if work > 0 || inference > 0 {
+            s.activity = Activity(
+                working: working, boot: "b1",
+                inference: (0..<inference).map { .init(callId: "call:\($0)", conversationId: "c",
+                                                       stage: "execute") },
+                work: (0..<work).map { .init(responsibilityId: "monitor:o/r:\($0)",
+                                             kind: "monitor_pull_request", count: 1) })
+        }
         if blocked {
             s.responsibilities = [Responsibility(id: "chat:stark:main", kind: "conversation",
                                                  state: "blocked", checkpoint: "Timeout")]
@@ -165,8 +174,10 @@ final class Dice: @unchecked Sendable {
 
     let reply = [Row(seq: 1, role: "user", content: "hi"), Row(seq: 2, role: "assistant", content: "yo")]
 
-    func base(_ s: ClientState, listening: Bool = false, viewed: Int = -1, idle: TimeInterval = 0) -> StarkAnimation {
-        StarkAnimation.base(for: s, listening: listening, viewedSeq: viewed, idleFor: idle)
+    func base(_ s: ClientState, listening: Bool = false, viewed: Int = -1, idle: TimeInterval = 0,
+              held: Bool = false) -> StarkAnimation {
+        StarkAnimation.base(for: s, listening: listening, viewedSeq: viewed, idleFor: idle,
+                            workingHeld: held)
     }
 
     @Test func mapsOnlyExistingSignals() {
@@ -181,12 +192,69 @@ final class Dice: @unchecked Sendable {
         #expect(base(state(), idle: StarkAnimation.dozeAfter - 1) == .idle)
     }
 
-    @Test func workingIsNeverDerivedFromRuntimeState() {
-        let all = [state(), state(working: true), state(live: false), state(blocked: true),
-                   state(rows: reply), state(surface: "ghost")]
-        for s in all {
-            for l in [true, false] { #expect(base(s, listening: l) != .working) }
-        }
+    @Test func workingFollowsRuntimeWorkAndOutranksThinking() {
+        #expect(base(state(work: 1)) == .working)
+        #expect(base(state(work: 1, inference: 1)) == .working)
+        #expect(base(state(inference: 1)) == .thinking)
+        #expect(base(state(work: 1), listening: true) == .working)
+        #expect(base(state(rows: reply, work: 1), viewed: 1) == .working)   // notify waits
+        #expect(base(state(rows: reply), viewed: 1, held: true) == .working)
+    }
+
+    @Test func dominantStatesStillWinOverWork() {
+        #expect(base(state(live: false, work: 2, inference: 1)) == .sleep)
+        #expect(base(state(surface: "ghost", work: 1)) == .idle)
+        #expect(base(state(surface: "ghost", inference: 1), held: true) == .idle)
+        #expect(base(state(blocked: true, work: 1)) == .error)
+    }
+
+    @Test func concurrentWorkReturnsToTheRightStateNotIdle() {
+        // reply plus two polls; each completion steps down one level, never to idle early
+        #expect(base(state(work: 2, inference: 1)) == .working)
+        #expect(base(state(work: 1, inference: 1)) == .working)
+        #expect(base(state(inference: 1)) == .thinking)
+        #expect(base(state(rows: reply), viewed: 1) == .notify)
+        #expect(base(state(rows: reply), viewed: 2) == .idle)
+    }
+
+    @Test func olderRuntimeReplyFlagStillMeansThinking() {
+        var s = state(working: true)
+        s.activity = Activity(working: true)              // no inference field decoded
+        #expect(base(s) == .thinking)
+    }
+
+    @Test func holdKeepsABriefPollVisibleThenLetsGo() {
+        var h = WorkingHold()
+        #expect(h.observe(working: false, at: 0) == false)
+        #expect(h.observe(working: true, at: 10) == true)
+        #expect(h.observe(working: false, at: 10.05) == true)          // a 50 ms poll
+        #expect(h.until == 10 + WorkingHold.minimum)
+        #expect(h.observe(working: false, at: 10 + WorkingHold.minimum) == false)
+        // Long work ends on time: the hold counts from when work began.
+        #expect(h.observe(working: true, at: 20) == true)
+        #expect(h.observe(working: true, at: 25) == true)
+        #expect(h.observe(working: false, at: 25.01) == false)
+    }
+
+    @Test func idleBeatsResumeAfterWork() throws {
+        let c = StarkAnimationController(manifest: try manifest(), now: 0, random: { 0.5 })
+        c.setBase(.working, at: 0)
+        #expect(c.frame(at: 30).frame >= 0 && c.current == .working)
+        c.setBase(.idle, at: 31)
+        _ = c.frame(at: 31 + StarkAnimationController.blinkEvery.upperBound + 0.01)
+        #expect([.blink, .lookAround].contains(c.current))
+    }
+
+    @Test func dragAndGalleryStillOutrankWork() throws {
+        let c = StarkAnimationController(manifest: try manifest(), now: 0)
+        c.setBase(.working, at: 0)
+        c.setMotion(.left, at: 1)
+        #expect(c.current == .walkLeft)
+        c.setOverride(.notify, at: 2)
+        #expect(c.current == .notify)
+        c.setOverride(nil, at: 3)
+        c.setMotion(nil, at: 3)
+        #expect(c.current == .working)
     }
 }
 
