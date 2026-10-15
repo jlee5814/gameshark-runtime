@@ -37,8 +37,9 @@ process restarts without a second prompt.
   Design: [architecture/inference-router.md](architecture/inference-router.md).
 - **v0.4 (in progress)** — Stark companion: a fenced presence lease and two phase Jack In
   handoff so a floating Mac avatar and a paired iPhone act as thin views over one runtime.
-  Runtime core landed; surfaces pending.
-  Design: [architecture/stark-companion.md](architecture/stark-companion.md).
+  Runtime core landed; StarkMac (floating panel over an authenticated Unix socket) landed;
+  iPhone pending. Design: [architecture/stark-companion.md](architecture/stark-companion.md),
+  app: [mac/StarkMac/README.md](mac/StarkMac/README.md).
 
 ## Run
 
@@ -51,6 +52,9 @@ uv run python demo_v2.py  # v0.2 PR-monitoring demo across a restart and a revok
 uv run python stark.py watch owner/repo#123   # assign once (token: GITHUB_TOKEN or gh)
 uv run python stark.py run --notify           # serve across restarts, no more prompts
 uv run python stark.py feed                   # unread updates
+
+../mac/scripts/build-app.sh                   # StarkMac.app; open it while `run` serves
+../mac/scripts/demo.sh                        # the seven StarkMac acceptance checks
 ```
 
 ## Scope and ethics

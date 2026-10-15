@@ -13,6 +13,10 @@ With inference enabled, this thread is the coordinator: it pumps finished execut
 (commit, continuation, ack) between controls and polls, and wakes as soon as a completion
 arrives. Provider calls run on the executor, so a slow model never delays a renewal, a
 control, or a poll.
+
+With a surface gateway, the coordinator also answers surface requests between those
+steps. The gateway's socket threads only frame and authenticate; every read and write of
+SQLite stays on this thread.
 """
 
 from __future__ import annotations
@@ -126,14 +130,16 @@ WAKE_SLICE_S = 0.25  # longest a waiting coordinator goes without checking stop
 ABORT_MARGIN_S = 0.5  # drop inference this long before the heartbeat's grace abort
 
 
-def _wait(sup: AgentSupervisor, stop: threading.Event, seconds: float) -> None:
-    """Sleep up to seconds; return early on stop or, with inference, on a completion."""
-    if sup.executor is None:
+def _wait(sup: AgentSupervisor, stop: threading.Event, seconds: float,
+          woken: bool = False) -> None:
+    """Sleep up to seconds; return early on stop, an inference completion, or a gateway
+    request. With nothing that can wake the coordinator, wait on stop alone."""
+    if sup.executor is None and not woken:
         stop.wait(seconds)
         return
     end = time.monotonic() + seconds
     while not stop.is_set() and (left := end - time.monotonic()) > 0:
-        if sup.executor.wake.wait(min(left, WAKE_SLICE_S)):
+        if sup.wake.wait(min(left, WAKE_SLICE_S)):
             return
 
 
@@ -170,7 +176,7 @@ def _drain_inference(sup: AgentSupervisor, grace_s: float, log) -> int | None:
 
 def run_forever(sup: AgentSupervisor, stop: threading.Event, interval_s: float,
                 log=print, max_ticks: int | None = None, drain_deadline_s: float = 10.0,
-                hard_exit=None) -> int:
+                hard_exit=None, gateway=None) -> int:
     """Serve until stop is set, then drain and release. Return a process exit code.
 
     Unexpected errors in one tick are logged and retried next tick. Exit codes:
@@ -185,6 +191,9 @@ def run_forever(sup: AgentSupervisor, stop: threading.Event, interval_s: float,
 
     A heartbeat thread renews the lease throughout, so a tick longer than the TTL, or a
     drain, never lets a successor in while this owner still commits.
+
+    gateway, when given, exposes pump() (answer queued surface requests, push changes),
+    next_due() (the earliest presence deadline), and close().
     """
     beat = Heartbeat(sup, stop, drain_deadline_s, log=log,
                      **({"hard_exit": hard_exit} if hard_exit else {}))
@@ -201,9 +210,13 @@ def run_forever(sup: AgentSupervisor, stop: threading.Event, interval_s: float,
                 for line in apply_controls(sup):
                     log(f"control {line}")
                 sup.pump_inference()
+                if gateway is not None:
+                    gateway.pump()
                 report = sup.poll()
                 sup.redeliver()
                 sup.pump_inference()
+                if gateway is not None:
+                    gateway.pump()
             except FencedError as e:
                 log(f"lost ownership, exiting: {e}")
                 return EXIT_LOST
@@ -221,10 +234,13 @@ def run_forever(sup: AgentSupervisor, stop: threading.Event, interval_s: float,
             if max_ticks is not None and ticks >= max_ticks:
                 break
             due = next_due(report)
+            if gateway is not None and (g := gateway.next_due()) is not None:
+                due = g if due is None else min(due, g)
             now = sup.clock.now()
             wait = interval_s if due is None else max(0.0, min(due - now, interval_s))
             # Renew well inside the TTL even when nothing is due for a while.
-            _wait(sup, stop, min(max(wait, 0.05), sup.lease_ttl_s / 3))
+            _wait(sup, stop, min(max(wait, 0.05), sup.lease_ttl_s / 3),
+                  woken=gateway is not None)
         if stop.is_set():
             # The heartbeat records draining; wait briefly so every stop passes through it.
             end = time.monotonic() + 1.0
@@ -239,6 +255,8 @@ def run_forever(sup: AgentSupervisor, stop: threading.Event, interval_s: float,
             log(f"drained; releasing generation {sup.generation}")
         return code
     finally:
+        if gateway is not None:
+            gateway.close()
         beat.close()
         sup.stop()
         sys.stdout.flush()

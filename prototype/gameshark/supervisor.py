@@ -9,6 +9,9 @@ inline. The supervisor submits it to a bounded executor and leaves the event pen
 claimed; the event is acknowledged only after the task's continuation ran on this thread,
 which owns the connection. Retryable refusals release the event for redelivery with the
 same call_id; ownership loss drops the task without any write.
+
+With enable_presence, start() also builds the generation bound PresenceManager and
+SurfaceConversation, so a surface gateway can fence its writes by presence generation.
 """
 
 from __future__ import annotations
@@ -16,6 +19,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import math
+import threading
 import time
 from collections.abc import Sequence
 from pathlib import Path
@@ -23,6 +27,7 @@ from pathlib import Path
 from gameshark.adapters import Adapter, AdapterContext, AdapterRegistry
 from gameshark.authz import GrantStore
 from gameshark.clock import Clock
+from gameshark.conversation import SurfaceConversation
 from gameshark.effects import Effect, EffectJournal
 from gameshark.errors import CrashInjected, Draining, UncommittedOutput
 from gameshark.events import Deferred, EventRouter
@@ -41,6 +46,7 @@ from gameshark.inference.tracker import ModelTracker, TrackerPolicy
 from gameshark.inference.types import ProviderCancelled, ProviderError
 from gameshark.lease import LeaseManager
 from gameshark.lifecycle import Lifecycle, Phase
+from gameshark.presence import PresenceManager
 from gameshark.responsibilities import ResponsibilityStore
 from gameshark.store import connect, write_txn
 
@@ -80,6 +86,12 @@ class AgentSupervisor:
         self.inference_router: InferenceRouter | None = None
         self.executor: InferenceExecutor | None = None
         self.drain_cancelled = 0  # calls the drain deadline cancelled; their events wait
+        # One wake for the coordinator: inference completions and gateway requests set it.
+        self.wake = threading.Event()
+        self._presence_home: str | None = None
+        self._presence_timeouts: dict[str, float] = {}
+        self.presence: PresenceManager | None = None
+        self.surface: SurfaceConversation | None = None
 
     # ------------------------------------------------------------------ crash hook
     def _maybe_crash(self, label: str) -> None:
@@ -106,6 +118,14 @@ class AgentSupervisor:
                                "tracker_policy": tracker_policy, "threads": threads,
                                "completion_depth": completion_depth, "retry_s": retry_s}
 
+    def enable_presence(self, home: str, **timeouts: float) -> None:
+        """Track Stark's active surface, placed at home on first start. Call before start().
+
+        timeouts may set prepare_timeout_s and ack_timeout_s for the jack deadlines.
+        """
+        self._presence_home = home
+        self._presence_timeouts = timeouts
+
     def _start_inference(self) -> None:
         cfg = self._inference_cfg
         assert cfg is not None and self.inference is not None
@@ -116,7 +136,7 @@ class AgentSupervisor:
         self.executor = InferenceExecutor(
             self.inference_router, self.lifecycle.token, threads=cfg["threads"],
             completion_depth=cfg["completion_depth"], crash=self._maybe_crash,
-            admit=self._admit_inference)
+            admit=self._admit_inference, wake=self.wake)
 
     def _admit_inference(self) -> None:
         # Recovery replays before serving, so starting admits too; draining does not.
@@ -160,6 +180,7 @@ class AgentSupervisor:
             admit=self.lifecycle.admit,
             cancel=self.lifecycle.token,
             inference=self.inference,
+            presence=self.presence,
         )
 
     def _fenced(self, fn):
@@ -186,6 +207,15 @@ class AgentSupervisor:
             self.conn, self.agent_id, self.lease, self.generation, self.clock,
             crash=self._maybe_crash,
         )
+        if self._presence_home is not None:
+            self.presence = PresenceManager(self.conn, self.agent_id, self.lease,
+                                            self.generation, self.clock,
+                                            crash=self._maybe_crash,
+                                            **self._presence_timeouts)
+            self.presence.ensure_home(self._presence_home)
+            self.surface = SurfaceConversation(self.conn, self.agent_id, self.lease,
+                                               self.generation, self.presence, self.clock,
+                                               crash=self._maybe_crash)
         if self._inference_cfg is not None:
             self._start_inference()
         self.router = EventRouter(
@@ -212,6 +242,8 @@ class AgentSupervisor:
         out = adapter.on_event(event)
         if isinstance(out, InferenceTask):
             return self._submit_task(event["event_id"], out)
+        if isinstance(out, Deferred):
+            return out                       # the handler leaves the event for a later owner
         return None
 
     # ------------------------------------------------------------------ inference

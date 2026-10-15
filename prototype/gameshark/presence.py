@@ -172,19 +172,30 @@ class PresenceManager:
         self._crash("P1_after_prepare")
         return h
 
-    def ready_out(self, handoff_id: str, draft: str | None = None) -> Handoff:
-        """Source finished its exit: move presence to the target. Idempotent after commit."""
-        h = self._commit(handoff_id, draft, carry_draft=True)
+    def ready_out(self, handoff_id: str, draft: str | None = None,
+                  surface: str | None = None, presence_gen: int | None = None) -> Handoff:
+        """Source finished its exit: move presence to the target. Idempotent after commit.
+
+        A surface caller names itself and its generation; the commit then requires it to be
+        the jack's source and still the active body, checked in the same transaction.
+        """
+        h = self._commit(handoff_id, draft, carry_draft=True, surface=surface,
+                         presence_gen=presence_gen)
         self._crash("P2_after_commit")
         return h
 
-    def _commit(self, handoff_id: str, draft: str | None, carry_draft: bool) -> Handoff:
+    def _commit(self, handoff_id: str, draft: str | None, carry_draft: bool,
+                surface: str | None = None, presence_gen: int | None = None) -> Handoff:
         now = self.clock.now()
 
         def body(conn: sqlite3.Connection) -> Handoff:
             row = self._handoff_row(handoff_id)
             if row["state"] != PREPARING:
                 return Handoff.of(row)          # already committed, acked, or resolved
+            if surface is not None:
+                if row["from_surface"] != surface:
+                    raise StalePresence(f"{surface} is not the source of {handoff_id}")
+                self.guard_surface_in_txn(surface, presence_gen if presence_gen else -1)
             p = self._presence()
             to_gen = p["generation"] + 1
             conn.execute("UPDATE presence SET surface=?, generation=?, updated=? "
@@ -222,6 +233,13 @@ class PresenceManager:
         if h is None or h.to_surface != surface:
             return None
         return self._resolve(h.id, lost=True)
+
+    def next_deadline(self) -> float | None:
+        """The open handoff's next deadline on the clock, for the coordinator's sleep."""
+        h = self.open_handoff()
+        if h is None:
+            return None
+        return h.prepare_deadline if h.state == PREPARING else h.ack_deadline
 
     def tick(self) -> Handoff | None:
         """Apply any passed deadline to the open handoff. Safe to call on every loop."""
