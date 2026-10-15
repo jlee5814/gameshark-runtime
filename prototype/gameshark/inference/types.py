@@ -144,9 +144,10 @@ class ProviderResult:
     attempt: int
     text: str
     finish_reason: FinishReason
-    usage: Usage
+    usage: Usage | None  # None: the provider reported no usage; never estimated here
     model: str
     instance_ref: str | None = None  # per incarnation handle, audit only
+    completion_id: str | None = None  # provider's completion id, audit only
 
 
 class HealthStatus(Enum):
