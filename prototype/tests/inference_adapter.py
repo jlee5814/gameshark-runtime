@@ -142,8 +142,14 @@ class AsyncAssistantAdapter(AssistantAdapter):
     An ask control turns into an ask event, so operators reach it through control_requests.
     """
 
+    privacy = Privacy.LOCAL_ONLY  # conversation privacy; the live harness sets CLOUD_OK
+
     def __init__(self, remote: GameSimulator, spec: CallSpec = SPEC) -> None:
         super().__init__(None, remote, spec)
+
+    def spec_for(self, topic: str) -> CallSpec:
+        """The call spec for one topic; a fixed spec unless a subclass varies it."""
+        return self.spec
 
     def apply_control(self, action: str, payload: dict) -> str:
         if action != "ask":
@@ -159,10 +165,10 @@ class AsyncAssistantAdapter(AssistantAdapter):
         ctx.responsibilities.upsert(rid, kind="assistant", payload={"topic": topic},
                                     state="active")
         journal = ctx.inference
-        journal.open_conversation(cid, Privacy.LOCAL_ONLY, responsibility_id=rid)
+        journal.open_conversation(cid, self.privacy, responsibility_id=rid)
         journal.append(cid, Role.SYSTEM, SYSTEM, 0)
         journal.append(cid, Role.USER, event["payload"]["question"], 1)
-        return InferenceTask(call_id, cid, self.spec,
+        return InferenceTask(call_id, cid, self.spec_for(topic),
                              on_done=lambda r: self._answered(call_id, cid, rid, r),
                              on_error=lambda e: self._failed(rid, e))
 

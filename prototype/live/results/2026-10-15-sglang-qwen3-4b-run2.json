@@ -1,0 +1,760 @@
+{
+  "meta": {
+    "date": "2026-10-15T06:47:10-0400",
+    "git": "b407a1d",
+    "python": "3.13.9",
+    "platform": "macOS-27.0.1-arm64-arm-64bit-Mach-O",
+    "local": {
+      "kind": "local",
+      "model": "mlx-community/Qwen3-4B-4bit",
+      "context": 40960,
+      "slots": 4,
+      "price_in_micros": 0,
+      "price_out_micros": 0,
+      "url": "http://127.0.0.1:30000/v1",
+      "probe": {
+        "model": "mlx-community/Qwen3-4B-4bit",
+        "max_model_len": 40960,
+        "owned_by": "sglang"
+      }
+    },
+    "nonce": "833981"
+  },
+  "local": {
+    "generate_latency_and_replay_identity": {
+      "checks": {
+        "g256_committed_once": true,
+        "g256_effect_gate": true,
+        "g256_markers_kept_verbatim": true,
+        "g16_committed_once": true,
+        "g16_effect_gate": true,
+        "g16_markers_kept_verbatim": true,
+        "usage_reported_by_provider": true,
+        "ledger_settled_at_actual_usage": true,
+        "drain_exit_0": true,
+        "no_leaks_a": true,
+        "identity_uuid_unchanged": true,
+        "durable_rows_unchanged_after_restart": true,
+        "drain_exit_0_b": true,
+        "restart_dispatched_nothing": true
+      },
+      "evidence": {
+        "answers": {
+          "g256": {
+            "call": {
+              "status": "done",
+              "attempts": 1,
+              "finish_reason": "stop",
+              "provider": "local",
+              "model": "mlx-community/Qwen3-4B-4bit",
+              "error_kind": null,
+              "degraded": 0
+            },
+            "messages": 1,
+            "responsibility": {
+              "state": "blocked",
+              "checkpoint": "UnvalidatedReasoning"
+            },
+            "posted_moves": 0,
+            "outcome": "UnvalidatedReasoning",
+            "ledger": [
+              {
+                "attempt": 1,
+                "status": "settled",
+                "reserved_tokens": 274,
+                "reserved_micros": 0,
+                "tokens_in": 43,
+                "tokens_out": 7,
+                "cost_micros": 0
+              }
+            ],
+            "observed": {
+              "obs": "end",
+              "call_id": "call:26dc9fe1fcde8950",
+              "attempt": 1,
+              "t": 1792061231.8603,
+              "finish": "stop",
+              "chunks": 6,
+              "ttft_s": 0.9146,
+              "total_s": 0.9895,
+              "usage": {
+                "tokens_in": 43,
+                "tokens_out": 7
+              },
+              "text_chars": 23,
+              "markers": [
+                "<think>",
+                "</think>"
+              ],
+              "model": "mlx-community/Qwen3-4B-4bit",
+              "head_chunks": [
+                "<think>",
+                "\n\n",
+                "</think>",
+                "\n\n"
+              ],
+              "text_prefix": "<think>\n\n</think>\n\nRed."
+            },
+            "content_chars": 23,
+            "content_markers": [
+              "<think>",
+              "</think>"
+            ],
+            "content_prefix": "<think>\n\n</think>\n\nRed.",
+            "expected_block": "UnvalidatedReasoning"
+          },
+          "g16": {
+            "call": {
+              "status": "done",
+              "attempts": 1,
+              "finish_reason": "length",
+              "provider": "local",
+              "model": "mlx-community/Qwen3-4B-4bit",
+              "error_kind": null,
+              "degraded": 0
+            },
+            "messages": 1,
+            "responsibility": {
+              "state": "blocked",
+              "checkpoint": "IncompleteAnswer"
+            },
+            "posted_moves": 0,
+            "outcome": "IncompleteAnswer",
+            "ledger": [
+              {
+                "attempt": 1,
+                "status": "settled",
+                "reserved_tokens": 41,
+                "reserved_micros": 0,
+                "tokens_in": 56,
+                "tokens_out": 16,
+                "cost_micros": 0
+              }
+            ],
+            "observed": {
+              "obs": "end",
+              "call_id": "call:08e4ab10c07c0f4f",
+              "attempt": 1,
+              "t": 1792061232.1613,
+              "finish": "length",
+              "chunks": 16,
+              "ttft_s": 0.0611,
+              "total_s": 0.2441,
+              "usage": {
+                "tokens_in": 56,
+                "tokens_out": 16
+              },
+              "text_chars": 56,
+              "markers": [
+                "<think>"
+              ],
+              "model": "mlx-community/Qwen3-4B-4bit",
+              "head_chunks": [
+                "<think>",
+                "\n",
+                "Okay",
+                ","
+              ],
+              "text_prefix": "<think>\nOkay, the user asked to count upward from 1 to 5"
+            },
+            "content_chars": 56,
+            "content_markers": [
+              "<think>"
+            ],
+            "content_prefix": "<think>\nOkay, the user asked to count upward from 1 to 5",
+            "expected_block": "IncompleteAnswer",
+            "server_on_topic": false
+          }
+        },
+        "latency": {
+          "calls": [
+            {
+              "ttft_s": 0.0621,
+              "total_s": 0.1228,
+              "usage": {
+                "tokens_in": 46,
+                "tokens_out": 6
+              },
+              "finish": "stop",
+              "ledger": {
+                "status": "settled",
+                "reserved_tokens": 83,
+                "tokens_in": 46,
+                "tokens_out": 6
+              }
+            },
+            {
+              "ttft_s": 0.0675,
+              "total_s": 0.1377,
+              "usage": {
+                "tokens_in": 46,
+                "tokens_out": 7
+              },
+              "finish": "stop",
+              "ledger": {
+                "status": "settled",
+                "reserved_tokens": 83,
+                "tokens_in": 46,
+                "tokens_out": 7
+              }
+            },
+            {
+              "ttft_s": 0.0589,
+              "total_s": 0.1335,
+              "usage": {
+                "tokens_in": 46,
+                "tokens_out": 7
+              },
+              "finish": "stop",
+              "ledger": {
+                "status": "settled",
+                "reserved_tokens": 83,
+                "tokens_in": 46,
+                "tokens_out": 7
+              }
+            },
+            {
+              "ttft_s": 0.0622,
+              "total_s": 0.1397,
+              "usage": {
+                "tokens_in": 46,
+                "tokens_out": 7
+              },
+              "finish": "stop",
+              "ledger": {
+                "status": "settled",
+                "reserved_tokens": 83,
+                "tokens_in": 46,
+                "tokens_out": 7
+              }
+            },
+            {
+              "ttft_s": 0.0618,
+              "total_s": 0.1468,
+              "usage": {
+                "tokens_in": 46,
+                "tokens_out": 7
+              },
+              "finish": "stop",
+              "ledger": {
+                "status": "settled",
+                "reserved_tokens": 83,
+                "tokens_in": 46,
+                "tokens_out": 7
+              }
+            }
+          ],
+          "ttft_p50_s": 0.0621,
+          "ttft_max_s": 0.0675,
+          "total_p50_s": 0.1377,
+          "total_max_s": 0.1468
+        },
+        "cold_first_call_ttft_s": 0.9146,
+        "soft_overruns": [
+          {
+            "call_id": "call:08e4ab10c07c0f4f",
+            "reserved_tokens": 41,
+            "actual": 72
+          }
+        ],
+        "restart": {
+          "uuid": "885adcea-551f-4e41-b2cf-5c9effda0611",
+          "generation_a": 2,
+          "generation_b": 3,
+          "messages": 7,
+          "leaks_b": {
+            "tasks": 0,
+            "jobs": 0,
+            "completions": 0,
+            "claims": 0,
+            "reserved_live": 0,
+            "threads": 0,
+            "refused": 0,
+            "dispatched": 0,
+            "peak_active": 0
+          }
+        }
+      },
+      "passed": true,
+      "duration_s": 5.09
+    },
+    "concurrent_duty_and_cancel": {
+      "checks": {
+        "polls_continue_while_streaming": false,
+        "notification_and_control_while_streaming": false,
+        "drain_exit_5": false,
+        "provider_cancelled": false,
+        "cancel_within_grace_2s": false,
+        "settled_lost_event_pending_no_message": false,
+        "no_leaks_a": true,
+        "successor_same_call_id_attempt_2": false,
+        "successor_effect_gate": false,
+        "drain_exit_0_b": true,
+        "no_leaks_b": true
+      },
+      "evidence": {
+        "duty_while_streaming": {
+          "poll_times_s": [
+            0.027,
+            0.076,
+            0.124,
+            0.197,
+            0.247
+          ],
+          "notification_after_s": 0.314,
+          "control_applied_after_s": 0.364,
+          "call_still_streaming": false
+        },
+        "cancel": {
+          "exit": 0,
+          "sigterm_to_exit_s": 0.173,
+          "cancel_seen": null,
+          "error": null,
+          "ledger": [
+            [
+              1,
+              "settled"
+            ]
+          ],
+          "event": "acked",
+          "call": {
+            "status": "done",
+            "attempts": 1,
+            "finish_reason": "stop",
+            "provider": "local",
+            "model": "mlx-community/Qwen3-4B-4bit",
+            "error_kind": null,
+            "degraded": 0
+          },
+          "server_abort": "UNKNOWN: the server exposes no metrics or load endpoint"
+        },
+        "successor": {
+          "generation": 3,
+          "call": {
+            "status": "done",
+            "attempts": 1,
+            "finish_reason": "stop",
+            "provider": "local",
+            "model": "mlx-community/Qwen3-4B-4bit",
+            "error_kind": null,
+            "degraded": 0
+          },
+          "messages": 1,
+          "responsibility": {
+            "state": "blocked",
+            "checkpoint": "UnvalidatedReasoning"
+          },
+          "posted_moves": 0,
+          "outcome": null,
+          "ledger": [
+            {
+              "attempt": 1,
+              "status": "settled",
+              "reserved_tokens": 1049,
+              "reserved_micros": 0,
+              "tokens_in": 56,
+              "tokens_out": 10,
+              "cost_micros": 0
+            }
+          ],
+          "observed": null,
+          "content_chars": 23,
+          "content_markers": [
+            "<think>",
+            "</think>"
+          ],
+          "content_prefix": "<think>\n</think>\n\n6000.",
+          "expected_block": "UnvalidatedReasoning",
+          "server_on_topic": false
+        }
+      },
+      "passed": false,
+      "duration_s": 1.26
+    },
+    "replay_without_dispatch": {
+      "checks": {
+        "killed_after_commit": true,
+        "drain_exit_0": true,
+        "replay_short_circuit_zero_dispatch": true,
+        "replayed_flag": true,
+        "one_message_one_settlement": true,
+        "no_leaks": true
+      },
+      "evidence": {
+        "dispatched_a": 1,
+        "dispatched_b": 0,
+        "outcome_b": {
+          "call_id": "call:2866bb8474c108f6",
+          "outcome": "UnvalidatedReasoning",
+          "replayed": true,
+          "finish": "stop",
+          "provider": "local",
+          "soft_budget": false,
+          "metered": true
+        },
+        "ledger": [
+          [
+            1,
+            "settled"
+          ]
+        ],
+        "messages": 1
+      },
+      "passed": true,
+      "duration_s": 0.64
+    },
+    "concurrency_overload_recovery": {
+      "checks": {
+        "drain_exit_0": true,
+        "peak_never_above_slots": true,
+        "peak_reached_slots": true,
+        "overload_redelivered": true,
+        "each_call_one_attempt_one_message": true,
+        "no_reservation_left": true,
+        "no_leaks": true
+      },
+      "evidence": {
+        "slots": 4,
+        "calls": 7,
+        "peak_active": 4,
+        "dispatched": 7,
+        "handler_runs": 10,
+        "executor_refused": 3,
+        "reserved_after": 0,
+        "active_at_dispatch": [
+          1,
+          2,
+          3,
+          4,
+          1,
+          2,
+          3
+        ],
+        "leaks": {
+          "tasks": 0,
+          "jobs": 0,
+          "completions": 0,
+          "claims": 0,
+          "reserved_live": 0,
+          "threads": 0,
+          "refused": 3,
+          "dispatched": 7,
+          "peak_active": 4
+        },
+        "ttft_s": [
+          0.0692,
+          0.2426,
+          0.2427,
+          0.2427,
+          0.1797,
+          0.0661,
+          0.1791
+        ]
+      },
+      "passed": true,
+      "duration_s": 2.03
+    },
+    "restart_owner_recovery": {
+      "checks": {
+        "drain_exit_0": true,
+        "same_call_id_attempts_1_2_3": true,
+        "attempt_cap_no_fourth_dispatch": true,
+        "ledger_three_lost": true,
+        "responsibility_blocked": true,
+        "no_message": true,
+        "no_leaks": true,
+        "recover_attempt_2_one_message": true,
+        "recover_effect_gate": true,
+        "drain_exit_0_b": true,
+        "no_leaks_b": true
+      },
+      "evidence": {
+        "cap": {
+          "kills": [
+            {
+              "attempt": [
+                1
+              ],
+              "call_ids": [
+                "call:f9f6f49fdaab8ab5"
+              ],
+              "ledger": [
+                [
+                  1,
+                  "reserved"
+                ]
+              ]
+            },
+            {
+              "attempt": [
+                2
+              ],
+              "call_ids": [
+                "call:f9f6f49fdaab8ab5"
+              ],
+              "ledger": [
+                [
+                  1,
+                  "lost"
+                ],
+                [
+                  2,
+                  "reserved"
+                ]
+              ]
+            },
+            {
+              "attempt": [
+                3
+              ],
+              "call_ids": [
+                "call:f9f6f49fdaab8ab5"
+              ],
+              "ledger": [
+                [
+                  1,
+                  "lost"
+                ],
+                [
+                  2,
+                  "lost"
+                ],
+                [
+                  3,
+                  "reserved"
+                ]
+              ]
+            }
+          ],
+          "fourth_dispatched": 0,
+          "fourth_outcome": {
+            "rid": "ask:r",
+            "outcome": "AttemptsExhausted"
+          },
+          "ledger": [
+            [
+              1,
+              "lost"
+            ],
+            [
+              2,
+              "lost"
+            ],
+            [
+              3,
+              "lost"
+            ]
+          ],
+          "call": {
+            "status": "failed",
+            "attempts": 3,
+            "finish_reason": null,
+            "provider": null,
+            "model": null,
+            "error_kind": "AttemptsExhausted",
+            "degraded": 0
+          },
+          "responsibility": {
+            "state": "blocked",
+            "checkpoint": "AttemptsExhausted"
+          }
+        },
+        "recover": {
+          "call": {
+            "status": "done",
+            "attempts": 2,
+            "finish_reason": "stop",
+            "provider": "local",
+            "model": "mlx-community/Qwen3-4B-4bit",
+            "error_kind": null,
+            "degraded": 0
+          },
+          "messages": 1,
+          "responsibility": {
+            "state": "done",
+            "checkpoint": null
+          },
+          "posted_moves": 1,
+          "outcome": "committed",
+          "ledger": [
+            {
+              "attempt": 1,
+              "status": "lost",
+              "reserved_tokens": 281,
+              "reserved_micros": 0,
+              "tokens_in": null,
+              "tokens_out": null,
+              "cost_micros": 0
+            },
+            {
+              "attempt": 2,
+              "status": "settled",
+              "reserved_tokens": 281,
+              "reserved_micros": 0,
+              "tokens_in": 56,
+              "tokens_out": 8,
+              "cost_micros": 0
+            }
+          ],
+          "observed": {
+            "obs": "end",
+            "call_id": "call:495604e1dd644408",
+            "attempt": 2,
+            "t": 1792061240.7294,
+            "finish": "stop",
+            "chunks": 7,
+            "ttft_s": 0.0184,
+            "total_s": 0.1079,
+            "usage": {
+              "tokens_in": 56,
+              "tokens_out": 8
+            },
+            "text_chars": 26,
+            "markers": [],
+            "model": "mlx-community/Qwen3-4B-4bit"
+          },
+          "content_chars": 26,
+          "content_markers": [],
+          "content_prefix": "number of sides on a dice.",
+          "expected_block": null,
+          "server_on_topic": false
+        }
+      },
+      "passed": true,
+      "duration_s": 1.26
+    },
+    "stale_owner_fenced": {
+      "checks": {
+        "stale_owner_exit_4": true,
+        "successor_generation_plus_1": true,
+        "only_successor_committed": true,
+        "ledger_lost_then_settled": true,
+        "drain_exit_0_b": true,
+        "no_leaks_b": true
+      },
+      "evidence": {
+        "exit_a": 4,
+        "generation_a": 2,
+        "generation_b": 3,
+        "ledger": [
+          [
+            1,
+            "lost"
+          ],
+          [
+            2,
+            "settled"
+          ]
+        ],
+        "message_generation": [
+          3
+        ],
+        "a_observed": [
+          "dispatch",
+          "first_chunk",
+          "end"
+        ]
+      },
+      "passed": true,
+      "duration_s": 1.74
+    }
+  },
+  "policy_fake_cloud": {
+    "local_only_never_egresses": {
+      "checks": {
+        "refused_EgressDenied": true,
+        "zero_dispatch": true,
+        "no_ledger_row": true,
+        "drain_exit_0": true,
+        "no_leaks": true
+      },
+      "evidence": {
+        "outcome": "EgressDenied",
+        "dispatched": 0,
+        "ledger": [],
+        "call": null,
+        "metered": null,
+        "soft_budget": null
+      },
+      "passed": true
+    },
+    "cloud_ok_without_grant": {
+      "checks": {
+        "refused_EgressDenied": true,
+        "zero_dispatch": true,
+        "no_ledger_row": true,
+        "drain_exit_0": true,
+        "no_leaks": true
+      },
+      "evidence": {
+        "outcome": "EgressDenied",
+        "dispatched": 0,
+        "ledger": [],
+        "call": null,
+        "metered": null,
+        "soft_budget": null
+      },
+      "passed": true
+    },
+    "paid_estimate_without_soft_grant": {
+      "checks": {
+        "refused_BudgetUnenforceable": true,
+        "zero_dispatch": true,
+        "no_ledger_row": true,
+        "drain_exit_0": true,
+        "no_leaks": true
+      },
+      "evidence": {
+        "outcome": "BudgetUnenforceable",
+        "dispatched": 0,
+        "ledger": [],
+        "call": null,
+        "metered": null,
+        "soft_budget": null
+      },
+      "passed": true
+    },
+    "paid_estimate_with_soft_grant": {
+      "checks": {
+        "dispatched_once": true,
+        "committed": true,
+        "settled_actual_or_unmetered": true,
+        "admitted_soft": true,
+        "drain_exit_0": true,
+        "no_leaks": true
+      },
+      "evidence": {
+        "outcome": "committed",
+        "dispatched": 1,
+        "ledger": [
+          {
+            "attempt": 1,
+            "status": "settled",
+            "reserved_tokens": 82,
+            "reserved_micros": 2,
+            "tokens_in": 18,
+            "tokens_out": 8,
+            "cost_micros": 2
+          }
+        ],
+        "call": {
+          "status": "done",
+          "attempts": 1,
+          "finish_reason": "stop",
+          "provider": "cloud",
+          "model": "fake-cloud-model",
+          "error_kind": null,
+          "degraded": 0
+        },
+        "metered": true,
+        "soft_budget": true
+      },
+      "passed": true
+    }
+  },
+  "cloud": {
+    "status": "not_run",
+    "reason": "GAMESHARK_CLOUD_OPT_IN=1 not set"
+  },
+  "secret_scan": "no secret configured"
+}

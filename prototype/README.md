@@ -164,7 +164,7 @@ the property does not hold.
 cd /Users/jaebonglee/Projects/gameshark-research/prototype
 uv venv --python 3.13
 uv pip install pytest
-uv run pytest -v                 # all 327 tests (v0.1, v0.2, fencing, draining, expiry, v0.3 steps 1 to 5)
+uv run pytest -v                 # all 365 tests (v0.1, v0.2, fencing, draining, expiry, v0.3 steps 1 to 7)
 uv run python demo.py            # v0.1 narrated Stark run with a real SIGKILL
 uv run python demo_v2.py         # v0.2 PR monitoring across a real SIGKILL and a revoke
 uv run python companion.py <runtime_db>   # render the companion feed for a run
@@ -200,6 +200,9 @@ uv run pytest -v tests/test_model_tracker.py
 
 # inference executor and daemon: deferred events, bounds, fencing, SIGKILL, SIGTERM
 uv run pytest -v tests/test_inference_executor.py tests/test_daemon_inference.py -s
+
+# live acceptance harness (deterministic); the live run itself is opt in, see step 7
+uv run pytest -v tests/test_live_harness.py
 
 # individual critical tests
 uv run pytest -v tests/test_recovery.py::test_real_subprocess_kill_then_recover
@@ -692,10 +695,123 @@ apart, delivered a new review notification 0.38 s after the block began, and app
 
 `stark.py` is unchanged: no provider is configured for the real CLI in this step.
 
+## Live inference acceptance (v0.3 step 7)
+
+Implements step 7 of `../architecture/inference-router.md`: the production daemon
+(`run_forever`, `InferenceRouter`, `ModelTracker`, `InferenceExecutor`, the journal, the
+fenced lease, deferred event ownership) against a real SGLang server, plus a cloud path
+gated on explicit opt in. CI never contacts a model; the harness runs only by hand.
+
+### Run it
+
+The harness never starts or stops a model server. It probes `GET {base}/models`, requires
+the model id, and exits 3 without touching any database when the probe fails.
+
+```sh
+cd prototype
+GAMESHARK_LIVE_LOCAL_URL=http://127.0.0.1:30000/v1 \
+GAMESHARK_LIVE_LOCAL_MODEL=mlx-community/Qwen3-4B-4bit \
+GAMESHARK_LIVE_LOCAL_CONTEXT=40960 \
+GAMESHARK_LIVE_LOCAL_SLOTS=4 \
+uv run python -m live.smoke --local --cloud --out live/results/run-local
+```
+
+| Variable | Required | Meaning |
+|---|---|---|
+| `GAMESHARK_LIVE_LOCAL_URL` | local | loopback IP literal base URL (`localhost` refused) |
+| `GAMESHARK_LIVE_LOCAL_MODEL` | local | model id the server must list |
+| `GAMESHARK_LIVE_LOCAL_CONTEXT` | no (40960) | advertised context window |
+| `GAMESHARK_LIVE_LOCAL_SLOTS` | no (4) | provider slots; keep at or below the server's `max_running_requests` |
+| `GAMESHARK_CLOUD_OPT_IN` | cloud | must be `1`; without it cloud scenarios record `not_run` |
+| `GAMESHARK_CLOUD_URL`, `_MODEL`, `_API_KEY` | cloud | HTTPS, non loopback endpoint; the key reaches only the daemon subprocess |
+| `GAMESHARK_CLOUD_PRICE_IN_MICROS`, `_OUT_MICROS` | no (1, 1) | nonzero, so the paid soft budget path engages |
+| `GAMESHARK_CLOUD_CONTEXT`, `_SLOTS` | no (8192, 2) | cloud capabilities |
+
+Other modes: `--policy` runs only the fake cloud policy checks (no server); `--only NAME`
+selects local scenarios; `--keep-db` keeps the temporary databases. Output:
+`results.json` (machine readable), `summary.md`, and one log per daemon. Exit 0 when
+every check passed.
+
+### How it works
+
+`live/smoke.py` builds a fresh temporary SQLite database per scenario, runs `stark.py
+watch` so the GitHub monitor has a duty, and drives real `live.daemon` subprocesses
+through `control_requests`, signals, and SQLite reads, the same way the step 6 tests do.
+`live/daemon.py` is the step 6 test worker with an `OpenAICompatProvider` from the
+environment, wrapped in `ObservedProvider` (`live/observed.py`). The wrapper only
+timestamps dispatch, first chunk, cancel seen, end, and error, and counts concurrent
+calls; chunks, results, errors, health, and the config fingerprint pass through
+unchanged. Every prompt is synthetic and carries a per run nonce, so one run's prompts
+never share a server prefix cache entry with another run's.
+
+### CI tested versus manually observed
+
+| Behavior | CI (`tests/test_live_harness.py`, loopback fixture, FakeProvider) | Manually observed against SGLang |
+|---|---|---|
+| Probe refusal, exit 3, no database | yes | not needed |
+| Cloud requires opt in, every variable, HTTPS | yes | n/a |
+| Wrapper records latency, usage, structure, cancel; changes nothing | yes | yes |
+| Reasoning marked answer commits and never posts | yes | yes |
+| Policy refusals before dispatch; soft budget settlement | yes (fake cloud in the real daemon) | same fake cloud checks, rerun in the live run |
+| Auth failure is terminal and leaks no key | yes (401 fixture) | not run: no cloud credentials |
+| Real streaming, latency, slots, cancel, restart, takeover | no | yes, run 1 below |
+
+### Results, 2026-10-15 (run 1, all checks passed)
+
+Server: externally managed SGLang on an Apple silicon Mac, `mlx-community/Qwen3-4B-4bit`,
+`max_model_len` 40960, `max_running_requests` 8; harness slots 4. Evidence:
+`live/results/2026-10-15-sglang-qwen3-4b-run1.json` and `.md`.
+
+| # | Scenario | Observed |
+|---|---|---|
+| 1 | Generate from the async handler | `/no_think` still yields `<think>\n\n</think>\n\nRed.`, finish `stop`, usage 42 in, 7 out. Committed once, `inference_calls.finish_reason=stop`; the adapter blocked it `UnvalidatedReasoning`; zero game moves. At 16 tokens: finish `length`, blocked `IncompleteAnswer`. Markers kept verbatim in the message row. |
+| 2 | Latency and usage | Cold first call TTFT 0.65 s. Warm, 5 calls: TTFT p50 0.065 s, max 0.067 s; completion p50 0.137 s for 6 or 7 tokens. Provider usage equals ledger `tokens_in`/`tokens_out` on every call. Decode about 86 tokens/s (1024 tokens in 11.97 s). |
+| 3 | Other duties while streaming | 5 GitHub polls 0.05 to 0.25 s apart, a review notification at 0.32 s, and a `watch` control applied at 0.37 s, all while one call streamed. |
+| 4 | Durable commit, same identity | SIGTERM exit 0, then the same owner restarted: uuid unchanged, message and ledger rows identical, zero dispatches. |
+| 5 | Replay dispatches nothing | SIGKILL at E4 (after commit, before ack); the restarted daemon acked through the short circuit with 0 provider requests, `replayed=true`, ledger `[1 settled]`. |
+| 6 | Cancel an active stream | SIGTERM with a 1 s drain deadline after 127 streamed chunks: `ProviderCancelled` 0.3 ms after the token fired, exit 5 at 1.18 s, ledger `[1 lost]`, event pending, call pending, no message. The successor reran the same call_id as attempt 2 (ledger `[1 lost, 2 settled]`). Server side abort: UNKNOWN; this server exposes no metrics or load endpoint. |
+| 7 | Concurrency to the slot limit | 7 calls with 4 slots: in flight at dispatch `1,2,3,4,1,2,3`, peak 4, never above. 3 executor refusals before reservation, redelivered with the same call_id; 7 dispatches, each call one attempt and one message. |
+| 8 | No leaks after overload | Exit leak line all zero (tasks, jobs, completions, claims, live reservations, threads); zero `reserved` ledger rows. |
+| 9 | Restart with an unfinished call | SIGKILL after the first chunk, three times: attempts 1, 2, 3 on one call_id; the fourth daemon dispatched nothing and blocked the duty `AttemptsExhausted`; ledger `[1 lost, 2 lost, 3 lost]`; no message. Separately, one kill and a clean restart committed attempt 2. |
+| 10 | Fencing | Owner A paused mid stream past lease expiry; B took generation 3 and committed; A resumed, its stream ended, its commit failed the fence, exit 4. The only message carries generation 3. |
+| | Policy (fake cloud in the real daemon) | `local_only` with every grant: `EgressDenied`, 0 dispatches. `cloud_ok` without `inference.cloud`: `EgressDenied`, 0. Paid ESTIMATE bound without `inference.cloud.soft_budget`: `BudgetUnenforceable`, 0, no ledger row. With it: 1 dispatch, settled at actual usage, `soft_budget=true`. |
+| | Cloud | Not run: no credentials or opt in were supplied. Cloud acceptance is not claimed. Cloud cancellation and usage behavior remain undocumented. |
+
+Soft overrun observed: the 16 token call reserved 41 tokens (whitespace word estimate)
+and used 71, which `InferenceJournal.overruns()` reports, as designed for untrusted bounds.
+
+### Server finding: SGLang prefix cache returns another request's output
+
+After clients abort streams mid generation (SIGKILL of the daemon), a later request with
+an identical prompt returned text unrelated to it: the counting prompt answered
+`the sum of the first three primes.` in run 1 and
+`hexagon. It's also the number of minutes in an hour...` in a development run. The same
+request sent with curl, outside GameShark, reproduced it byte for byte; changing one
+token of the system prompt restored normal counting. In run 2
+(`live/results/2026-10-15-sglang-qwen3-4b-run2.json`) degradation spread to fresh
+prompts: the counting prompt returned `6000.` after 10 tokens, so the cancel scenario had
+no live stream to cancel and failed, and `/no_think` produced a full reasoning trace.
+GameShark handled every answer by its contract (committed once, gated, fenced). The
+harness flags these answers as `server_on_topic=false`, a diagnostic outside the pass
+criteria. Restarting or flushing the server is the operator's call; the harness does
+neither.
+
+### Limitations
+
+- One host, one server, one model. Qwen3 always emits think markers under `/no_think`, so
+  the plain answer success path ran live only through corrupted server output (run 1,
+  scenario 9: committed and posted). A clean plain answer model was not available and the
+  harness may not start one; CI covers the success path with the fixture and FakeProvider.
+- The adapter gates structure, not meaning: a plain but wrong answer posts as a reply. It
+  is data, never parsed into a command.
+- Server side abort after cancel is unobserved; the ledger charges the full reservation.
+- Cloud: untested live. Auth redaction, egress, and budget gating are CI tested only.
+- Latencies are single run observations on a warm machine, not benchmarks.
+
 ## Actual test results
 
 ```
-platform darwin -- Python 3.13.9, pytest-9.1.1, pluggy-1.6.0 -- /Users/jaebonglee/Projects/gameshark-research/prototype/.venv/bin/python3
+platform darwin -- Python 3.12.13, pytest-9.1.1, pluggy-1.6.0
 tests/test_daemon.py::test_responsibility_survives_sigkill_without_second_prompt PASSED
 tests/test_daemon.py::test_second_daemon_refused_and_cli_requests_reach_running_daemon PASSED
 tests/test_daemon.py::test_token_revocation_blocks_survives_restart_and_resumes PASSED
@@ -922,6 +1038,15 @@ tests/test_lifecycle.py::test_draining_refuses_new_work_before_it_persists PASSE
 tests/test_lifecycle.py::test_cancel_leaves_event_pending_for_successor PASSED
 tests/test_lifecycle.py::test_run_forever_drains_on_stop_and_releases PASSED
 tests/test_lifecycle.py::test_v02_lease_table_migrates_in_place PASSED
+tests/test_live_harness.py::test_local_target_requires_loopback_literal PASSED
+tests/test_live_harness.py::test_cloud_needs_explicit_opt_in_every_variable_and_https PASSED
+tests/test_live_harness.py::test_probe_requires_the_model_and_refuses_cleanly PASSED
+tests/test_live_harness.py::test_smoke_exits_3_and_runs_nothing_when_the_server_is_down PASSED
+tests/test_live_harness.py::test_observed_provider_records_latency_usage_and_structure_unchanged PASSED
+tests/test_live_harness.py::test_observed_provider_times_cancellation_of_a_stalled_stream PASSED
+tests/test_live_harness.py::test_reasoning_answer_commits_durably_and_never_posts PASSED
+tests/test_live_harness.py::test_policy_suite_refuses_before_dispatch_and_settles_the_soft_path PASSED
+tests/test_live_harness.py::test_auth_failure_is_terminal_and_leaks_no_key PASSED
 tests/test_model_tracker.py::test_models_start_discovered_and_nothing_probes_before_demand PASSED
 tests/test_model_tracker.py::test_transition_table_plans_and_wiring_are_validated PASSED
 tests/test_model_tracker.py::test_concurrent_first_demand_loads_once PASSED
@@ -1052,7 +1177,7 @@ tests/test_recovery.py::test_stale_external_effect_rejected_by_destination PASSE
 tests/test_recovery.py::test_authorization_revocation_survives_restart PASSED
 tests/test_recovery.py::test_real_subprocess_kill_then_recover PASSED
 tests/test_takeover.py::test_stale_owner_exits_and_successor_recovers_after_sigkill PASSED
-356 passed
+365 passed
 ```
 
-All 327 tests that predate step 6 run unchanged. `uv run ruff check .` reports no findings.
+All 356 tests that predate step 7 run unchanged; step 7 adds 9 deterministic harness tests. `uv run ruff check .` reports no findings.
