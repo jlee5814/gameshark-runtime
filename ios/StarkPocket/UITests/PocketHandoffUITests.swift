@@ -51,8 +51,18 @@ final class PocketHandoffUITests: XCTestCase {
         // 7, 8: talk to the same Stark; the reply commits through the runtime's journal.
         let field = app.textFields["composer"].exists ? app.textFields["composer"]
             : app.textViews["composer"]
-        field.tap()
-        field.typeText("Hello from my pocket")
+        let signal = ProcessInfo.processInfo.environment["STARK_SIGNAL_DIR"]
+        if signal != nil {
+            // Mac -> iPhone: StarkMac's unsent text arrived in this composer, not sent.
+            let restored = XCTNSPredicateExpectation(
+                predicate: NSPredicate(format: "value == %@", "Hello from my pocket"), object: field)
+            XCTAssertEqual(XCTWaiter().wait(for: [restored], timeout: 15), .completed,
+                           "the Mac's draft never reached the composer; it shows \(field.value ?? "")")
+            shot("2b-mac-draft-restored")
+        } else {
+            field.tap()
+            field.typeText("Hello from my pocket")
+        }
         app.buttons["sendButton"].tap()
         waitForText("You said: Hello from my pocket", timeout: 45)
         shot("3-reply-on-phone")
@@ -62,7 +72,7 @@ final class PocketHandoffUITests: XCTestCase {
         shot("4-jacked-out")
         // Jack In again and leave text unsent; the Mac takes Stark back with Jack In Here,
         // and the phone's draft travels in the handoff journal.
-        guard let signal = ProcessInfo.processInfo.environment["STARK_SIGNAL_DIR"] else { return }
+        guard let signal else { return }
         app.buttons["jackButton"].tap()
         waitFor("presenceLabel", label: "Stark is here")
         field.tap()
@@ -70,6 +80,12 @@ final class PocketHandoffUITests: XCTestCase {
         let marker = URL(fileURLWithPath: signal).appendingPathComponent("draft-typed")
         try Data().write(to: marker)
         waitFor("presenceLabel", label: "Stark is on Mac")
+        // The text left with Stark, so this composer lets it go.
+        let cleared = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "NOT (value CONTAINS %@)", "unsent from my pocket"),
+            object: field)
+        XCTAssertEqual(XCTWaiter().wait(for: [cleared], timeout: 15), .completed,
+                       "the phone kept the draft that left: \(field.value ?? "")")
         shot("5-mac-jacked-in-with-draft")
     }
 }

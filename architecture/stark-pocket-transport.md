@@ -51,6 +51,30 @@ checks run inside the transaction that opens the handoff
 (`PresenceManager.request_jack_by`). Everything after is the existing two phase jack:
 the source plays `ready_out`, the target `ack_in`, the deadlines and revert rules hold.
 
+## Draft continuity
+
+Unsent composer text follows Stark. The source sends it in `ready_out {draft}`; the commit
+transaction stores it in the handoff row with `draft_state = pending`. Delivery and receipt:
+
+- Only the jack's target, after `ack_in`, at the generation the jack granted and while it
+  still holds presence, can read the draft: in its `ack_in` result and in its own
+  `snapshot.draft {handoff_id, text}`. The source, other surfaces, and a target that has
+  since lost presence see nothing.
+- The target restores the text into an empty composer and never sends it. When the
+  composer already holds different text, the user chooses Use It or Keep Mine; nothing is
+  overwritten silently. Either way the target then sends `draft_ack {handoff_id,
+  presence_gen}`, fenced like `ack_in`, which sets `draft_state = delivered`. A confirmed
+  draft is never offered again; `draft_ack` replays are idempotent.
+- Until receipt the row redelivers on every snapshot, so a dropped connection, an app
+  restart, or a SIGKILLed runtime between `ack_in` and `draft_ack` loses nothing. The client
+  resends an unanswered `draft_ack` after reconnecting and drops it on `stale_presence`.
+- The source clears its composer only once Stark has left with exactly that text (the jack
+  resolved away from it); a revert keeps the text where it was typed.
+- A draft no target confirmed (the jack reverted, or the target moved on first) stays in
+  the journal; `stark.py drafts` lists it for the operator.
+
+`draft_ack` is the one command this adds to the closed table.
+
 ## Threat model
 
 | Adversary | Can | Cannot, because |

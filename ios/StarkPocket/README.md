@@ -60,10 +60,14 @@ uv run --with qrcode==8.0 python stark.py --db "$DB" pair --name "My iPhone"
    network access. Expect "Stark is on Mac".
 3. Jack In, talk, Jack Out: tap Jack In (StarkMac dims), send a message, see the reply on
    the phone, tap Jack Out (StarkMac active, same conversation).
-4. Draft on Jack In Here: Jack In on the phone, type text without sending, then press
-   Jack In Here in StarkMac's menu. Expect Stark on the Mac and
-   `sqlite3 "$DB" "SELECT draft FROM handoffs ORDER BY created DESC LIMIT 1"` to print
-   the text.
+4. Drafts both ways: type text in StarkMac without sending, then Jack In on the phone;
+   expect the text in the phone's composer, unsent, and StarkMac's composer empty. Type
+   text on the phone without sending, then press Jack In Here in StarkMac's menu; expect
+   it in StarkMac's composer, unsent, and the chat card not taking the keyboard. Type
+   different text in StarkMac first and repeat: expect a Use It / Keep Mine choice, never
+   an overwrite. `sqlite3 "$DB" "SELECT draft, draft_state FROM handoffs"` shows each
+   carried draft `delivered`; `uv run python stark.py --db "$DB" drafts` lists any that
+   are not.
 5. Re-pair refused: while paired, open a fresh `stark.py pair` link on the phone. Expect
    "already paired"; the phone stays connected.
 6. Unpair while holding: Jack In, then Settings, Unpair This iPhone. Expect "Sending Stark
