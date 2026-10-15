@@ -5,9 +5,9 @@ from __future__ import annotations
 
 import ast
 import os
-import stat
 import socket
 import sqlite3
+import stat
 import struct
 import sys
 import threading

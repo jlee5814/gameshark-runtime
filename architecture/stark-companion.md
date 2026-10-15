@@ -50,7 +50,7 @@ context for the next model call; assistant rows still commit only through the jo
 
 ## Surface gateway (`gameshark/gateway.py`, `gameshark/surface_api.py`)
 
-`stark.py run` serves surfaces on `stark.sock` beside the database. Socket threads only
+`stark.py run` serves surfaces on `gateway/stark.sock` beside the database. Socket threads only
 accept, authenticate, and frame; they never touch SQLite. They queue requests and set the
 supervisor's wake event, and the coordinator thread (the one that owns the connection)
 answers them between lease renewal, controls, polls, and inference pumps. Provider calls
@@ -59,7 +59,11 @@ gated reply the worst ping measured 0.3 ms.
 
 Authentication, three layers:
 
-1. The socket sits in a 0700 directory with mode 0600.
+1. The socket has mode 0600 in a private directory: created 0700 when missing, refused
+   when it exists open to others. The runtime never chmods a directory it did not create.
+   Socket and token paths follow one rule in Python and Swift: `--socket` or
+   `STARK_SOCKET`, else `gateway/stark.sock` beside the database; `--token` or
+   `STARK_TOKEN`, else `gateway.token` beside the socket.
 2. The kernel's peer uid (`LOCAL_PEERCRED`, `SO_PEERCRED` on Linux) must equal ours.
 3. The client answers a fresh 32 byte nonce with
    `HMAC_SHA256(token, "stark-gateway" 0 nonce 0 surface 0 proto)`, where the token is

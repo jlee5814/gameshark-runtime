@@ -34,7 +34,7 @@ class Demo:
         self.args = args
         self.dir: Path = args.dir
         self.db = self.dir / "runtime.db"
-        self.sock = self.dir / "stark.sock"
+        self.sock = self.dir / "gateway" / "stark.sock"   # the daemon default
         self.shots = self.dir / "shots"
         self.daemon: subprocess.Popen | None = None
         self.app: subprocess.Popen | None = None
@@ -75,7 +75,7 @@ class Demo:
 
     # ------------------------------------------------------------------ observation
     def client(self) -> GatewayClient:
-        return GatewayClient(self.sock, bytes.fromhex((self.dir / "gateway.token").read_text()),
+        return GatewayClient(self.sock, bytes.fromhex((self.sock.parent / "gateway.token").read_text()),
                              surface="mac")
 
     def rows(self) -> list[tuple[int, str, str]]:
@@ -249,7 +249,6 @@ class Demo:
         if self.dir.exists() and self.args.fresh:
             shutil.rmtree(self.dir)
         self.dir.mkdir(parents=True, exist_ok=True)
-        os.chmod(self.dir, 0o700)
         self.shots.mkdir(exist_ok=True)
         (self.shots / "states.log").unlink(missing_ok=True)
         (self.dir / "github.json").write_text("{}")

@@ -92,7 +92,7 @@ def sign(token: bytes, nonce: bytes, surface: str, proto: int) -> str:
 
 def load_or_create_token(path: Path) -> bytes:
     """The shared secret, created once with mode 0600. Refuse a file others can read."""
-    path.parent.mkdir(parents=True, exist_ok=True)
+    _mkdir_private(path.parent)
     try:
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     except FileExistsError:
@@ -118,14 +118,26 @@ def peer_uid(sock: socket.socket) -> int | None:
     return None
 
 
+def _mkdir_private(d: Path) -> None:
+    """Create d with mode 0700 when missing; leave an existing directory as it is."""
+    if not d.exists():
+        d.parent.mkdir(parents=True, exist_ok=True)
+        d.mkdir(mode=0o700, exist_ok=True)
+
+
 def _prepare_dir(path: Path) -> None:
+    """Use a private socket directory: create it 0700, or accept an existing one only when
+    it already is. Never chmod a directory the caller owns for other reasons."""
     d = path.parent
-    d.mkdir(parents=True, exist_ok=True)
-    st = d.stat()
+    _mkdir_private(d)
+    st = d.lstat()
+    if not stat.S_ISDIR(st.st_mode):
+        raise NotADirectoryError(f"{d} is not a directory")
     if st.st_uid != os.getuid():
         raise PermissionError(f"{d} is not owned by this user")
     if st.st_mode & 0o077:
-        os.chmod(d, 0o700)
+        raise PermissionError(f"{d} is open to other users; give the socket a private "
+                              "directory (chmod 700) or a path in a new one")
     if path.exists() or path.is_symlink():
         if not stat.S_ISSOCK(path.lstat().st_mode):
             raise FileExistsError(f"{path} exists and is not a socket")

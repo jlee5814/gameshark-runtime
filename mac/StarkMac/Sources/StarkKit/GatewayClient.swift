@@ -81,14 +81,15 @@ public struct ClientConfig: Sendable {
         self.backoff = backoff
     }
 
-    /// Defaults beside the runtime database: ~/.gameshark/stark.sock and gateway.token, or
-    /// STARK_SOCKET and STARK_TOKEN when set.
+    /// Same rule as stark.py: socket from STARK_SOCKET, else ~/.gameshark/gateway/stark.sock
+    /// (the private directory beside the default database); token from STARK_TOKEN, else
+    /// gateway.token beside the socket.
     public static func fromEnvironment(_ env: [String: String] = ProcessInfo.processInfo.environment)
         -> ClientConfig
     {
         let home = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".gameshark")
-        let sock = env["STARK_SOCKET"] ?? home.appendingPathComponent("stark.sock").path
+        let sock = env["STARK_SOCKET"] ?? home.appendingPathComponent("gateway/stark.sock").path
         let token = env["STARK_TOKEN"].map { URL(fileURLWithPath: $0) }
             ?? URL(fileURLWithPath: sock).deletingLastPathComponent()
             .appendingPathComponent("gateway.token")
@@ -123,7 +124,12 @@ public final class GatewayClient: @unchecked Sendable {
     private var inFlight: Set<String> = []
     private var haveSnapshot = false
     private var haveSync = false
-    private var readied: Set<String> = []
+    /// Handoff phases (id + state) requested on this connection and awaiting a result.
+    /// Cleared on reconnect, so a request lost with its connection is sent again.
+    private var handoffSent: Set<String> = []
+    /// Handoff phases the runtime answered. Kept across reconnects: the runtime already
+    /// applied them, so they are never resent.
+    private var handoffDone: Set<String> = []
     private var running = false
     private var draft: @Sendable () -> String? = { nil }
 
@@ -202,6 +208,7 @@ public final class GatewayClient: @unchecked Sendable {
         reader = FrameReader()
         pending = [:]
         inFlight = []
+        handoffSent = []
         haveSnapshot = false
         haveSync = false
         st.connection = .authenticating
@@ -362,8 +369,10 @@ public final class GatewayClient: @unchecked Sendable {
             let r = try Wire.decode(Result<SendResult>.self, from: body).data
             inFlight.remove(msgId)
             setStatus(msgId, .sent(seq: r.seq))
-        case .readyOut, .ackIn:
-            break
+        case .readyOut(let hid):
+            settle(hid + "preparing")
+        case .ackIn(let hid):
+            settle(hid + "committed")
         }
         if haveSnapshot && haveSync && st.connection != .live {
             st.connection = .live
@@ -381,6 +390,14 @@ public final class GatewayClient: @unchecked Sendable {
             if code == "stale_presence" { request("snapshot", .snapshot) }
         case .readyOut(let hid), .ackIn(let hid):
             st.lastError = "handoff \(hid): \(code)"
+            var key = hid + "committed"
+            if case .readyOut = kind { key = hid + "preparing" }
+            // A fenced refusal is final; anything else may succeed on the next attempt.
+            if code == "stale_presence" || code == "handoff_conflict" {
+                settle(key)
+            } else {
+                handoffSent.remove(key)
+            }
         case .snapshot, .sync:
             st.lastError = "\(code): \(message ?? "")"
         }
@@ -411,17 +428,22 @@ public final class GatewayClient: @unchecked Sendable {
     }
 
     /// Play this surface's part in an open jack: confirm exit as source, arrival as target.
+    private func settle(_ key: String) {
+        handoffSent.remove(key)
+        handoffDone.insert(key)
+    }
+
     private func followHandoff() {
-        guard let h = st.handoff, let p = st.presence, !readied.contains(h.id + h.state) else {
-            return
-        }
+        guard let h = st.handoff, let p = st.presence else { return }
+        let key = h.id + h.state
+        guard !handoffSent.contains(key), !handoffDone.contains(key) else { return }
         if h.state == "preparing" && h.from == config.surface && p.surface == config.surface {
-            readied.insert(h.id + h.state)
+            handoffSent.insert(key)
             var fields: [String: Any] = ["handoff_id": h.id, "presence_gen": p.generation]
             if let d = draft(), !d.isEmpty { fields["draft"] = d }
             request("ready_out", .readyOut(h.id), fields)
         } else if h.state == "committed" && h.to == config.surface && p.surface == config.surface {
-            readied.insert(h.id + h.state)
+            handoffSent.insert(key)
             request("ack_in", .ackIn(h.id), ["handoff_id": h.id, "presence_gen": p.generation])
         }
     }

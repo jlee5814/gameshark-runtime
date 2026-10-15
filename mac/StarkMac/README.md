@@ -12,7 +12,7 @@ Requires macOS 14 or later and Swift 6 (Xcode or Command Line Tools).
 
 ```sh
 cd prototype
-uv run python stark.py run                       # serves ~/.gameshark/stark.sock
+uv run python stark.py run                       # serves ~/.gameshark/gateway/stark.sock
 ../mac/scripts/build-app.sh                      # mac/build/StarkMac.app
 open ../mac/build/StarkMac.app
 ```
@@ -26,8 +26,8 @@ UserDefaults (`dev.gameshark.starkmac`), never in the runtime database.
 
 | Variable | Effect |
 |---|---|
-| `STARK_SOCKET` | gateway socket (default `~/.gameshark/stark.sock`) |
-| `STARK_TOKEN` | token file (default `gateway.token` beside the socket) |
+| `STARK_SOCKET` | gateway socket (default `~/.gameshark/gateway/stark.sock`; `stark.py run` honors it too) |
+| `STARK_TOKEN` | token file (default `gateway.token` beside the socket; `stark.py run --token` or the same variable) |
 | `STARK_CLICK_THROUGH=1` | start with click through on |
 | `STARK_SNAPSHOT_DIR` | write a PNG and a `states.log` line whenever what Stark shows changes |
 | `STARK_DEMO_CONTROL=1` | accept `starkctl` commands (demo only) |
@@ -119,7 +119,9 @@ real drag and verifies it.
 
 - **Gray and disconnected:** the runtime is not serving. Check `stark.py run` logs for
   `gateway listening`; a socket path over 103 bytes disables the gateway.
-- **`token: tooOpen`:** `chmod 600 ~/.gameshark/gateway.token`.
+- **`token: tooOpen`:** `chmod 600 ~/.gameshark/gateway/gateway.token`.
+- **`gateway disabled: ... open to other users`:** the socket directory must be private;
+  point `--socket` at a path inside a new directory, or `chmod 700` a directory you own.
 - **Manifest fails to link under Command Line Tools:** some installs keep a stale Swift
   5.10 `PackageDescription` private interface. `mac/scripts/swiftpm.sh` detects it and
   applies a build local VFS overlay; plain `swift build` will fail on such machines.

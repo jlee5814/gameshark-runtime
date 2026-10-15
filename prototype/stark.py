@@ -14,8 +14,8 @@ One prompt assigns a responsibility; the daemon keeps it across restarts.
 State lives in ~/.gameshark/runtime.db (override with --db or GAMESHARK_DB). The GitHub
 token comes from GITHUB_TOKEN, else `gh auth token`. Every GitHub call is a GET.
 
-`run` also serves the surface gateway (StarkMac) on a Unix socket next to the database,
-stark.sock, authenticated by gateway.token. Replies come from a deterministic local fake
+`run` also serves the surface gateway (StarkMac) on a Unix socket in a private directory
+beside the database, gateway/stark.sock, authenticated by gateway.token beside it. Replies come from a deterministic local fake
 model unless --inference-url names an OpenAI compatible server such as SGLang.
 """
 
@@ -91,12 +91,23 @@ class _LazyClient:
 HOME_SURFACE = "mac"
 
 
-def socket_path(args) -> Path:
-    return args.socket or args.db.with_name("stark.sock")
+def socket_path(args, env=os.environ) -> Path:
+    """--socket, else STARK_SOCKET, else gateway/stark.sock beside the database. StarkKit's
+    ClientConfig.fromEnvironment applies the same rule."""
+    if getattr(args, "socket", None):
+        return args.socket
+    if env.get("STARK_SOCKET"):
+        return Path(env["STARK_SOCKET"])
+    return args.db.parent / "gateway" / "stark.sock"
 
 
-def token_path(args) -> Path:
-    return args.db.with_name("gateway.token")
+def token_path(args, env=os.environ) -> Path:
+    """--token, else STARK_TOKEN, else gateway.token beside the socket."""
+    if getattr(args, "token", None):
+        return args.token
+    if env.get("STARK_TOKEN"):
+        return Path(env["STARK_TOKEN"])
+    return socket_path(args, env).parent / "gateway.token"
 
 
 def make_provider(args):
@@ -269,7 +280,7 @@ def cmd_ack(args) -> int:
     return 0
 
 
-def main(argv: list[str] | None = None) -> int:
+def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(prog="stark", description=__doc__.split("\n")[0])
     ap.add_argument("--db", type=Path,
                     default=Path(os.environ.get("GAMESHARK_DB", DEFAULT_DB)))
@@ -289,7 +300,11 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("--no-gateway", dest="gateway", action="store_false",
                    help="do not serve surfaces on the Unix socket")
     r.add_argument("--socket", type=Path, default=None,
-                   help="gateway socket path (default: stark.sock beside the database)")
+                   help="gateway socket path (default: STARK_SOCKET, else "
+                        "gateway/stark.sock beside the database)")
+    r.add_argument("--token", type=Path, default=None,
+                   help="gateway token file (default: STARK_TOKEN, else gateway.token "
+                        "beside the socket)")
     r.add_argument("--fake-delay", type=float, default=2.0,
                    help="seconds the local fake model takes per reply")
     r.add_argument("--inference-url", default=os.environ.get("GAMESHARK_INFERENCE_URL"),
@@ -304,8 +319,11 @@ def main(argv: list[str] | None = None) -> int:
     a = sub.add_parser("ack")
     a.add_argument("ids", nargs="*")
     a.add_argument("--all", action="store_true")
+    return ap
 
-    args = ap.parse_args(argv)
+
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
     args.db.parent.mkdir(parents=True, exist_ok=True)
     if args.cmd in ("watch", "unwatch", "resume", "jack"):
         return cmd_control(args, args.cmd)

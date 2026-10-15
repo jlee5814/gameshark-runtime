@@ -42,8 +42,7 @@ final class IntegrationTests {
         p.standardError = p.standardOutput
         try p.run()
         daemon = p
-        let sock = dir.appendingPathComponent("stark.sock").path
-        #expect(eventually(30) { FileManager.default.fileExists(atPath: sock) })
+        #expect(eventually(30) { FileManager.default.fileExists(atPath: sockPath) })
     }
 
     func stopDaemon() {
@@ -52,11 +51,14 @@ final class IntegrationTests {
         daemon = nil
     }
 
+    /// The daemon's default: gateway/stark.sock beside the database.
+    var sockPath: String { dir.appendingPathComponent("gateway/stark.sock").path }
+
     func client() -> GatewayClient {
-        GatewayClient(config: ClientConfig(
-            socketPath: dir.appendingPathComponent("stark.sock").path,
-            tokenURL: dir.appendingPathComponent("gateway.token"),
-            backoff: Backoff(base: 0.05, cap: 0.5)))
+        // Told only the socket, the client finds the token beside it, as stark.py writes it.
+        var cfg = ClientConfig.fromEnvironment(["STARK_SOCKET": sockPath])
+        cfg.backoff = Backoff(base: 0.05, cap: 0.5)
+        return GatewayClient(config: cfg)
     }
 
     func rows(_ c: GatewayClient, role: String) -> [Row] { c.state.rows.filter { $0.role == role } }
