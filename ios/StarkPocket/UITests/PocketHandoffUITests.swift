@@ -3,10 +3,12 @@ import XCTest
 /// Drives the real app in the simulator against a real runtime on this Mac. The runner
 /// passes the pairing link as TEST_RUNNER_STARK_PAIR_LINK (see ios/scripts/pocket-demo.sh);
 /// without it the test skips.
+@MainActor
 final class PocketHandoffUITests: XCTestCase {
     var app: XCUIApplication!
 
-    override func setUpWithError() throws {
+    /// Launch inside the test, not setUp: XCTestCase.setUp is nonisolated on older SDKs.
+    func launch() throws {
         continueAfterFailure = false
         guard let link = ProcessInfo.processInfo.environment["STARK_PAIR_LINK"] else {
             throw XCTSkip("needs a live runtime; run ios/scripts/pocket-demo.sh")
@@ -36,7 +38,8 @@ final class PocketHandoffUITests: XCTestCase {
         XCTAssertTrue(e.waitForExistence(timeout: timeout), "never saw \(text)")
     }
 
-    func testJackInTalkAndJackOut() {
+    func testJackInTalkAndJackOut() throws {
+        try launch()
         // 1, 2: Stark is on the Mac; the phone paired and sees him there, read only.
         waitFor("presenceLabel", label: "Stark is on Mac")
         shot("1-paired-stark-on-mac")
@@ -63,6 +66,7 @@ final class PocketHandoffUITests: XCTestCase {
 /// Faults on the simulator path, coordinated with pocket_acceptance.py through what the
 /// runtime records: the script restarts the runtime once this phone holds presence and
 /// has sent "restart now", then revokes the device once "after restart" is answered.
+@MainActor
 final class PocketFaultUITests: XCTestCase {
     func testRuntimeRestartThenRevocation() throws {
         guard let link = ProcessInfo.processInfo.environment["STARK_PAIR_LINK"] else {
