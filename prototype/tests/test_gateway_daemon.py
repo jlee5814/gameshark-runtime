@@ -33,17 +33,18 @@ def env(tmp_path):
     fixture = tmp_path / "github.json"
     write(fixture)
     sock_dir = short_dir()
-    db = sock_dir / "runtime.db"      # token sits beside it; the socket path stays short
+    db = sock_dir / "runtime.db"      # the socket path stays short
     e = {**os.environ, "GAMESHARK_TRANSPORT": "tests.file_transport:make",
          "GAMESHARK_FIXTURE": str(fixture), "PYTHONPATH": str(ROOT)}
-    e.pop("GITHUB_TOKEN", None)
-    return {"env": e, "db": db, "sock": sock_dir / "stark.sock",
-            "token": sock_dir / "gateway.token"}
+    for var in ("GITHUB_TOKEN", "STARK_SOCKET", "STARK_TOKEN"):
+        e.pop(var, None)
+    return {"env": e, "db": db, "sock": sock_dir / "gateway" / "stark.sock",
+            "token": sock_dir / "gateway" / "gateway.token"}
 
 
-def daemon(env, delay: float = 0.2) -> subprocess.Popen:
+def daemon(env, delay: float = 0.2, *extra: str) -> subprocess.Popen:
     proc = subprocess.Popen([sys.executable, str(ROOT / "stark.py"), "--db", str(env["db"]),
-                             "--interval", "0.5", "run", "--fake-delay", str(delay)],
+                             "--interval", "0.5", "run", "--fake-delay", str(delay), *extra],
                             env=env["env"], cwd=ROOT, stdout=subprocess.PIPE,
                             stderr=subprocess.STDOUT, text=True)
     for line in proc.stdout:
@@ -129,3 +130,19 @@ def test_cli_jack_makes_old_generation_stale_and_reply_still_lands(env):
         assert [r[2] for r in rows(env) if r[1] == "user"] == ["busy"]
     finally:
         assert stop(d) == 0
+
+
+def test_custom_socket_carries_its_token_and_leaves_the_db_dir_alone(env):
+    os.chmod(env["db"].parent, 0o755)
+    custom = short_dir() / "custom.sock"
+    proc = daemon(env, 0.2, "--socket", str(custom))
+    try:
+        # A client told only the socket finds the token beside it, as StarkKit does.
+        c = GatewayClient(custom, bytes.fromhex((custom.parent / "gateway.token").read_text()))
+        assert c.call("ping")["pong"]
+        c.close()
+        assert not env["token"].exists() and not env["sock"].exists()
+        assert env["db"].parent.stat().st_mode & 0o777 == 0o755
+    finally:
+        proc.terminate()
+        proc.wait(15)

@@ -5,10 +5,12 @@ from __future__ import annotations
 
 import ast
 import os
+import stat
 import socket
 import sqlite3
 import struct
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -48,6 +50,19 @@ def rows(db: Path) -> list[tuple]:
 
 def gen(c: GatewayClient) -> int:
     return c.call("snapshot")["presence"]["generation"]
+
+
+def reply(c: GatewayClient) -> dict:
+    """The next non event frame. The runtime may push events at any time after auth."""
+    while (msg := c.read()).get("type") == "event":
+        c.events.append(msg)
+    return msg
+
+
+def push_event(rt) -> None:
+    """Queue an unsolicited event ahead of whatever the test sends next."""
+    for sess in rt.server.live_sessions():
+        sess.send({"type": "event", "kind": "activity", "data": {"working": False}})
 
 
 def wait_for(pred, timeout: float = 10.0):
@@ -128,17 +143,42 @@ def test_request_before_hello_ends_session(rt):
 
 def test_oversize_frame_ends_session(rt):
     c = rt.client()
+    push_event(rt)
     c.sock.sendall(struct.pack(">I", gw.MAX_FRAME + 1))
-    msg = c.read()
-    assert msg["code"] == "bad_frame"
+    assert reply(c)["code"] == "bad_frame"
     with pytest.raises(ConnectionError):
-        c.read()
+        reply(c)
 
 
 def test_malformed_json_ends_session(rt):
     c = rt.client()
+    push_event(rt)
     c.sock.sendall(struct.pack(">I", 5) + b"{nope")
-    assert c.read()["code"] == "bad_frame"
+    assert reply(c)["code"] == "bad_frame"
+
+
+# ---------------------------------------------------------------------- socket directory
+def test_open_existing_socket_dir_is_refused_and_left_alone():
+    d = short_dir()
+    os.chmod(d, 0o755)                                    # a shared, caller owned directory
+    server = gw.GatewayServer(d / "stark.sock", KAT_TOKEN, {}, threading.Event())
+    with pytest.raises(PermissionError):
+        server.start()
+    assert stat.S_IMODE(d.stat().st_mode) == 0o755
+    assert not (d / "stark.sock").exists()
+
+
+def test_missing_socket_dir_is_created_private_without_touching_its_parent():
+    base = short_dir()
+    os.chmod(base, 0o755)
+    server = gw.GatewayServer(base / "gateway" / "stark.sock", KAT_TOKEN, {},
+                              threading.Event())
+    server.start()
+    try:
+        assert stat.S_IMODE((base / "gateway").stat().st_mode) == 0o700
+        assert stat.S_IMODE(base.stat().st_mode) == 0o755
+    finally:
+        server.close()
 
 
 # ---------------------------------------------------------------------- command set
@@ -257,6 +297,28 @@ def test_ready_out_from_a_non_source_is_rejected(rt):
             ghost.call("ready_out", handoff_id="h2", draft=None, presence_gen=1)
         assert e.value.code == "stale_presence"
         assert ghost.call("snapshot")["handoff"]["state"] == "preparing"
+
+
+def test_unconfirmed_ready_out_retried_after_reconnect_commits_once(rt):
+    with rt.client(surface="phone") as phone:            # the live target stays connected
+        mac = rt.client()
+        g = gen(mac)
+        jack(rt.db, "phone", "h3")
+        mac.wait_event("presence", lambda d: (d["handoff"] or {}).get("state") == "preparing")
+        # The request leaves, the connection drops before its result arrives.
+        mac.write({"type": "ready_out", "id": 99, "handoff_id": "h3", "draft": "kept",
+                   "presence_gen": g})
+        mac.close()
+        with rt.client() as again:
+            out = again.call("ready_out", handoff_id="h3", draft="kept", presence_gen=g)
+            assert (out["state"], out["to_gen"]) == ("committed", g + 1)
+            p = again.call("snapshot")["presence"]
+            assert (p["surface"], p["generation"]) == ("phone", g + 1)
+        # The target's ack is unconfirmed too; its retry answers acked with no new commit.
+        phone.write({"type": "ack_in", "id": 98, "handoff_id": "h3", "presence_gen": g + 1})
+        out = phone.call("ack_in", handoff_id="h3", presence_gen=g + 1)
+        assert (out["state"], out["draft"]) == ("acked", "kept")
+        assert phone.call("snapshot")["presence"]["generation"] == g + 1
 
 
 # ---------------------------------------------------------------------- reconnect and resync

@@ -147,3 +147,28 @@ import Testing
         #expect(AvatarState.derive(state(), listening: false, viewedSeq: -1) == .idle)
     }
 }
+
+/// The same table as prototype/tests/test_stark_paths.py: socket from STARK_SOCKET, else
+/// gateway/stark.sock beside the default database; token from STARK_TOKEN, else
+/// gateway.token beside the socket.
+@Suite struct ConfigPathTests {
+    let home = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".gameshark")
+
+    @Test func defaultsToTheDedicatedGatewayDirectory() {
+        let c = ClientConfig.fromEnvironment([:])
+        #expect(c.socketPath == home.appendingPathComponent("gateway/stark.sock").path)
+        #expect(c.tokenURL.path == home.appendingPathComponent("gateway/gateway.token").path)
+    }
+
+    @Test func customSocketCarriesItsToken() {
+        let c = ClientConfig.fromEnvironment(["STARK_SOCKET": "/e/stark.sock"])
+        #expect(c.socketPath == "/e/stark.sock")
+        #expect(c.tokenURL.path == "/e/gateway.token")
+    }
+
+    @Test func tokenOverrideWins() {
+        let c = ClientConfig.fromEnvironment(["STARK_TOKEN": "/t/secret"])
+        #expect(c.socketPath == home.appendingPathComponent("gateway/stark.sock").path)
+        #expect(c.tokenURL.path == "/t/secret")
+    }
+}

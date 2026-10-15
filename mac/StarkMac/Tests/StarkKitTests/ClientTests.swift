@@ -15,6 +15,15 @@ final class FakeRuntime: @unchecked Sendable {
     var sends: [String] = []
     /// When set, the next send lands but its reply is lost and the connection drops.
     var dropAfterNextSend = false
+    /// The open jack the snapshot reports, in wire form.
+    var handoff: [String: Any]?
+    /// Every ready_out and ack_in received, in order.
+    var handoffCalls: [String] = []
+    /// When set, the next ready_out or ack_in is lost on the way: the connection drops
+    /// before the runtime applies it.
+    var dropNextHandoff = false
+    /// When false, a confirmed handoff request leaves the snapshot as it was (a lagging view).
+    var applyHandoffs = true
 
     func connect() -> FakeTransport {
         let t = FakeTransport(runtime: self)
@@ -37,6 +46,7 @@ final class FakeRuntime: @unchecked Sendable {
                 "server": "fake", "identity": ["agent_id": "stark", "uuid": uuid],
                 "you": "mac",
                 "presence": ["surface": surface, "home": "mac", "generation": generation],
+                "handoff": handoff.map { $0 as Any } ?? NSNull(),
                 "responsibilities": [], "conversation": ["id": Wire.conversation, "head_seq": rows.count - 1],
                 "activity": ["working": false]]])
         case "sync":
@@ -64,6 +74,30 @@ final class FakeRuntime: @unchecked Sendable {
                 return
             }
             t.push(["type": "result", "id": id, "data": ["seq": seq, "replayed": false]])
+        case "ready_out", "ack_in":
+            handoffCalls.append(type)
+            if dropNextHandoff {
+                dropNextHandoff = false
+                t.hangUp()
+                return
+            }
+            guard var h = handoff else {
+                t.push(["type": "error", "id": id, "code": "invalid", "message": "no handoff"])
+                return
+            }
+            if applyHandoffs {
+                if type == "ready_out" {
+                    generation += 1
+                    surface = h["to"] as! String
+                    h["state"] = "committed"
+                    h["to_gen"] = generation
+                } else {
+                    h["state"] = "acked"
+                }
+                handoff = h
+            }
+            t.push(["type": "result", "id": id, "data": [
+                "handoff_id": h["id"]!, "state": h["state"]!, "to_gen": h["to_gen"] ?? NSNull()]])
         default:
             t.push(["type": "error", "id": id, "code": "unknown_command", "message": type])
         }
@@ -207,6 +241,53 @@ func eventually(_ timeout: TimeInterval = 5, _ cond: () -> Bool) -> Bool {
         }
         c.reconnectNow()
         #expect(eventually { c.state.identity?.uuid == "uuid-2" && c.state.rows.map(\.content) == ["fresh"] })
+    }
+
+    static var preparing: [String: Any] {
+        ["id": "h1", "from": "mac", "to": "phone", "state": "preparing", "from_gen": 1]
+    }
+
+    @Test func unconfirmedReadyOutIsResentAfterReconnect() throws {
+        let rt = FakeRuntime()
+        rt.handoff = Self.preparing
+        rt.dropNextHandoff = true
+        let c = try client(rt)
+        c.start()
+        defer { c.stop() }
+        #expect(eventually { rt.lock.withLock { rt.handoffCalls == ["ready_out", "ready_out"] } })
+        #expect(eventually { rt.lock.withLock { rt.generation == 2 && rt.surface == "phone" } })
+        rt.lock.withLock { #expect(rt.connections.count == 2) }
+    }
+
+    @Test func confirmedReadyOutIsNotResentAfterReconnect() throws {
+        let rt = FakeRuntime()
+        rt.handoff = Self.preparing
+        rt.applyHandoffs = false                 // the snapshot keeps reporting preparing
+        let c = try client(rt)
+        c.start()
+        defer { c.stop() }
+        #expect(eventually { rt.lock.withLock { rt.handoffCalls == ["ready_out"] } })
+        c.reconnectNow()
+        #expect(eventually { c.state.connection == .live && rt.lock.withLock { rt.connections.count == 2 } })
+        Thread.sleep(forTimeInterval: 0.2)
+        rt.lock.withLock { #expect(rt.handoffCalls == ["ready_out"]) }
+    }
+
+    @Test func unconfirmedAckInIsResentAfterReconnect() throws {
+        let rt = FakeRuntime()
+        rt.generation = 2
+        rt.handoff = ["id": "h1", "from": "phone", "to": "mac", "state": "committed",
+                      "from_gen": 1, "to_gen": 2]
+        rt.dropNextHandoff = true
+        let c = try client(rt)
+        c.start()
+        defer { c.stop() }
+        #expect(eventually { rt.lock.withLock { rt.handoffCalls == ["ack_in", "ack_in"] } })
+        #expect(eventually { rt.lock.withLock { rt.handoff?["state"] as? String == "acked" } })
+        c.reconnectNow()
+        #expect(eventually { c.state.connection == .live && rt.lock.withLock { rt.connections.count == 3 } })
+        Thread.sleep(forTimeInterval: 0.2)
+        rt.lock.withLock { #expect(rt.handoffCalls == ["ack_in", "ack_in"]) }
     }
 
     @Test func runtimeDownKeepsRetryingThenRecovers() throws {

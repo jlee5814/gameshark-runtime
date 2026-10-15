@@ -59,6 +59,7 @@ class Runtime:
         self.error: BaseException | None = None
         self.uuid = ""
         self.chat: StarkChatAdapter | None = None
+        self.server: GatewayServer | None = None
         self.thread = threading.Thread(target=self._run, name="coordinator", daemon=True)
 
     def _run(self) -> None:
@@ -78,6 +79,7 @@ class Runtime:
             server = GatewayServer(self.sock, self.token,
                                    {"agent_id": AGENT, "uuid": sup.identity.uuid}, sup.wake)
             server.start()
+            self.server = server
             api = SurfaceAPI(sup, server, self.chat)
             self.ready.set()
             self.code = run_forever(sup, self.stop, 0.2, log=lambda _m: None,
