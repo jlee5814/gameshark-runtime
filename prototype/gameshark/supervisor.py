@@ -79,6 +79,7 @@ class AgentSupervisor:
         self.tracker: ModelTracker | None = None
         self.inference_router: InferenceRouter | None = None
         self.executor: InferenceExecutor | None = None
+        self.drain_cancelled = 0  # calls the drain deadline cancelled; their events wait
 
     # ------------------------------------------------------------------ crash hook
     def _maybe_crash(self, label: str) -> None:
@@ -227,7 +228,8 @@ class AgentSupervisor:
             on_done=lambda r: router.finish(event_id, lambda: task.on_done(r)),
             on_error=lambda e: self._task_failed(event_id, task, e))
         try:
-            done = self.executor.submit(wrapped, on_abort=lambda: router.release(event_id))
+            done = self.executor.submit(wrapped, on_abort=lambda: router.release(
+                event_id, time.monotonic() + self._inference_cfg["retry_s"]))
         except Draining:
             return Deferred(math.inf)        # the next owner replays it
         except ProviderError as exc:
@@ -252,6 +254,7 @@ class AgentSupervisor:
     def _retry_delay(self, exc: ProviderError) -> float | None:
         """Seconds until the owning event retries, or None when the error is its outcome."""
         if isinstance(exc, ProviderCancelled) and self.lifecycle.token.cancelled:
+            self.drain_cancelled += 1
             return math.inf                  # drain or ownership loss: the successor replays
         if not exc.retryable:
             return None
@@ -354,8 +357,9 @@ class AgentSupervisor:
         if not self.started:
             return
         if self.executor is not None:
-            self.abandon_inference(write=True)
-            self.executor.close()
+            # A lost owner writes nothing more; the successor's recovery settles the rest.
+            self.abandon_inference(write=self.lifecycle.phase is not Phase.LOST)
+            self.executor.close(timeout_s=0.2)
             assert self.tracker is not None
             self.tracker.close()
         self.registry.teardown_all()

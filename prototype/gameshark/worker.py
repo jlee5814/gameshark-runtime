@@ -8,6 +8,11 @@ holds no durable truth of its own, so killing it at any instruction loses nothin
 Operator requests (watch, unwatch, resume) arrive through `control_requests`, a table any
 process may append to without a lease. Only the lease holder applies them, so a CLI never
 races the daemon for ownership.
+
+With inference enabled, this thread is the coordinator: it pumps finished executor work
+(commit, continuation, ack) between controls and polls, and wakes as soon as a completion
+arrives. Provider calls run on the executor, so a slow model never delays a renewal, a
+control, or a poll.
 """
 
 from __future__ import annotations
@@ -117,6 +122,50 @@ def next_due(report: dict) -> float | None:
 
 EXIT_LOST = 4
 EXIT_DRAIN_CANCELLED = 5
+WAKE_SLICE_S = 0.25  # longest a waiting coordinator goes without checking stop
+ABORT_MARGIN_S = 0.5  # drop inference this long before the heartbeat's grace abort
+
+
+def _wait(sup: AgentSupervisor, stop: threading.Event, seconds: float) -> None:
+    """Sleep up to seconds; return early on stop or, with inference, on a completion."""
+    if sup.executor is None:
+        stop.wait(seconds)
+        return
+    end = time.monotonic() + seconds
+    while not stop.is_set() and (left := end - time.monotonic()) > 0:
+        if sup.executor.wake.wait(min(left, WAKE_SLICE_S)):
+            return
+
+
+def _drain_inference(sup: AgentSupervisor, grace_s: float, log) -> int | None:
+    """Commit calls that finish inside the drain; drop the rest before the grace abort.
+
+    Return an exit code once the drain ends, or None when no inference was in flight.
+    Calls cancelled at the deadline settle lost and leave their events pending, so the
+    successor replays them with the same call_id.
+    """
+    life, ex = sup.lifecycle, sup.executor
+    if ex is None:
+        return None
+    started = ex.in_flight
+    while ex.in_flight:
+        if life.phase is Phase.LOST:
+            return EXIT_LOST
+        try:
+            sup.pump_inference()
+        except FencedError as e:
+            log(f"lost ownership during drain: {e}")
+            return EXIT_LOST
+        if not ex.in_flight:
+            break
+        if life.deadline is not None and time.monotonic() >= life.deadline + grace_s - ABORT_MARGIN_S:
+            dropped = sup.abandon_inference(write=True)
+            log(f"drain dropped {dropped} inference calls that ignored cancellation")
+            return EXIT_DRAIN_CANCELLED
+        ex.wake.wait(0.05)
+    if started:
+        log(f"drained {started} inference calls; {sup.drain_cancelled} cancelled")
+    return EXIT_DRAIN_CANCELLED if sup.drain_cancelled else None
 
 
 def run_forever(sup: AgentSupervisor, stop: threading.Event, interval_s: float,
@@ -151,7 +200,10 @@ def run_forever(sup: AgentSupervisor, stop: threading.Event, interval_s: float,
                 sup.lease.renew(sup.owner_token, sup.generation, sup.lease_ttl_s)
                 for line in apply_controls(sup):
                     log(f"control {line}")
+                sup.pump_inference()
                 report = sup.poll()
+                sup.redeliver()
+                sup.pump_inference()
             except FencedError as e:
                 log(f"lost ownership, exiting: {e}")
                 return EXIT_LOST
@@ -172,13 +224,16 @@ def run_forever(sup: AgentSupervisor, stop: threading.Event, interval_s: float,
             now = sup.clock.now()
             wait = interval_s if due is None else max(0.0, min(due - now, interval_s))
             # Renew well inside the TTL even when nothing is due for a while.
-            stop.wait(min(max(wait, 0.05), sup.lease_ttl_s / 3))
+            _wait(sup, stop, min(max(wait, 0.05), sup.lease_ttl_s / 3))
         if stop.is_set():
             # The heartbeat records draining; wait briefly so every stop passes through it.
             end = time.monotonic() + 1.0
             while sup.lifecycle.phase is Phase.SERVING and time.monotonic() < end:
                 time.sleep(0.01)
-            if sup.lifecycle.phase is Phase.LOST:
+            drained = _drain_inference(sup, beat.grace_s, log)
+            if drained is not None:
+                code = drained
+            if sup.lifecycle.phase is Phase.LOST or code == EXIT_LOST:
                 log(f"lost ownership, exiting: {sup.lifecycle.token.reason}")
                 return EXIT_LOST
             log(f"drained; releasing generation {sup.generation}")

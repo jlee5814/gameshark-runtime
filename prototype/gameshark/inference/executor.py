@@ -112,6 +112,7 @@ class InferenceExecutor:
         self._peak = 0
         self._refused = 0
         self._ids = itertools.count(1)
+        self._closed = False
         self._tasks: dict[int, _Task] = {}  # coordinator only
         self._workers = [threading.Thread(target=self._work, name=f"inference-exec-{i}",
                                           daemon=True) for i in range(self.threads)]
@@ -267,13 +268,17 @@ class InferenceExecutor:
         return len(self._tasks)
 
     def stats(self) -> ExecutorStats:
-        return ExecutorStats(len(self._tasks), self._jobs.qsize(), self._done.qsize(),
-                             self._peak, sum(t.is_alive() for t in self._workers),
+        alive = sum(t.is_alive() for t in self._workers)
+        jobs = self._jobs.qsize()
+        if self._closed:
+            jobs = max(0, jobs - alive)  # each worker still running leaves its stop marker
+        return ExecutorStats(len(self._tasks), jobs, self._done.qsize(), self._peak, alive,
                              self._refused)
 
     def close(self, timeout_s: float = 2.0) -> int:
         """Stop the workers. Return how many are still running a provider call after
         timeout_s; they are daemon threads without a connection and cannot write."""
+        self._closed = True
         for _ in self._workers:
             self._jobs.put(None)
         per = timeout_s / max(1, len(self._workers))
