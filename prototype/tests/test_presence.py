@@ -251,3 +251,85 @@ def test_acked_replay_requires_the_target(pm):
     pm.ack_in("h1", "phone", 2)
     with pytest.raises(StalePresence):
         pm.ack_in("h1", "mac", 2)
+
+
+# ---------------------------------------------------------------------- surface jacks
+def test_surface_pulls_presence_to_itself_at_the_current_generation(pm):
+    h = pm.request_jack_by("in1", "phone", 1, "self")
+    assert (h.from_surface, h.to_surface, h.state) == ("mac", "phone", PREPARING)
+    assert pm.request_jack_by("in1", "phone", 1, "self") == h      # replay, same handoff
+    pm.ready_out("in1", "mac", 1)
+    pm.ack_in("in1", "phone", 2)
+    assert (pm.current().surface, pm.current().generation) == ("phone", 2)
+
+
+def test_surface_jack_on_a_stale_view_is_rejected(pm):
+    pm.request_jack("h1", "phone")
+    pm.ready_out("h1", "mac", 1)
+    pm.ack_in("h1", "phone", 2)
+    with pytest.raises(StalePresence):
+        pm.request_jack_by("in2", "mac", 1, "self")                # mac saw generation 1
+    assert pm.open_handoff() is None
+
+
+def test_only_the_holder_sends_stark_home(pm):
+    pm.request_jack("h1", "phone")
+    pm.ready_out("h1", "mac", 1)
+    pm.ack_in("h1", "phone", 2)
+    with pytest.raises(StalePresence):
+        pm.request_jack_by("out1", "tablet", 2, "home")            # not the holder
+    with pytest.raises(StalePresence):
+        pm.request_jack_by("out1", "phone", 1, "home")             # holder, stale gen
+    h = pm.request_jack_by("out1", "phone", 2, "home")
+    assert (h.from_surface, h.to_surface) == ("phone", "mac")
+
+
+def test_surface_jack_conflicts_and_rejects_unknown_direction(pm):
+    with pytest.raises(HandoffConflict):
+        pm.request_jack_by("in1", "mac", 1, "self")                # already holds presence
+    with pytest.raises(HandoffConflict):
+        pm.request_jack_by("home1", "mac", 1, "home")              # home holding, nowhere to go
+    pm.request_jack_by("in1", "phone", 1, "self")
+    with pytest.raises(HandoffConflict):
+        pm.request_jack_by("in2", "tablet", 1, "self")             # one open handoff
+    with pytest.raises(HandoffConflict):
+        pm.request_jack_by("in1", "tablet", 1, "self")             # id names another jack
+    with pytest.raises(ValueError):
+        pm.request_jack_by("x", "phone", 1, "sideways")
+
+
+# ---------------------------------------------------------------------- eviction
+def test_evicting_the_holder_returns_home_under_a_new_generation(pm):
+    pm.request_jack("h1", "phone")
+    pm.ready_out("h1", "mac", 1)
+    pm.ack_in("h1", "phone", 2)
+    assert pm.evict("phone") is True
+    assert (pm.current().surface, pm.current().generation) == ("mac", 3)
+    with pytest.raises(StalePresence):
+        surface_write(pm, "phone", 2)
+    assert pm.evict("phone") is False                              # idempotent
+
+
+@pytest.mark.parametrize("phase", ["preparing_to", "committed_to", "preparing_from"])
+def test_evicting_a_surface_closes_its_open_handoff(pm, phase):
+    if phase == "preparing_from":
+        pm.request_jack("h0", "phone")
+        pm.ready_out("h0", "mac", 1)
+        pm.ack_in("h0", "phone", 2)
+        pm.request_jack("h1", "mac")                               # phone -> mac preparing
+    else:
+        pm.request_jack("h1", "phone")
+        if phase == "committed_to":
+            pm.ready_out("h1", "mac", 1)
+    pm.evict("phone")
+    assert pm.open_handoff() is None
+    assert pm.handoff("h1").state in (ABORTED, REVERTED)
+    assert pm.current().surface == "mac"
+    surface_write(pm, "mac", pm.current().generation)
+
+
+def test_evicting_an_uninvolved_surface_changes_nothing(pm):
+    pm.request_jack("h1", "phone")
+    assert pm.evict("tablet") is False
+    assert pm.handoff("h1").state == PREPARING
+    assert pm.current().generation == 1

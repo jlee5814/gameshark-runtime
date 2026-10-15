@@ -27,11 +27,11 @@ final class IntegrationTests {
         try? FileManager.default.removeItem(at: dir)
     }
 
-    func startDaemon() throws {
+    func startDaemon(_ extra: [String] = []) throws {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/usr/bin/env")
         p.arguments = ["uv", "run", "python", "stark.py", "--db", dir.appendingPathComponent("runtime.db").path,
-                       "--interval", "1", "run", "--fake-delay", "0.3"]
+                       "--interval", "1", "run", "--fake-delay", "0.3"] + extra
         p.currentDirectoryURL = prototype
         var env = ProcessInfo.processInfo.environment
         env["GAMESHARK_TRANSPORT"] = "tests.file_transport:make"
@@ -98,6 +98,85 @@ final class IntegrationTests {
         #expect(eventually(10) { self.rows(c, role: "assistant").count == 2 })
         let seqs = c.state.rows.map(\.seq)
         #expect(seqs == Array(0..<seqs.count))       // contiguous, no duplicate
+        stopDaemon()
+    }
+
+    // MARK: paired device over the LAN gateway
+
+    var lanInfo: URL { dir.appendingPathComponent("gateway/lan.json") }
+
+    func lanPort() throws -> UInt16 {
+        struct Info: Decodable { var port: UInt16 }
+        return try JSONDecoder().decode(Info.self, from: Data(contentsOf: lanInfo)).port
+    }
+
+    /// `stark.py pair --json`, exactly as an operator runs it.
+    func pairingLink() throws -> PairingLink {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+        p.arguments = ["uv", "run", "python", "stark.py", "--db",
+                       dir.appendingPathComponent("runtime.db").path, "pair", "--name",
+                       "Swift Phone", "--json", "--address", "127.0.0.1"]
+        p.currentDirectoryURL = prototype
+        let out = Pipe()
+        p.standardOutput = out
+        p.standardError = FileHandle(forWritingAtPath: "/dev/null")
+        try p.run()
+        p.waitUntilExit()
+        struct Printed: Decodable { var link: String }
+        let printed = try JSONDecoder().decode(Printed.self,
+                                               from: out.fileHandleForReading.readDataToEndOfFile())
+        return try #require(PairingLink(printed.link))
+    }
+
+    @Test func pairedPhoneJacksInAndOutOverPinnedTLS() throws {
+        try Data("{}".utf8).write(to: dir.appendingPathComponent("github.json"))
+        try startDaemon(["--lan", "--lan-port", "0"])
+        #expect(eventually(30) { FileManager.default.fileExists(atPath: self.lanInfo.path) })
+        let link = try pairingLink()
+        #expect(link.port == (try lanPort()))
+
+        // A wrong pin fails the TLS handshake before any frame.
+        #expect(throws: TransportFailure.pinMismatch) {
+            try TLSTransport(host: "127.0.0.1", port: link.port, pin: Data(count: 32))
+        }
+
+        let signer = SoftwareSigner()
+        let cred = try Pairing.run(link: link, name: "Swift Phone", signer: signer)
+        #expect(cred.surface.hasPrefix("pocket-"))
+        #expect(throws: Pairing.Failure.refused("auth_failed")) {     // a link works once
+            try Pairing.run(link: link, name: "Again", signer: SoftwareSigner())
+        }
+
+        let mac = client()
+        let phone = GatewayClient(config: ClientConfig(
+            device: DeviceEndpoint(credential: cred, signer: signer),
+            backoff: Backoff(base: 0.05, cap: 0.5), clientName: "StarkKitTests"))
+        mac.start()
+        phone.start()
+        defer { mac.stop(); phone.stop() }
+        #expect(eventually(15) { mac.state.connection == .live && phone.state.connection == .live })
+        #expect(phone.state.identity?.uuid == mac.state.identity?.uuid)
+        #expect(!phone.state.isActiveSurface)
+
+        // Jack In from the phone: the Mac plays ready_out, the phone acks, both see it.
+        phone.jack(.here)
+        #expect(eventually(10) {
+            phone.state.isActiveSurface && phone.state.handoff == nil && !mac.state.isActiveSurface
+        })
+        phone.send("from my pocket")
+        #expect(eventually(10) { self.rows(mac, role: "assistant").count == 1 })
+        #expect(eventually(5) { phone.state.rows == mac.state.rows })
+
+        // Jack Out: Stark goes home; the Mac writes again under the new generation.
+        phone.jack(.home)
+        #expect(eventually(10) {
+            mac.state.isActiveSurface && mac.state.handoff == nil && !phone.state.isActiveSurface
+        })
+        mac.send("back on the Mac")
+        #expect(eventually(10) { self.rows(phone, role: "assistant").count == 2 })
+        #expect(eventually(5) { phone.state.rows == mac.state.rows })
+        #expect(rows(mac, role: "user").map(\.content) == ["from my pocket", "back on the Mac"])
         stopDaemon()
     }
 }

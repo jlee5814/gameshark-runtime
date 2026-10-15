@@ -13,9 +13,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from gameshark.devices import DeviceRegistry
 from gameshark.gateway import GatewayServer, load_or_create_token
-from gameshark.gateway_client import GatewayClient
+from gameshark.gateway_client import DeviceClient, GatewayClient
 from gameshark.inference import ProviderConfig, RouterPolicy
+from gameshark.net_gateway import LanListener, load_or_create_identity
 from gameshark.stark_chat import CompanionFakeProvider, StarkChatAdapter
 from gameshark.supervisor import AgentSupervisor
 from gameshark.surface_api import SurfaceAPI
@@ -48,7 +50,8 @@ class Gate:
 
 class Runtime:
     def __init__(self, db: Path, sock_dir: Path, gate: Gate | None = None,
-                 github=None) -> None:
+                 github=None, lan: bool = False, allow=None, limiter=None,
+                 port: int = 0) -> None:
         self.db = db
         self.sock = sock_dir / "stark.sock"
         self.token_path = sock_dir / "gateway.token"
@@ -63,6 +66,11 @@ class Runtime:
         self.server: GatewayServer | None = None
         self.github = github                 # a GitHub client: also serve the PR monitor
         self.sup: AgentSupervisor | None = None
+        self.identity = load_or_create_identity(sock_dir) if lan else None
+        self.lan: LanListener | None = None
+        self._lan_kw = {k: v for k, v in (("allow", allow), ("limiter", limiter)) if v}
+        self._port = port
+        self.logs: list[str] = []
         self.thread = threading.Thread(target=self._run, name="coordinator", daemon=True)
 
     def _run(self) -> None:
@@ -86,11 +94,17 @@ class Runtime:
             self.uuid = sup.identity.uuid
             server = GatewayServer(self.sock, self.token,
                                    {"agent_id": AGENT, "uuid": sup.identity.uuid}, sup.wake)
+            devices = None
+            if self.identity is not None:
+                self.lan = LanListener(self.identity, port=self._port, host="127.0.0.1",
+                                       **self._lan_kw)
+                server.attach(self.lan)
+                devices = DeviceRegistry(sup.conn, AGENT, sup.lease, sup.generation, sup.clock)
             server.start()
             self.server = server
-            api = SurfaceAPI(sup, server, self.chat)
+            api = SurfaceAPI(sup, server, self.chat, log=self.logs.append, devices=devices)
             self.ready.set()
-            self.code = run_forever(sup, self.stop, 0.2, log=lambda _m: None,
+            self.code = run_forever(sup, self.stop, 0.2, log=self.logs.append,
                                     drain_deadline_s=2.0, gateway=api)
             sup.close()
         except BaseException as e:   # surfaced to the test through .error
@@ -112,4 +126,13 @@ class Runtime:
 
     def client(self, surface: str = "mac", **kw) -> GatewayClient:
         return GatewayClient(self.sock, self.token, surface, **kw)
+
+    @property
+    def port(self) -> int:
+        assert self.lan is not None
+        return self.lan.port
+
+    def device(self, device_id: str, key, **kw) -> DeviceClient:
+        assert self.identity is not None
+        return DeviceClient("127.0.0.1", self.port, self.identity.pin, device_id, key, **kw)
 

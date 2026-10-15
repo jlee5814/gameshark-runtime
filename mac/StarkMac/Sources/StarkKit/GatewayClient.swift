@@ -71,11 +71,25 @@ public struct ClientState: Equatable, Sendable {
     }
 }
 
+/// A paired device's way in: pinned TLS to the LAN gateway, then an ECDSA proof.
+public struct DeviceEndpoint: Sendable {
+    public var credential: DeviceCredential
+    public var signer: any DeviceSigner
+
+    public init(credential: DeviceCredential, signer: any DeviceSigner) {
+        self.credential = credential
+        self.signer = signer
+    }
+}
+
 public struct ClientConfig: Sendable {
     public var socketPath: String
     public var tokenURL: URL
     public var surface: String
     public var backoff: Backoff
+    /// Set for a paired device; nil means the Unix socket and token (StarkMac).
+    public var device: DeviceEndpoint?
+    public var clientName = "StarkMac/0.4"
 
     public init(socketPath: String, tokenURL: URL, surface: String = "mac",
                 backoff: Backoff = Backoff()) {
@@ -85,14 +99,29 @@ public struct ClientConfig: Sendable {
         self.backoff = backoff
     }
 
+    /// A paired device. Its surface comes from the pairing, and the runtime binds it again
+    /// from its own device row at every hello.
+    public init(device: DeviceEndpoint, backoff: Backoff = Backoff(), clientName: String) {
+        self.socketPath = ""
+        self.tokenURL = URL(fileURLWithPath: "/dev/null")
+        self.surface = device.credential.surface
+        self.backoff = backoff
+        self.device = device
+        self.clientName = clientName
+    }
+
     /// Same rule as stark.py: socket from STARK_SOCKET, else ~/.gameshark/gateway/stark.sock
     /// (the private directory beside the default database); token from STARK_TOKEN, else
     /// gateway.token beside the socket.
     public static func fromEnvironment(_ env: [String: String] = ProcessInfo.processInfo.environment)
         -> ClientConfig
     {
+        #if os(macOS)
         let home = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".gameshark")
+        #else
+        let home = URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".gameshark")
+        #endif
         let sock = env["STARK_SOCKET"] ?? home.appendingPathComponent("gateway/stark.sock").path
         let token = env["STARK_TOKEN"].map { URL(fileURLWithPath: $0) }
             ?? URL(fileURLWithPath: sock).deletingLastPathComponent()
@@ -108,7 +137,14 @@ public final class GatewayClient: @unchecked Sendable {
     public typealias MakeTransport = @Sendable (String) throws -> Transport
 
     private enum Pending {
-        case snapshot, sync, send(String), readyOut(String), ackIn(String)
+        case snapshot, sync, send(String), readyOut(String), ackIn(String), jack(String)
+    }
+
+    public enum JackDirection: String, Sendable {
+        /// Pull presence to this surface (Jack In).
+        case here = "self"
+        /// Send Stark home from this surface (Jack Out).
+        case home
     }
 
     private let config: ClientConfig
@@ -137,11 +173,22 @@ public final class GatewayClient: @unchecked Sendable {
     private var running = false
     private var draft: @Sendable () -> String? = { nil }
 
+    /// Each connection dials the next host in turn; a paired phone keeps an address and a
+    /// Bonjour name, and either may be the one that works on this network.
+    private var hostCursor = 0
+
     public init(config: ClientConfig,
-                makeTransport: @escaping MakeTransport = { try SocketTransport(path: $0) },
+                makeTransport: MakeTransport? = nil,
                 onChange: @escaping @Sendable (ClientState) -> Void = { _ in }) {
         self.config = config
-        self.makeTransport = makeTransport
+        if let makeTransport {
+            self.makeTransport = makeTransport
+        } else if let device = config.device {
+            let c = device.credential
+            self.makeTransport = { host in try TLSTransport(host: host, port: c.port, pin: c.pin) }
+        } else {
+            self.makeTransport = { try SocketTransport(path: $0) }
+        }
         self.onChange = onChange
         self.backoff = config.backoff
         self.st = ClientState(surface: config.surface)
@@ -180,9 +227,26 @@ public final class GatewayClient: @unchecked Sendable {
 
     /// Queue a user message. presenceGen overrides the held generation, which exists only to
     /// demonstrate that the runtime refuses an obsolete one.
+    /// Jack In (here) or Jack Out (home). The runtime opens the two phase handoff; this
+    /// client then plays its part (ready_out as source, ack_in as target) from the pushes.
+    @discardableResult
+    public func jack(_ to: JackDirection) -> String {
+        let hid = "\(config.surface)-jack-" + UUID().uuidString.lowercased().prefix(13)
+        queue.async {
+            guard self.st.connection == .live, let gen = self.st.presence?.generation else {
+                self.st.lastError = "jack: not connected"
+                self.publish()
+                return
+            }
+            self.request("jack", .jack(hid), ["handoff_id": hid, "to": to.rawValue,
+                                             "presence_gen": gen])
+        }
+        return hid
+    }
+
     @discardableResult
     public func send(_ text: String, presenceGen: Int? = nil) -> String {
-        let id = "mac-" + UUID().uuidString.lowercased()
+        let id = "\(config.surface)-" + UUID().uuidString.lowercased()
         queue.async {
             self.st.outbox.append(OutgoingMessage(id: id, text: text, status: .pending,
                                                   presenceGenOverride: presenceGen))
@@ -201,7 +265,13 @@ public final class GatewayClient: @unchecked Sendable {
         publish()
         let t: Transport
         do {
-            t = try makeTransport(config.socketPath)
+            t = try makeTransport(nextAddress())
+        } catch TransportFailure.pinMismatch {
+            st.lastError = "the runtime's key does not match this pairing"
+            st.connection = .disconnected("untrusted runtime")
+            publish()
+            scheduleReconnect(id)
+            return
         } catch {
             st.connection = .disconnected("runtime unreachable")
             publish()
@@ -230,6 +300,14 @@ public final class GatewayClient: @unchecked Sendable {
         }
         thread.name = "stark.gateway.reader"
         thread.start()
+    }
+
+    private func nextAddress() -> String {
+        guard let hosts = config.device?.credential.hosts, !hosts.isEmpty else {
+            return config.socketPath
+        }
+        defer { hostCursor += 1 }
+        return hosts[hostCursor % hosts.count]
     }
 
     private func drop(reason: String, reconnect: Bool) {
@@ -302,6 +380,10 @@ public final class GatewayClient: @unchecked Sendable {
                 drop(reason: "unsupported version", reconnect: true)
                 return
             }
+            if let device = config.device {
+                helloAsDevice(device, nonce: nonce, serverFP: c.serverFp)
+                return
+            }
             let token: Data
             do { token = try Auth.loadToken(at: config.tokenURL) } catch {
                 st.lastError = "token: \(error)"
@@ -309,11 +391,16 @@ public final class GatewayClient: @unchecked Sendable {
                 return
             }
             write(["type": "hello", "proto": Wire.protocolVersion, "surface": config.surface,
-                   "client": "StarkMac/0.4",
+                   "client": config.clientName,
                    "mac": Auth.sign(token: token, nonce: nonce, surface: config.surface,
                                     proto: Wire.protocolVersion)])
         case "welcome":
             let w = try Wire.decode(Welcome.self, from: body)
+            if w.surface != config.surface {
+                st.lastError = "runtime bound surface \(w.surface), expected \(config.surface)"
+                drop(reason: "surface mismatch", reconnect: false)
+                return
+            }
             if let known = st.identity, known.uuid != w.identity.uuid {
                 // Another runtime database: nothing cached belongs to it.
                 mirror.reset()
@@ -380,6 +467,8 @@ public final class GatewayClient: @unchecked Sendable {
             settle(hid + "preparing")
         case .ackIn(let hid):
             settle(hid + "committed")
+        case .jack:
+            break                                   // the presence push carries the handoff
         }
         if haveSnapshot && haveSync && st.connection != .live {
             st.connection = .live
@@ -405,6 +494,9 @@ public final class GatewayClient: @unchecked Sendable {
             } else {
                 handoffSent.remove(key)
             }
+        case .jack(let hid):
+            st.lastError = "jack \(hid): \(code)"
+            if code == "stale_presence" { request("snapshot", .snapshot) }
         case .snapshot, .sync:
             st.lastError = "\(code): \(message ?? "")"
         }
@@ -487,7 +579,91 @@ public final class GatewayClient: @unchecked Sendable {
         }
     }
 
+    private func helloAsDevice(_ device: DeviceEndpoint, nonce: Data, serverFP: String?) {
+        let c = device.credential
+        // The TLS layer already enforced the pin; the challenge must name the same key.
+        guard let fpHex = serverFP, Data(hex: fpHex) == c.pin else {
+            st.lastError = "challenge names another server key"
+            drop(reason: "untrusted runtime", reconnect: true)
+            return
+        }
+        let message = DeviceAuth.transcript(nonce: nonce, deviceID: c.deviceID,
+                                            proto: Wire.protocolVersion, serverFP: c.pin)
+        guard let sig = try? device.signer.sign(message) else {
+            st.lastError = "device key unavailable"
+            drop(reason: "no device key", reconnect: true)
+            return
+        }
+        write(["type": "hello", "proto": Wire.protocolVersion, "device_id": c.deviceID,
+               "sig": sig.hex, "client": config.clientName])
+    }
+
     private func publish() {
         onChange(st)
+    }
+}
+
+/// One time pairing over the pinned LAN gateway. Blocking; call off the main thread.
+public enum Pairing {
+    public enum Failure: Error, Equatable {
+        case unreachable
+        case untrusted
+        case refused(String)
+        case protocolError(String)
+    }
+
+    struct Paired: Decodable {
+        var deviceId: String
+        var surface: String
+        var identity: Identity
+    }
+
+    /// Dial each candidate address, present the link's secret and the signer's public key,
+    /// and return the credential to store. A used, expired, or wrong link is refused.
+    public static func run(link: PairingLink, name: String, signer: any DeviceSigner,
+                           makeTransport: ((String) throws -> Transport)? = nil) throws
+        -> DeviceCredential
+    {
+        let dial = makeTransport ?? { try TLSTransport(host: $0, port: link.port, pin: link.pin) }
+        var transport: Transport?
+        var sawUntrusted = false
+        for host in link.candidates {
+            do {
+                transport = try dial(host)
+                break
+            } catch TransportFailure.pinMismatch {
+                sawUntrusted = true
+            } catch {
+                continue
+            }
+        }
+        guard let t = transport else { throw sawUntrusted ? Failure.untrusted : Failure.unreachable }
+        defer { t.close() }
+        var reader = FrameReader()
+        func next() throws -> Data {
+            while true {
+                if let body = try reader.next() { return body }
+                let bytes = try t.receive()
+                if bytes.isEmpty { throw Failure.protocolError("runtime closed the connection") }
+                reader.feed(bytes)
+            }
+        }
+        let challenge = try Wire.decode(Challenge.self, from: next())
+        guard challenge.proto.contains(Wire.protocolVersion),
+              challenge.serverFp.flatMap({ Data(hex: $0) }) == link.pin
+        else { throw Failure.protocolError("unexpected challenge") }
+        try t.send(Frame.encode(json: [
+            "type": "pair", "proto": Wire.protocolVersion, "pairing_id": link.pairingID,
+            "secret": link.secret, "name": name, "public_key": signer.publicKey.hex]))
+        let body = try next()
+        let head = try Wire.decode(Head.self, from: body)
+        if head.type == "error" {
+            throw Failure.refused(try Wire.decode(ErrorFrame.self, from: body).code)
+        }
+        guard head.type == "paired" else { throw Failure.protocolError("expected paired") }
+        let p = try Wire.decode(Paired.self, from: body)
+        return DeviceCredential(deviceID: p.deviceId, surface: p.surface, name: name,
+                                hosts: link.candidates, port: link.port, pin: link.pin,
+                                agentUUID: p.identity.uuid)
     }
 }

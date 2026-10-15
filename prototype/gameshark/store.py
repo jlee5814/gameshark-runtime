@@ -238,6 +238,31 @@ CREATE TABLE IF NOT EXISTS surface_writes (
     created         REAL NOT NULL,
     PRIMARY KEY (agent_id, client_msg_id)
 );
+
+-- v0.4: paired devices (Stark Pocket). The operator CLI writes pairings and revocations;
+-- the runtime consumes a pairing and creates its device in one fenced transaction. Only
+-- public keys are stored: a leaked database cannot impersonate a phone.
+CREATE TABLE IF NOT EXISTS devices (
+    id         TEXT PRIMARY KEY,         -- 32 hex chars, minted at pairing
+    agent_id   TEXT NOT NULL,
+    name       TEXT NOT NULL,
+    surface    TEXT NOT NULL UNIQUE,     -- pocket-xxxxxx, bound at every hello
+    public_key BLOB NOT NULL,            -- P-256, X9.62 uncompressed (65 bytes)
+    created    REAL NOT NULL,
+    revoked_at REAL,
+    last_seen  REAL
+);
+
+CREATE TABLE IF NOT EXISTS pairings (
+    id            TEXT PRIMARY KEY,
+    agent_id      TEXT NOT NULL,
+    secret_sha256 TEXT NOT NULL,         -- the secret itself lives only in the pairing link
+    name          TEXT NOT NULL,
+    expires       REAL NOT NULL,
+    state         TEXT NOT NULL,         -- pending | used
+    device_id     TEXT,
+    created       REAL NOT NULL
+);
 """
 
 # Columns added after a table first shipped. Applied idempotently so a v0.1 or early v0.2

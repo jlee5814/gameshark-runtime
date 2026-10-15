@@ -8,6 +8,7 @@ and the old presence generation is refused while the inference reply still lands
 
 from __future__ import annotations
 
+import json
 import os
 import signal
 import sqlite3
@@ -146,3 +147,70 @@ def test_custom_socket_carries_its_token_and_leaves_the_db_dir_alone(env):
     finally:
         proc.terminate()
         proc.wait(15)
+
+
+# ---------------------------------------------------------------------- paired phone
+def lan(env) -> dict:
+    info = env["sock"].parent / "lan.json"
+    wait_for(info.exists)
+    return json.loads(info.read_text())
+
+
+def cli(env, *args: str) -> str:
+    out = subprocess.run([sys.executable, str(ROOT / "stark.py"), "--db", str(env["db"]),
+                          *args], env=env["env"], cwd=ROOT, capture_output=True, text=True,
+                         timeout=30, check=False)
+    assert out.returncode == 0, out.stderr
+    return out.stdout
+
+
+def test_cli_paired_phone_survives_sigkill_and_cli_revocation(env):
+    from urllib.parse import parse_qs, urlsplit
+
+    from gameshark.gateway_client import DeviceClient, pair_device
+
+    proc = daemon(env, 1.5, "--lan", "--lan-port", "0")
+    try:
+        info = lan(env)
+        link = json.loads(cli(env, "pair", "--name", "Test Phone", "--json",
+                              "--address", "127.0.0.1"))["link"]
+        q = {k: v[0] for k, v in parse_qs(urlsplit(link).query).items()}
+        assert (int(q["p"]), q["fp"]) == (info["port"], info["pin"])
+        pin = bytes.fromhex(q["fp"])
+        device_id, surface, key = pair_device(q["a"], int(q["p"]), pin, q["id"], q["s"],
+                                              "Test Phone")
+        assert device_id in cli(env, "devices")
+        with client(env) as mac, DeviceClient("127.0.0.1", info["port"], pin, device_id,
+                                              key) as phone:
+            phone.call("jack", handoff_id="in1", to="self", presence_gen=1)
+            out = mac.call("ready_out", handoff_id="in1", presence_gen=1, draft=None)
+            phone.call("ack_in", handoff_id="in1", presence_gen=out["to_gen"])
+            gen = out["to_gen"]
+            sent = phone.call("send", conversation_id=CONVERSATION, client_msg_id="p1",
+                              text="from the phone", presence_gen=gen)
+        assert stop(proc, signal.SIGKILL) == -signal.SIGKILL      # mid reply
+        proc = daemon(env, 0.1, "--lan", "--lan-port", "0")
+        wait_for(lambda: lan(env)["port"] != info["port"])     # rewritten by this boot
+        info2 = lan(env)
+        assert info2["pin"] == info["pin"]                        # same pinned key
+        with DeviceClient("127.0.0.1", info2["port"], pin, device_id, key) as phone:
+            snap = phone.call("snapshot")
+            assert snap["presence"] == {"surface": surface, "home": "mac", "generation": gen}
+            again = phone.call("send", conversation_id=CONVERSATION, client_msg_id="p1",
+                               text="from the phone", presence_gen=gen)
+            assert again == {**sent, "replayed": True}
+            wait_for(lambda: rows(env)[-1][1] == "assistant")
+            assert [r[1] for r in rows(env)] == ["system", "user", "assistant"]
+            cli(env, "devices", "revoke", device_id)
+            with pytest.raises((GatewayError, ConnectionError, OSError)):
+                for _ in range(50):
+                    phone.call("ping")
+                    time.sleep(0.05)
+        with client(env) as mac:
+            wait_for(lambda: mac.call("snapshot")["presence"]["surface"] == "mac")
+        with pytest.raises(GatewayError):
+            DeviceClient("127.0.0.1", info2["port"], pin, device_id, key)
+        assert "revoked" in cli(env, "devices")
+    finally:
+        if proc.poll() is None:
+            stop(proc)

@@ -15,6 +15,8 @@ public enum TransportFailure: Error, Equatable {
     case connect(Int32)
     case io(Int32)
     case closed
+    /// The LAN gateway presented a key other than the pairing pin.
+    case pinMismatch
 }
 
 /// POSIX AF_UNIX stream socket.

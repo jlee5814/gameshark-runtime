@@ -10,19 +10,25 @@ One prompt assigns a responsibility; the daemon keeps it across restarts.
     uv run python stark.py resume owner/repo#123     # after fixing a revoked token
     uv run python stark.py unwatch owner/repo#123
     uv run python stark.py jack ghost                # move presence (demo of stale writes)
+    uv run python stark.py run --lan                 # also serve paired phones on the LAN
+    uv run python stark.py pair --name "My iPhone"   # one time pairing link for Stark Pocket
+    uv run python stark.py devices                   # paired devices; `devices revoke <id>`
 
 State lives in ~/.gameshark/runtime.db (override with --db or GAMESHARK_DB). The GitHub
 token comes from GITHUB_TOKEN, else `gh auth token`. Every GitHub call is a GET.
 
 `run` also serves the surface gateway (StarkMac) on a Unix socket in a private directory
 beside the database, gateway/stark.sock, authenticated by gateway.token beside it. Replies come from a deterministic local fake
-model unless --inference-url names an OpenAI compatible server such as SGLang.
+model unless --inference-url names an OpenAI compatible server such as SGLang. With --lan it
+also serves paired devices over pinned TLS 1.3 on the local network (net_gateway.py); the
+listener is off by default and refuses addresses outside private ranges.
 """
 
 from __future__ import annotations
 
 import argparse
 import importlib
+import json
 import os
 import re
 import signal
@@ -136,22 +142,45 @@ def build_supervisor(db: Path, interval: float, notifier=None, client=None, chat
     return sup
 
 
+def lan_info_path(args) -> Path:
+    """Where `run --lan` records its port and pin for `stark.py pair`."""
+    return socket_path(args).parent / "lan.json"
+
+
 def start_gateway(sup, chat, args, log):
     """Serve surfaces, or log why not. The daemon keeps its duties either way."""
+    from gameshark.devices import DeviceRegistry
     from gameshark.gateway import GatewayServer, load_or_create_token
+    from gameshark.net_gateway import LanListener, load_or_create_identity
     from gameshark.surface_api import SurfaceAPI
 
     path = socket_path(args)
+    lan = devices = None
     try:
         token = load_or_create_token(token_path(args))
         ident = {"agent_id": sup.identity.agent_id, "uuid": sup.identity.uuid}
         server = GatewayServer(path, token, ident, sup.wake)
+        if getattr(args, "lan", False):
+            identity = load_or_create_identity(path.parent)
+            lan = LanListener(identity, port=args.lan_port)
+            server.attach(lan)
+            devices = DeviceRegistry(sup.conn, sup.agent_id, sup.lease, sup.generation,
+                                     sup.clock)
         server.start()
     except OSError as e:
         log(f"gateway disabled: {type(e).__name__}: {e}")
         return None
     log(f"gateway listening on {path}")
-    return SurfaceAPI(sup, server, chat, log=log)
+    if lan is not None:
+        info = lan_info_path(args)
+        tmp = info.with_suffix(".tmp")
+        tmp.unlink(missing_ok=True)
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w") as f:
+            json.dump({"port": lan.port, "pin": lan.identity.pin_hex}, f)
+        tmp.replace(info)
+        log(f"lan gateway on port {lan.port}, pin {lan.identity.pin_hex[:16]}...")
+    return SurfaceAPI(sup, server, chat, log=log, devices=devices)
 
 
 # ---------------------------------------------------------------------- commands
@@ -227,6 +256,100 @@ def cmd_run(args) -> int:
         return code
     finally:
         lock.release()
+
+
+def lan_address() -> str:
+    """This Mac's address on the default route's interface; sends nothing."""
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect(("192.0.2.1", 9))                # TEST-NET-1: routing lookup only
+        return s.getsockname()[0]
+    except OSError:
+        return "127.0.0.1"
+    finally:
+        s.close()
+
+
+def cmd_pair(args) -> int:
+    from urllib.parse import urlencode
+
+    from gameshark.devices import AuthRejected, create_pairing
+
+    info = lan_info_path(args)
+    if not info.exists():
+        print("no LAN gateway yet: start `stark.py run --lan` first", file=sys.stderr)
+        return 2
+    lan = json.loads(info.read_text())
+    if not InstanceLock(args.db).held_elsewhere():
+        print("warning: the daemon is not running; the link works once it serves --lan",
+              file=sys.stderr)
+    conn = connect(args.db)
+    try:
+        pid, secret = create_pairing(conn, AGENT, args.name, time.time(), args.ttl)
+    except AuthRejected as e:
+        print(e, file=sys.stderr)
+        return 2
+    finally:
+        conn.close()
+    host = socket.gethostname()
+    host = host if host.endswith(".local") else host + ".local"
+    query = {"v": 1, "h": host, "a": args.address or lan_address(), "p": lan["port"],
+             "fp": lan["pin"], "id": pid, "s": secret}
+    link = "starkpocket://pair?" + urlencode(query)
+    if args.json:
+        print(json.dumps({"link": link, "pairing_id": pid, "expires_in": args.ttl}))
+        return 0
+    print(f"Pairing link for {args.name!r} (single use, expires in {args.ttl:.0f} s):\n")
+    print(link + "\n")
+    try:
+        import qrcode  # optional: uv run --with qrcode ...
+
+        qr = qrcode.QRCode(border=1)
+        qr.add_data(link)
+        qr.print_ascii(invert=True)
+    except ImportError:
+        print("(for a QR code: uv run --with qrcode==8.0 python stark.py pair ...)")
+    print("Scan it with the iPhone camera, or paste it in Stark Pocket. Anyone holding this "
+          "link before it is used can pair, so share it only with your own phone.")
+    return 0
+
+
+def cmd_devices(args) -> int:
+    from gameshark.devices import list_devices, revoke
+
+    conn = connect(args.db)
+    try:
+        if args.action == "revoke":
+            if not args.device:
+                print("devices revoke needs a device id", file=sys.stderr)
+                return 2
+            if not revoke(conn, AGENT, args.device, time.time()):
+                print(f"no live device {args.device}", file=sys.stderr)
+                return 1
+            print(f"revoked {args.device}")
+            _poke_daemon(args)
+            return 0
+        for d in list_devices(conn, AGENT):
+            state = "revoked" if d.revoked_at else "active"
+            print(f"{d.id}  {d.surface}  {state:7}  {d.name}")
+    finally:
+        conn.close()
+    return 0
+
+
+def _poke_daemon(args) -> None:
+    """Ask a running daemon to pump now, so a revocation lands at once (a ping)."""
+    from gameshark.gateway import load_or_create_token
+    from gameshark.gateway_client import GatewayClient, GatewayError
+
+    if not InstanceLock(args.db).held_elsewhere():
+        return
+    try:
+        token = load_or_create_token(token_path(args))
+        with GatewayClient(socket_path(args), token, "cli", timeout_s=2.0) as c:
+            c.call("ping")
+    except (OSError, GatewayError) as e:
+        print(f"daemon not reachable ({e}); it applies the revocation on its next tick")
 
 
 def cmd_status(args) -> int:
@@ -311,6 +434,17 @@ def build_parser() -> argparse.ArgumentParser:
                    help="OpenAI compatible base URL, for example http://127.0.0.1:30000/v1")
     r.add_argument("--model", default=os.environ.get("GAMESHARK_INFERENCE_MODEL", "default"))
     r.add_argument("--context-window", type=int, default=8192)
+    r.add_argument("--lan", action="store_true",
+                   help="also serve paired devices over TLS on the local network")
+    r.add_argument("--lan-port", type=int, default=47820)
+    pr = sub.add_parser("pair", help="print a one time pairing link for Stark Pocket")
+    pr.add_argument("--name", default="iPhone", help="the device's display name")
+    pr.add_argument("--ttl", type=float, default=300.0, help="seconds the link stays valid")
+    pr.add_argument("--address", default=None, help="LAN address to put in the link")
+    pr.add_argument("--json", action="store_true", help="machine readable output")
+    dv = sub.add_parser("devices", help="list paired devices, or revoke one")
+    dv.add_argument("action", nargs="?", choices=["list", "revoke"], default="list")
+    dv.add_argument("device", nargs="?")
     j = sub.add_parser("jack", help="move Stark's presence to another surface")
     j.add_argument("surface")
     sub.add_parser("status")
@@ -327,7 +461,8 @@ def main(argv: list[str] | None = None) -> int:
     args.db.parent.mkdir(parents=True, exist_ok=True)
     if args.cmd in ("watch", "unwatch", "resume", "jack"):
         return cmd_control(args, args.cmd)
-    return {"run": cmd_run, "status": cmd_status, "feed": cmd_feed, "ack": cmd_ack}[args.cmd](args)
+    return {"run": cmd_run, "status": cmd_status, "feed": cmd_feed, "ack": cmd_ack,
+            "pair": cmd_pair, "devices": cmd_devices}[args.cmd](args)
 
 
 if __name__ == "__main__":

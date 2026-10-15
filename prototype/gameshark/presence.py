@@ -150,32 +150,60 @@ class PresenceManager:
     def request_jack(self, handoff_id: str, to_surface: str) -> Handoff:
         """Open a jack from the active surface to to_surface. Idempotent for one id."""
         now = self.clock.now()
+        h = self._fenced(lambda conn: self._open_in_txn(conn, handoff_id, to_surface, now))
+        self._crash("P1_after_prepare")
+        return h
+
+    def request_jack_by(self, handoff_id: str, surface: str, presence_gen: int,
+                        to: str) -> Handoff:
+        """A surface asks for a jack: "self" pulls presence to the caller, "home" sends it
+        home from the caller. The caller must have seen the current generation, and only
+        the holder may send Stark home; both checks run in the jack's transaction. The same
+        id replayed returns the same handoff.
+        """
+        if to not in ("self", "home"):
+            raise ValueError(f"jack direction must be self or home, not {to!r}")
+        now = self.clock.now()
 
         def body(conn: sqlite3.Connection) -> Handoff:
+            p = self._presence()
+            target = surface if to == "self" else p["home"]
             existing = conn.execute(
                 "SELECT * FROM handoffs WHERE id=?", (handoff_id,)).fetchone()
-            if existing is not None:
-                if existing["agent_id"] != self.agent_id or existing["to_surface"] != to_surface:
-                    raise HandoffConflict(f"handoff id {handoff_id} names another jack")
-                return Handoff.of(existing)
-            other = self.open_handoff()
-            if other is not None:
-                raise HandoffConflict(f"handoff {other.id} is still {other.state}")
-            p = self._presence()
-            if p["surface"] == to_surface:
-                raise HandoffConflict(f"{to_surface} already holds presence")
-            conn.execute(
-                "INSERT INTO handoffs(id, agent_id, from_surface, to_surface, from_gen, "
-                "to_gen, state, draft, prepare_deadline, ack_deadline, created, updated) "
-                "VALUES(?,?,?,?,?,NULL,?,NULL,?,NULL,?,?)",
-                (handoff_id, self.agent_id, p["surface"], to_surface, p["generation"],
-                 PREPARING, now + self.prepare_timeout_s, now, now))
-            return Handoff.of(conn.execute(
-                "SELECT * FROM handoffs WHERE id=?", (handoff_id,)).fetchone())
+            if existing is None:
+                if to == "home":
+                    self.guard_surface_in_txn(surface, presence_gen)
+                elif p["generation"] != presence_gen:
+                    raise StalePresence(f"{surface} saw generation {presence_gen}; "
+                                        f"current is {p['generation']}")
+            return self._open_in_txn(conn, handoff_id, target, now)
 
         h = self._fenced(body)
         self._crash("P1_after_prepare")
         return h
+
+    def _open_in_txn(self, conn: sqlite3.Connection, handoff_id: str, to_surface: str,
+                     now: float) -> Handoff:
+        existing = conn.execute(
+            "SELECT * FROM handoffs WHERE id=?", (handoff_id,)).fetchone()
+        if existing is not None:
+            if existing["agent_id"] != self.agent_id or existing["to_surface"] != to_surface:
+                raise HandoffConflict(f"handoff id {handoff_id} names another jack")
+            return Handoff.of(existing)
+        other = self.open_handoff()
+        if other is not None:
+            raise HandoffConflict(f"handoff {other.id} is still {other.state}")
+        p = self._presence()
+        if p["surface"] == to_surface:
+            raise HandoffConflict(f"{to_surface} already holds presence")
+        conn.execute(
+            "INSERT INTO handoffs(id, agent_id, from_surface, to_surface, from_gen, "
+            "to_gen, state, draft, prepare_deadline, ack_deadline, created, updated) "
+            "VALUES(?,?,?,?,?,NULL,?,NULL,?,NULL,?,?)",
+            (handoff_id, self.agent_id, p["surface"], to_surface, p["generation"],
+             PREPARING, now + self.prepare_timeout_s, now, now))
+        return Handoff.of(conn.execute(
+            "SELECT * FROM handoffs WHERE id=?", (handoff_id,)).fetchone())
 
     def ready_out(self, handoff_id: str, surface: str, presence_gen: int,
                   draft: str | None = None) -> Handoff:
@@ -260,6 +288,37 @@ class PresenceManager:
         if h is None or h.to_surface != surface:
             return None
         return self._resolve(h.id, lost=True)
+
+    def evict(self, surface: str) -> bool:
+        """Strip surface of presence and of any open jack it is part of, in one fenced
+        transaction (a revoked device). The holder returns home under generation + 1.
+        Returns whether anything changed."""
+        now = self.clock.now()
+
+        def body(conn: sqlite3.Connection) -> bool:
+            p = self._presence()
+            if p["home"] == surface:
+                raise ValueError(f"{surface} is home and cannot be evicted")
+            changed = False
+            h = conn.execute("SELECT * FROM handoffs WHERE agent_id=? AND state IN (?,?)",
+                             (self.agent_id, *OPEN)).fetchone()
+            if h is not None and (h["to_surface"] == surface or
+                                  (h["from_surface"] == surface and h["state"] == PREPARING)):
+                if h["state"] == PREPARING:
+                    conn.execute("UPDATE handoffs SET state=?, updated=? WHERE id=?",
+                                 (ABORTED, now, h["id"]))
+                else:
+                    self._revert_in_txn(conn, h, now)
+                changed = True
+            p = self._presence()
+            if p["surface"] == surface:
+                conn.execute("UPDATE presence SET surface=?, generation=?, updated=? "
+                             "WHERE agent_id=?", (p["home"], p["generation"] + 1, now,
+                                                  self.agent_id))
+                changed = True
+            return changed
+
+        return bool(self._fenced(body))
 
     def next_deadline(self) -> float | None:
         """The open handoff's next deadline on the clock, for the coordinator's sleep."""

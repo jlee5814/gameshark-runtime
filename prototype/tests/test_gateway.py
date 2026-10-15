@@ -192,7 +192,8 @@ def test_unknown_commands_are_refused_and_change_nothing(rt):
     assert [r[1] for r in rows(rt.db)] == ["system"]
 
 
-@pytest.mark.parametrize("module", ["gateway.py", "surface_api.py"])
+@pytest.mark.parametrize("module", ["gateway.py", "surface_api.py", "net_gateway.py",
+                                    "devices.py"])
 def test_gateway_modules_cannot_reach_a_shell(module):
     tree = ast.parse((ROOT / "gameshark" / module).read_text())
     imported = {a.name.split(".")[0] for n in ast.walk(tree)

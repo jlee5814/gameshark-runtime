@@ -104,6 +104,8 @@ struct Head: Decodable {
 struct Challenge: Decodable {
     var nonce: String
     var proto: [Int]
+    /// The LAN gateway's key pin; absent on the Unix socket.
+    var serverFp: String?
 }
 
 struct Welcome: Decodable {
