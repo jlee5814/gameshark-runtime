@@ -1,6 +1,6 @@
 # GameShark inference router: v0.3 design
 
-Status: design, with steps 0 and 1 of Minimal v0.3 scope implemented (graceful drain; provider contracts in `prototype/gameshark/inference/`). v0.1 and v0.2 runtime code stays unchanged.
+Status: design, with steps 0 to 2 of Minimal v0.3 scope implemented (graceful drain; provider contracts and the inference journal in `prototype/gameshark/inference/`). v0.1 and v0.2 runtime code stays unchanged.
 
 Stark gains inference without letting any model own Stark. Providers become disposable executors behind one contract; identity, memory, and responsibilities stay in GameShark's SQLite store under the existing fenced lease. The Bionic (LM Studio) study supplies the problem shape (`../research/bionic/deep-analysis.md`); GameShark code stays clean room.
 
@@ -321,7 +321,7 @@ Requirements:
 - Every write runs inside `BEGIN IMMEDIATE` with `LeaseManager.guard_in_txn` (the `AgentSupervisor._fenced` pattern). WAL and `synchronous=FULL` stay.
 - Two durable writes per attempt, the same irreducible shape as the effect journal: **reserve** (insert or bump `inference_calls.attempts`, insert ledger row `reserved`) before dispatch; **commit** (insert assistant message at `seq = base_seq`, bump `next_seq`, mark call `done` with provider and model, settle ledger) in one transaction after.
 - Commit fails closed on any of: stale generation (`FencedError`), `call_id` already done (return the committed row), `next_seq != base_seq` (`ContextConflict`).
-- Recovery marks every `reserved` ledger row from an older generation `lost` at full reservation.
+- Recovery marks every `reserved` ledger row that no live attempt holds `lost` at full reservation. Revised in step 2: a same owner restart on a live lease keeps its generation (`LeaseManager.acquire`), so generation alone cannot tell an abandoned reservation from a live one. Recovery runs at start, before serving, when no call is in flight; commit also requires `attempts` to equal its attempt and its ledger row to be `reserved`, which fences a same generation zombie.
 - Model instances, queues, slots, and circuits are never persisted.
 - Content is plaintext in v0.3, like the v0.2 notification feed; encryption at rest is deferred.
 
@@ -347,15 +347,16 @@ These extend I1 to I7 in `continuity-invariants.md`.
 |---|---|---|---|
 | Local provider crashes mid stream | `ModelCrashed`; partial text dropped; ledger settles `lost`; next candidate or rebuilt instance answers | R2, R6, R8 | `test_crash_mid_stream_fails_over` |
 | Cloud returns 429 | circuit opens for `retry_after`; local candidate answers if permitted, else caller reschedules | R7, R8 | `test_rate_limit_opens_circuit` |
-| SIGKILL after reserve, before dispatch (E2) | restart marks reservation `lost`; event or responsibility replays; same `call_id` takes attempt 2 | R2, R6 | `test_kill_e2_reruns_once` |
-| SIGKILL after provider returned, before commit (E3) | answer lost; replay reruns attempt 2; one message commits | R2, R5 | `test_kill_e3_one_message` |
-| SIGKILL after commit, before handler continues (E4) | replay finds `done`, returns the committed text with no provider call | R2 | `test_kill_e4_short_circuit` |
-| Crash loop on one call | third attempt fails → `AttemptsExhausted`, responsibility `blocked`, one notification | R8 | `test_attempt_cap_survives_restarts` |
+| SIGKILL before reserve (E1) | nothing durable for the call; replay runs attempt 1 | R2 | `test_sigkill_at_crash_point_recovers_to_one_answer[E1_before_reserve]` |
+| SIGKILL after reserve, before dispatch (E2) | restart marks reservation `lost`; event or responsibility replays; same `call_id` takes attempt 2 | R2, R6 | `test_sigkill_at_crash_point_recovers_to_one_answer[E2_after_reserve]` |
+| SIGKILL after provider returned, before commit (E3) | answer lost; replay reruns attempt 2; one message commits | R2, R5 | `test_sigkill_at_crash_point_recovers_to_one_answer[E3_after_provider]` |
+| SIGKILL after commit, before handler continues (E4) | replay finds `done`, returns the committed text with no provider call | R2 | `test_sigkill_at_crash_point_recovers_to_one_answer[E4_after_commit]` |
+| Crash loop on one call | third attempt fails → `AttemptsExhausted`, responsibility `blocked`, one notification | R8 | `test_attempt_cap_survives_crash_loop_restarts` |
 | Budget exhausted mid responsibility | `BudgetExceeded`; `next_due = reset_at`; zero provider calls until reset | R6 | `test_budget_refusal_no_dispatch` |
 | Local model replaced by config | old record drains; new loads lazily; conversation continues with full context resent | R1, R3 | `test_model_swap_keeps_identity` |
-| Stale worker commits after takeover | `FencedError`; no message row; successor's answer is the only one | R2, R4 | `test_stale_commit_fenced` |
+| Stale worker commits after takeover | `FencedError`; no message row; successor's answer is the only one | R2, R4 | `test_stale_owner_cannot_commit_after_takeover` |
 | `inference.cloud` revoked with a pending cloud bound call | replay filters cloud out; local answers or `EgressDenied` blocks; zero cloud bytes | R7, R9 | `test_revoke_egress_pending_call` |
-| Two calls race on one conversation | second waits; if forced, commit sees `next_seq` moved and raises `ContextConflict` | R3 | `test_conversation_linear` |
+| Two calls race on one conversation | second waits; if forced, commit sees `next_seq` moved and raises `ContextConflict` | R3 | `test_two_calls_on_one_conversation_conflict_then_rebase` |
 
 ## Graceful handoff
 
@@ -376,7 +377,7 @@ Ordered increments; each lands with its own tests and leaves the suite green.
 
 0. **Prerequisites.** Done. PR #6 fixed the `LeaseManager.renew` double rollback that could mask `FencedError`. Graceful draining added the `draining` lease state, a heartbeat that renews through the drain, bounded drain deadlines, and release fencing; see `prototype/README.md`, Graceful drain and handoff.
 1. **Contracts.** Done. `inference/types.py` (immutable values, error taxonomy), `inference/provider.py` (`Provider`, request scoped `ProviderCall`), `inference/fake.py` (`FakeProvider` with deterministic text, scripted delays, faults per chunk index, invocation counts). Reuses the existing `CancelToken`. Pure unit tests in `tests/test_inference_contracts.py`.
-2. **Journal.** Tables plus `InferenceJournal` (reserve, commit, short circuit, recovery settlement) with crash points E1 to E4 using the existing `crash_at` hook.
+2. **Journal.** Done. Tables plus `InferenceJournal` (reserve, commit, short circuit, recovery settlement) with crash points E1 to E4 using the existing `crash_at` hook; `collect` verifies chunk and result identity; new errors `ResultMismatch`, `StaleAttempt`, `OwnershipMismatch`, `CallCancelled`; effects citing an uncommitted `call_id` are refused (R5). Tests in `tests/test_inference_journal.py`; see `prototype/README.md`, Inference journal.
 3. **Router.** Capability, policy, ordering, health, admission, bounded queues, failover, degraded flag. Fake providers only.
 4. **OpenAI compatible provider.** stdlib HTTP plus SSE; tested against a local HTTP fixture in the style of `tests/test_github_rest.py`. No new runtime dependency.
 5. **Lifecycle tracker.** Health probes, crashed, failed with cooldown, lazy load, replacement drain. Externally managed servers only.

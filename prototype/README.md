@@ -164,7 +164,7 @@ the property does not hold.
 cd /Users/jaebonglee/Projects/gameshark-research/prototype
 uv venv --python 3.13
 uv pip install pytest
-uv run pytest -v                 # all 154 tests (v0.1 + v0.2 + lease fencing + draining + expiry + v0.3 contracts)
+uv run pytest -v                 # all 184 tests (v0.1 + v0.2 + lease fencing + draining + expiry + v0.3 contracts + journal)
 uv run python demo.py            # v0.1 narrated Stark run with a real SIGKILL
 uv run python demo_v2.py         # v0.2 PR monitoring across a real SIGKILL and a revoke
 uv run python companion.py <runtime_db>   # render the companion feed for a run
@@ -183,6 +183,9 @@ uv run pytest -v tests/test_takeover.py
 # graceful draining and fenced handoff
 uv run pytest -v tests/test_lifecycle.py
 uv run pytest -v tests/test_drain.py
+
+# inference journal: crash points E1 to E4, fencing, races
+uv run pytest -v tests/test_inference_journal.py
 
 # individual critical tests
 uv run pytest -v tests/test_recovery.py::test_real_subprocess_kill_then_recover
@@ -349,6 +352,51 @@ usage, and terminal error; the provider holds no result slot, so concurrent call
 cross. Cancellation reuses `lifecycle.CancelToken`; `ProviderCancelled` subclasses the
 existing `Cancelled`, so drain code catches it unchanged.
 
+## Inference journal (v0.3 step 2)
+
+Implements step 2 of `../architecture/inference-router.md`: five new tables
+(`conversations`, `messages`, `inference_calls`, `budget_ledger`, `agent_budgets`) and
+`gameshark/inference/journal.py`. Still no HTTP transport, router, executor, or model
+lifecycle; `FakeProvider` stays free of SQLite.
+
+Each attempt costs two fenced writes, the effect journal's shape:
+
+1. **Reserve** bumps `inference_calls.attempts` and inserts a `budget_ledger` row
+   `reserved` before the provider sees a byte. The request comes from `messages` rows with
+   `seq < base_seq`, never from the caller, so no provider ever supplies identity or history.
+2. **Commit** inserts the assistant message at `seq = base_seq`, advances `next_seq`, marks
+   the call `done`, and settles the ledger to actual usage, all in one `BEGIN IMMEDIATE`
+   transaction guarded by `guard_in_txn`.
+
+Before commit, `collect` checks every chunk and the result against the reservation's
+`call_id` and attempt, with contiguous indices and text equal to the joined chunks;
+any mismatch raises `ResultMismatch` and writes nothing. Commit fails closed on a stale,
+released, or expired lease (`FencedError`), a superseded attempt (`StaleAttempt`), an
+operator cancelled call (`CallCancelled`), or a moved conversation (`ContextConflict`). A
+call already `done` returns its committed message. Attempts cap at 3 across restarts
+(`AttemptsExhausted`); a refusal from `generate`, which does no I/O, undoes its
+reservation, so it consumes no attempt and no budget.
+
+Crash recovery, by crash point (`crash_at` label, or SIGKILL in `tests/inference_worker.py`):
+
+| Point | Durable state at death | Recovery |
+|---|---|---|
+| E1 `E1_before_reserve` | event pending; no call row | replay reserves attempt 1 and commits it; ledger `settled` |
+| E2 `E2_after_reserve` | attempt 1 `reserved`; provider never called | `settle_abandoned` marks attempt 1 `lost` at full reservation; replay runs attempt 2 |
+| E3 `E3_after_provider` | attempt 1 `reserved`; answer only in memory | same as E2; the provider ran twice and a rerun may produce different text |
+| E4 `E4_after_commit` | call `done`, message committed; event pending | replay finds `done` and returns the committed message with zero provider calls; the effect posts once |
+
+Recovery settles abandoned reservations and nothing else. It never dispatches a call: the
+owning event or responsibility replays and reissues the same `call_id`. Same owner
+restarts on a live lease keep their generation, so recovery charges every `reserved` row
+this incarnation does not hold; the commit's attempt and ledger checks then stop a same
+generation zombie as well. An effect whose intent cites a `call_id` is refused
+(`UncommittedOutput`) until that call is `done`, so model output reaches a consequential
+action only through a committed message and the effect journal.
+
+Not guaranteed: exactly once provider execution, exactly once billing, or identical text
+after a rerun. Budget admission arrives with the router (step 3).
+
 ## Actual test results
 
 ```
@@ -363,6 +411,16 @@ tests/test_drain.py::test_drain_deadline_cancels_and_successor_finishes_exactly_
 tests/test_drain.py::test_non_cooperative_stall_aborts_at_grace_and_releases PASSED
 tests/test_drain.py::test_sigkill_mid_drain_keeps_successor_out_until_expiry PASSED
 tests/test_drain.py::test_stale_owner_completion_is_fenced_after_takeover PASSED
+tests/test_expired_lease.py::test_expired_owner_with_no_successor_commits_nothing PASSED
+tests/test_expired_lease.py::test_expiry_boundary_rejects_at_expires_at PASSED
+tests/test_expired_lease.py::test_missing_lease_row_fails_closed[0] PASSED
+tests/test_expired_lease.py::test_missing_lease_row_fails_closed[1] PASSED
+tests/test_expired_lease.py::test_renewed_lease_commits_past_original_ttl PASSED
+tests/test_expired_lease.py::test_draining_owner_commits_while_renewed_then_fences_on_expiry PASSED
+tests/test_expired_lease.py::test_released_draining_owner_commits_nothing PASSED
+tests/test_expired_lease.py::test_old_generation_fenced_after_takeover PASSED
+tests/test_expired_lease.py::test_late_completion_fails_instead_of_recording_success PASSED
+tests/test_expired_lease.py::test_expiry_during_transaction_commits_before_any_takeover PASSED
 tests/test_github_monitor.py::test_assign_then_quiet_poll_delivers_nothing PASSED
 tests/test_github_monitor.py::test_new_review_delivers_and_dedups_on_repoll PASSED
 tests/test_github_monitor.py::test_classification_kinds_and_relevance PASSED
@@ -462,6 +520,36 @@ tests/test_inference_contracts.py::test_error_classification[ProviderCancelled-F
 tests/test_inference_contracts.py::test_error_classification[AttemptsExhausted-False-False] PASSED
 tests/test_inference_contracts.py::test_errors_carry_retry_hints PASSED
 tests/test_inference_contracts.py::test_health_is_scripted_and_counted PASSED
+tests/test_inference_journal.py::test_ask_commits_one_message_settles_ledger_and_posts_once PASSED
+tests/test_inference_journal.py::test_crash_point_recovers_to_one_answer_50_seeds[E1_before_reserve] PASSED
+tests/test_inference_journal.py::test_crash_point_recovers_to_one_answer_50_seeds[E2_after_reserve] PASSED
+tests/test_inference_journal.py::test_crash_point_recovers_to_one_answer_50_seeds[E3_after_provider] PASSED
+tests/test_inference_journal.py::test_crash_point_recovers_to_one_answer_50_seeds[E4_after_commit] PASSED
+tests/test_inference_journal.py::test_sigkill_at_crash_point_recovers_to_one_answer[E1_before_reserve] PASSED
+tests/test_inference_journal.py::test_sigkill_at_crash_point_recovers_to_one_answer[E2_after_reserve] PASSED
+tests/test_inference_journal.py::test_sigkill_at_crash_point_recovers_to_one_answer[E3_after_provider] PASSED
+tests/test_inference_journal.py::test_sigkill_at_crash_point_recovers_to_one_answer[E4_after_commit] PASSED
+tests/test_inference_journal.py::test_replay_of_done_call_short_circuits_without_provider PASSED
+tests/test_inference_journal.py::test_duplicate_commit_of_one_reservation_writes_one_row PASSED
+tests/test_inference_journal.py::test_concurrent_commits_of_two_attempts_keep_only_the_latest PASSED
+tests/test_inference_journal.py::test_concurrent_commit_of_one_reservation_from_two_connections PASSED
+tests/test_inference_journal.py::test_concurrent_calls_on_distinct_conversations_all_commit PASSED
+tests/test_inference_journal.py::test_two_calls_on_one_conversation_conflict_then_rebase PASSED
+tests/test_inference_journal.py::test_foreign_chunks_and_results_are_rejected_and_write_nothing PASSED
+tests/test_inference_journal.py::test_stale_owner_cannot_commit_after_takeover PASSED
+tests/test_inference_journal.py::test_released_owner_cannot_commit PASSED
+tests/test_inference_journal.py::test_expired_owner_with_no_successor_cannot_commit PASSED
+tests/test_inference_journal.py::test_same_generation_zombie_cannot_commit_a_settled_attempt PASSED
+tests/test_inference_journal.py::test_append_is_idempotent_and_refuses_conflicts PASSED
+tests/test_inference_journal.py::test_call_and_conversation_ownership_are_enforced PASSED
+tests/test_inference_journal.py::test_attempt_cap_survives_crash_loop_restarts PASSED
+tests/test_inference_journal.py::test_drain_cancel_mid_stream_keeps_partial_text_out_and_call_pending PASSED
+tests/test_inference_journal.py::test_operator_cancel_discards_a_late_result_and_never_reruns PASSED
+tests/test_inference_journal.py::test_interrupted_stream_commits_nothing PASSED
+tests/test_inference_journal.py::test_pre_dispatch_refusal_consumes_no_attempt_or_budget PASSED
+tests/test_inference_journal.py::test_reservation_is_durable_before_dispatch_and_lost_charges_in_full PASSED
+tests/test_inference_journal.py::test_provider_swap_keeps_identity_and_resends_full_context PASSED
+tests/test_inference_journal.py::test_effect_citing_an_uncommitted_call_is_refused PASSED
 tests/test_invariants.py::test_i1_identity_stable_across_restart PASSED
 tests/test_invariants.py::test_i2_single_owner PASSED
 tests/test_invariants.py::test_i3_checkpoint_before_effect PASSED
@@ -497,7 +585,7 @@ tests/test_recovery.py::test_stale_external_effect_rejected_by_destination PASSE
 tests/test_recovery.py::test_authorization_revocation_survives_restart PASSED
 tests/test_recovery.py::test_real_subprocess_kill_then_recover PASSED
 tests/test_takeover.py::test_stale_owner_exits_and_successor_recovers_after_sigkill PASSED
-144 passed
+184 passed
 ```
 
-All 95 tests that predate the inference contracts run unchanged. `uv run ruff check .` reports no findings.
+All 154 tests that predate the inference journal run unchanged. `uv run ruff check .` reports no findings.
