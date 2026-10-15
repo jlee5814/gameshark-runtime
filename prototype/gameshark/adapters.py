@@ -32,6 +32,7 @@ class AdapterContext:
     clock: object = None                       # injectable Clock for durable timestamps
     admit: Callable[[], None] | None = None    # raises Draining once admission is frozen
     cancel: object = None                      # lifecycle CancelToken, checked at safe points
+    inference: object = None                   # InferenceJournal for durable model calls
 
 
 class Adapter(Protocol):

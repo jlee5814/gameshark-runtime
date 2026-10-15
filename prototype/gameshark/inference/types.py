@@ -98,6 +98,11 @@ class ProviderRequest:
             raise ValueError("max_tokens must be positive")
 
 
+def estimate_tokens(req: ProviderRequest) -> int:
+    """Prompt size in whitespace words: a stand in until a provider reports a tokenizer."""
+    return sum(len(m.content.split()) for m in req.messages)
+
+
 @dataclass(frozen=True)
 class Chunk:
     call_id: str
@@ -224,6 +229,29 @@ class ProviderCancelled(ProviderError, Cancelled):
     """Operator or drain cancellation reached a provider call. Terminal, never retried.
 
     Subclasses the runtime's Cancelled so drain code that catches Cancelled still does.
+    """
+
+
+class ResultMismatch(ProviderError):
+    """A chunk or result carried another call's id or attempt, or its text disagreed with its
+    chunks. Nothing commits; another attempt may succeed."""
+
+    retryable = True
+
+
+class StaleAttempt(ProviderError):
+    """A commit named an attempt that a later reservation or recovery already superseded."""
+
+
+class OwnershipMismatch(ProviderError):
+    """A call_id or conversation was reused under another conversation or agent."""
+
+
+class CallCancelled(ProviderError):
+    """The operator cancelled this call durably. Terminal; recovery never resurrects it.
+
+    Deliberately not a runtime Cancelled: a handler settles it as an outcome instead of
+    leaving its event pending for a successor.
     """
 
 
