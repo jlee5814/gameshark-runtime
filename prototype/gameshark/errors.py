@@ -59,6 +59,18 @@ class Cancelled(Exception):
     """
 
 
+class StalePresence(Exception):
+    """A surface wrote under a presence generation it no longer holds.
+
+    The surface was jacked out, or a jack reverted. It must resync from the runtime and
+    render as a ghost; retrying under the same generation can never succeed.
+    """
+
+
+class HandoffConflict(Exception):
+    """A jack was requested while another handoff is still open, or reused an id."""
+
+
 class UncommittedOutput(Exception):
     """An effect cited model output whose call has not committed (R5).
 

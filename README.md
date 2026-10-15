@@ -35,6 +35,10 @@ process restarts without a second prompt.
   capability and budget admission, a fenced inference journal, and a drain then fence
   handoff, so Stark switches local and cloud models without losing identity or duties.
   Design: [architecture/inference-router.md](architecture/inference-router.md).
+- **v0.4 (in progress)** — Stark companion: a fenced presence lease and two phase Jack In
+  handoff so a floating Mac avatar and a paired iPhone act as thin views over one runtime.
+  Runtime core landed; surfaces pending.
+  Design: [architecture/stark-companion.md](architecture/stark-companion.md).
 
 ## Run
 
