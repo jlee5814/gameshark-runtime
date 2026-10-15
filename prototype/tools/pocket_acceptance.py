@@ -1,7 +1,7 @@
 """Stark Pocket acceptance: Mac → iPhone simulator → Mac, against the real runtime.
 
     uv run python tools/pocket_acceptance.py --app ../mac/build/StarkMac.app \
-        --project ../ios/StarkPocket/StarkPocket.xcodeproj
+        --project ../ios/StarkPocket/StarkPocket.xcodeproj --ctl <path to starkctl>
 
 Uses ~/.gameshark/demo (fresh), never the everyday database. Starts `stark.py run --lan`,
 StarkMac with snapshots on, pairs the simulator through `stark.py pair`, and runs the
@@ -80,7 +80,8 @@ class Pocket:
 
     def start_app(self) -> None:
         exe = self.args.app / "Contents" / "MacOS" / "StarkMac"
-        env = {**os.environ, "STARK_SOCKET": str(self.sock), "STARK_SNAPSHOT_DIR": str(self.shots)}
+        env = {**os.environ, "STARK_SOCKET": str(self.sock), "STARK_SNAPSHOT_DIR": str(self.shots),
+               "STARK_DEMO_CONTROL": "1"}
         self.app = subprocess.Popen([str(exe)], env=env, stdout=subprocess.DEVNULL,
                                     stderr=subprocess.DEVNULL)
 
@@ -93,8 +94,11 @@ class Pocket:
         return json.loads(self.cli("pair", "--name", name, "--json",
                                    "--address", "127.0.0.1"))["link"]
 
-    def ui_test(self, test: str, link: str, bundle: Path) -> subprocess.CompletedProcess:
+    def ui_test(self, test: str, link: str, bundle: Path,
+                signal_dir: Path | None = None) -> subprocess.CompletedProcess:
         env = {**os.environ, "TEST_RUNNER_STARK_PAIR_LINK": link}
+        if signal_dir is not None:
+            env["TEST_RUNNER_STARK_SIGNAL_DIR"] = str(signal_dir)
         shutil.rmtree(bundle, ignore_errors=True)
         cmd = ["xcodebuild", "-project", str(self.args.project), "-scheme", "StarkPocket",
                "-destination", f"platform=iOS Simulator,name={self.args.simulator}",
@@ -191,19 +195,46 @@ class Pocket:
                     last = p
                 time.sleep(0.05)
 
+        signals = self.dir / "pocket-signals"
+        signals.mkdir(exist_ok=True)
+        jacked_in: list[str] = []
+
+        def mac_jacks_in() -> None:
+            # Once the phone holds Stark again with unsent text, press Jack In Here on the
+            # Mac through StarkMac's own control channel.
+            marker = signals / "draft-typed"
+            end = time.monotonic() + 300
+            while not stop.is_set() and time.monotonic() < end:
+                if marker.exists():
+                    subprocess.run([str(self.args.ctl), "jackin"], check=False, timeout=10)
+                    jacked_in.append(time.strftime("%H:%M:%S"))
+                    return
+                time.sleep(0.1)
+
         t = threading.Thread(target=watch, daemon=True)
         t.start()
+        m = threading.Thread(target=mac_jacks_in, daemon=True)
+        m.start()
         bundle = self.dir / "pocket-handoff.xcresult"
-        res = self.ui_test("PocketHandoffUITests/testJackInTalkAndJackOut", link, bundle)
+        res = self.ui_test("PocketHandoffUITests/testJackInTalkAndJackOut", link, bundle,
+                           signal_dir=signals)
         stop.set()
         t.join()
+        m.join()
         self.handoff_shots = self.export_shots(bundle, self.dir / "pocket-sim-shots" / "handoff")
         (self.dir / "pocket-handoff-xcodebuild.log").write_text(res.stdout + res.stderr)
         if res.returncode != 0:
             tail = [ln for ln in (res.stdout + res.stderr).splitlines() if "error" in ln][-3:]
             raise AssertionError(f"UI test failed: {tail}")
         self.timeline = timeline
-        return f"UI test passed; presence timeline {' -> '.join(timeline)}"
+        if not jacked_in:
+            raise AssertionError("the phone never signalled its unsent draft")
+        carried = self.q("SELECT draft FROM handoffs WHERE state='acked' AND to_surface='mac' "
+                         "AND from_surface LIKE 'pocket-%' ORDER BY created DESC LIMIT 1")
+        if not carried or carried[0][0] != "unsent from my pocket":
+            raise AssertionError(f"Mac Jack In Here carried draft {carried}")
+        return (f"UI test passed; presence timeline {' -> '.join(timeline)}; Mac Jack In Here "
+                f"journaled the phone's draft {carried[0][0]!r}")
 
     def s3_mac_dimmed(self) -> str:
         ghost = [s for s in self.states() if s.split(" ")[1] == "ghost" and "presence=pocket-" in s]
@@ -333,12 +364,13 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--app", type=Path, required=True)
     ap.add_argument("--project", type=Path, required=True)
+    ap.add_argument("--ctl", type=Path, required=True, help="starkctl, to press Jack In Here")
     ap.add_argument("--simulator", default="iPhone 18 Pro")
     ap.add_argument("--dir", type=Path, default=Path.home() / ".gameshark" / "demo")
     ap.add_argument("--fake-delay", type=float, default=2.0)
     ap.add_argument("--skip-faults", action="store_true")
     args = ap.parse_args()
-    args.app, args.project = args.app.resolve(), args.project.resolve()
+    args.app, args.project, args.ctl = args.app.resolve(), args.project.resolve(), args.ctl.resolve()
     return Pocket(args).run()
 
 

@@ -8,10 +8,11 @@ import Foundation
 //   starkctl say TEXT...       type TEXT into the chat field and send it
 //   starkctl clickthrough on|off
 //   starkctl reconnect
+//   starkctl jackin            Jack In Here: pull Stark back from a paired device
 //   starkctl snapshot PATH
 let args = Array(CommandLine.arguments.dropFirst())
 guard let cmd = args.first else {
-    FileHandle.standardError.write(Data("usage: starkctl move|chat|say|clickthrough|reconnect|snapshot ...\n".utf8))
+    FileHandle.standardError.write(Data("usage: starkctl move|chat|say|clickthrough|reconnect|jackin|snapshot ...\n".utf8))
     exit(2)
 }
 DistributedNotificationCenter.default().postNotificationName(
