@@ -1,6 +1,6 @@
 # GameShark inference router: v0.3 design
 
-Status: design, with steps 0 to 3 of Minimal v0.3 scope implemented (graceful drain; provider contracts, the inference journal, and the router on `FakeProvider` in `prototype/gameshark/inference/`). v0.1 and v0.2 runtime code stays unchanged.
+Status: design, with steps 0 to 4 of Minimal v0.3 scope implemented (graceful drain; provider contracts, the inference journal, the router, and the OpenAI compatible HTTP provider in `prototype/gameshark/inference/`). v0.1 and v0.2 runtime code stays unchanged.
 
 Stark gains inference without letting any model own Stark. Providers become disposable executors behind one contract; identity, memory, and responsibilities stay in GameShark's SQLite store under the existing fenced lease. The Bionic (LM Studio) study supplies the problem shape (`../research/bionic/deep-analysis.md`); GameShark code stays clean room.
 
@@ -144,7 +144,7 @@ Contracts:
 - **Errors.** Providers raise only taxonomy types below; raw transport exceptions are wrapped at the boundary, as `RestGitHubClient` does in v0.2.
 - **Secrets.** API keys come from the environment or keychain at construction; they never enter `ProviderRequest`, the journal, or logs.
 
-v0.3 ships two providers: `FakeProvider` (deterministic text, scripted faults at each chunk index, scripted latency) and `OpenAICompatProvider` (stdlib `http.client`, SSE parsing, `/v1/chat/completions` and `/v1/models`, base URL plus optional key). Locality is configuration: loopback URLs are local; anything else is cloud. A loopback URL never needs the egress grant; a cloud URL always does.
+v0.3 ships two providers: `FakeProvider` (deterministic text, scripted faults at each chunk index, scripted latency) and `OpenAICompatProvider` (stdlib `http.client`, SSE parsing, `/v1/chat/completions` and `/v1/models`, base URL plus optional key). Revised in step 4: locality derives from the validated base URL, never from a label. Only a loopback IP literal is local (`localhost` is refused, since its resolution is not verifiable at connect time); every other host is cloud and must use HTTPS. A loopback URL never needs the egress grant; a cloud URL always does.
 
 ## Router
 
@@ -178,7 +178,7 @@ Windows are fixed and aligned: a window of `w` seconds starts at `floor(now / w)
 | `TRUSTED_BYTES` | UTF 8 bytes + 8 per message + 16 | hard, valid only for byte level BPE or byte fallback tokenizers (at least one byte per token), which the operator asserts in configuration; roughly 3 to 4 times the true count for English |
 | `ESTIMATE` | whitespace words | soft. A paid provider under any configured budget is refused before dispatch (`BudgetUnenforceable`) unless the durable grant `inference.cloud.soft_budget` is effective. Local providers cost nothing and run soft without a grant |
 
-Actual usage always settles unmodified and is never truncated to fit the reservation. An attempt whose actual tokens or cost exceed its reservation returns an `Overrun` and appears in `InferenceJournal.overruns()`; later admissions see the actual spend, so a soft overrun shrinks what remains of the window. A soft budget can overrun by the estimation error of the attempts in flight when it runs out. A trusted provider that overruns violated its declared bound: the overrun is flagged hard and the provider is demoted to `ESTIMATE` for the process. No cloud budget is hard until a provider reports a trusted bound; increment 4 can tighten this with provider reported prompt counts.
+Actual usage always settles unmodified and is never truncated to fit the reservation. An attempt whose actual tokens or cost exceed its reservation returns an `Overrun` and appears in `InferenceJournal.overruns()`; later admissions see the actual spend, so a soft overrun shrinks what remains of the window. A soft budget can overrun by the estimation error of the attempts in flight when it runs out. A trusted provider that overruns violated its declared bound: the overrun is flagged hard and the provider is demoted to `ESTIMATE` for the process. No cloud budget is hard until a provider reports a trusted bound. Revised in step 4: a provider that reports no usage returns `usage=None`, never an estimate; the attempt commits and its ledger row settles `unmetered` at the full reservation, which bounds actual spend only under a trusted prompt bound.
 
 ### Concurrency, queueing, backpressure
 
@@ -315,7 +315,7 @@ CREATE TABLE IF NOT EXISTS budget_ledger (
     tokens_in      INTEGER,
     tokens_out     INTEGER,
     cost_micros    INTEGER,
-    status         TEXT NOT NULL,             -- reserved | settled | lost
+    status         TEXT NOT NULL,             -- reserved | settled | unmetered | lost
     PRIMARY KEY (call_id, attempt)
 );
 
@@ -391,7 +391,7 @@ Ordered increments; each lands with its own tests and leaves the suite green.
 1. **Contracts.** Done. `inference/types.py` (immutable values, error taxonomy), `inference/provider.py` (`Provider`, request scoped `ProviderCall`), `inference/fake.py` (`FakeProvider` with deterministic text, scripted delays, faults per chunk index, invocation counts). Reuses the existing `CancelToken`. Pure unit tests in `tests/test_inference_contracts.py`.
 2. **Journal.** Done. Tables plus `InferenceJournal` (reserve, commit, short circuit, recovery settlement) with crash points E1 to E4 using the existing `crash_at` hook; `collect` verifies chunk and result identity; new errors `ResultMismatch`, `StaleAttempt`, `OwnershipMismatch`, `CallCancelled`; effects citing an uncommitted `call_id` are refused (R5). Tests in `tests/test_inference_journal.py`; see `prototype/README.md`, Inference journal.
 3. **Router.** Done. `inference/router.py` (selection, policy, failover, degraded flag, `TokenBound`), `inference/scheduler.py` (slots, bounded FIFO queues, per agent and per conversation limits), `inference/budget.py` (fixed window admission inside the reserve transaction). Journal additions are optional arguments (`prompt_tokens`, `admit`, `error_kind`, `degraded`); E1 to E4 unchanged. Fake providers only; no worker executor (step 6) or lifecycle tracker (step 5): health is a cached `health()` probe plus rate limit circuits and auth blocks. Tests in `tests/test_inference_router.py`; see `prototype/README.md`, Inference router.
-4. **OpenAI compatible provider.** stdlib HTTP plus SSE; tested against a local HTTP fixture in the style of `tests/test_github_rest.py`. No new runtime dependency.
+4. **OpenAI compatible provider.** Done. `inference/openai_compat.py`: stdlib `http.client`, incremental SSE decoding, endpoint validated locality, cancellation and deadlines inside socket reads, typed error mapping, key redaction, `unmetered` settlement for missing usage. Tested against a loopback fixture in `tests/test_openai_compat.py`, including E1 to E4 with the HTTP provider; see `prototype/README.md`, OpenAI compatible provider. No new runtime dependency.
 5. **Lifecycle tracker.** Health probes, crashed, failed with cooldown, lazy load, replacement drain. Externally managed servers only.
 6. **Worker integration.** Executor, completion queue, tick thread commits, handoff steps 1 to 6; subprocess SIGKILL tests in the style of `tests/test_daemon.py`.
 7. **Live smoke (opt in, not CI).** One local server (SGLang or `mlx_lm.server`) and one cloud endpoint, gated by environment variables; records first token latency, cancel behavior, and slot behavior per provider.

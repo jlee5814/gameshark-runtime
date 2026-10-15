@@ -191,6 +191,10 @@ uv run pytest -v tests/test_inference_journal.py
 uv run pytest -v tests/test_inference_router.py
 uv run python bench/router_overhead.py
 
+# OpenAI compatible provider: SSE, usage, cancellation, locality, redaction, E1 to E4
+uv run pytest -v tests/test_openai_compat.py
+uv run python bench/openai_compat.py
+
 # individual critical tests
 uv run pytest -v tests/test_recovery.py::test_real_subprocess_kill_then_recover
 uv run pytest -v tests/test_recovery.py::test_c_crash_after_remote_before_journal
@@ -446,6 +450,61 @@ settles unmodified, never truncated to the reservation, and an attempt above its
 reservation returns an `Overrun` and appears in `InferenceJournal.overruns()`. A trusted
 provider that overruns is demoted to `ESTIMATE` for the process.
 
+## OpenAI compatible provider (v0.3 step 4)
+
+Implements step 4 of `../architecture/inference-router.md`: `OpenAICompatProvider` in
+`gameshark/inference/openai_compat.py`, stdlib `http.client` only. It reaches externally
+managed SGLang, `mlx_lm.server`, the LM Studio and Bionic local server, and compatible
+cloud APIs through `GET {base}/models` (health) and streaming
+`POST {base}/chat/completions`. The base URL follows the OpenAI SDK convention and ends in
+`/v1`. No engine spawning, lifecycle tracker, or worker executor yet.
+
+```python
+OpenAICompatProvider("sglang", "http://127.0.0.1:30000/v1", "qwen", 32768, max_concurrency=8)
+OpenAICompatProvider("mlx", "http://127.0.0.1:8080/v1", "mlx-model", 8192)
+OpenAICompatProvider("cloud", "https://api.example.com/v1", "model", 128000,
+                     api_key=os.environ["API_KEY"], price_in_micros=150, price_out_micros=600)
+```
+
+| Concern | Behavior |
+|---|---|
+| Dispatch | `generate` validates and returns a call; no I/O. Connect and POST happen on first iteration. One connection per call, never pooled |
+| Context | every request carries the full message list from the journal; no server side session is used |
+| SSE | incremental decoder: reads split anywhere (inside UTF 8 sequences, between CR and LF), CRLF, LF, or CR line ends, comments and keepalives, multi line data, `[DONE]`; 1 MiB line and 8 MiB response caps |
+| Locality | derived from the URL: only a loopback IP literal is local; `localhost` is refused; every other host is cloud and must use HTTPS. No locality argument exists |
+| Egress | cloud locality puts the provider behind the router's durable `inference.cloud` grant; the provider also refuses a `LOCAL_ONLY` request before dispatch |
+| Transport | redirects never followed; proxy environment variables never read; TLS verified with the default context |
+| Secrets | the key appears only in the live Authorization header; error bodies, health details, and `repr` are scrubbed; `config_fingerprint` hashes it for `ProviderConfig.fingerprint` |
+| Capabilities | no tools, JSON mode, or vision advertised; `needs` and tool role messages are refused before dispatch |
+
+| Transport condition | Error |
+|---|---|
+| connection refused, DNS or TLS failure, reset before a response | `ProviderUnavailable` |
+| past the deadline (any blocking step), 408 | `Timeout` |
+| no bytes within `read_idle_s` before the deadline | `StreamInterrupted` |
+| 401, 403 | `AuthFailed` |
+| 429 | `RateLimited(retry_after)` from `Retry-After` (seconds or HTTP date) or `retry-after-ms`, else 5 s, capped at 300 s |
+| 5xx, 3xx (redirect refused), stream error object | `ProviderUnavailable` |
+| other 4xx, unrequested tool calls | `InvalidRequest` |
+| wrong content type, malformed event, unknown finish reason, EOF or reset before `[DONE]`, `[DONE]` without a finish reason | `StreamInterrupted` |
+| cancellation (wins over the deadline) | `ProviderCancelled` |
+
+Cancellation and deadlines act inside network reads. Every blocking step (connect,
+response headers, each read) waits at most `min(deadline - now, read_idle_s)`, and
+`CancelToken.cancel` shuts the socket down from the cancelling thread, which wakes a
+blocked read at once. The call keeps its own socket reference because `http.client` drops
+`conn.sock` once a close delimited response begins. Partial text never reaches a result.
+
+Missing usage. The request asks for a final usage chunk (`stream_options.include_usage`,
+off with `stream_usage=False`). When none arrives, or its counts are not non negative
+integers, the result carries `usage=None`; nothing is estimated. The answer still commits,
+and the journal settles the ledger row `unmetered`: token columns stay NULL and
+`cost_micros` equals `reserved_micros`, so `spend()` charges the full reservation, never
+zero. `RouteResult.metered` is False and no `Overrun` is computed. The charge is an upper
+bound only under a `TRUSTED_BYTES` bound (the server receives `max_tokens`); under
+`ESTIMATE` the budget stays soft and the existing `BudgetUnenforceable` gate still applies
+to paid providers.
+
 ## Actual test results
 
 ```
@@ -647,6 +706,88 @@ tests/test_lifecycle.py::test_draining_refuses_new_work_before_it_persists PASSE
 tests/test_lifecycle.py::test_cancel_leaves_event_pending_for_successor PASSED
 tests/test_lifecycle.py::test_run_forever_drains_on_stop_and_releases PASSED
 tests/test_lifecycle.py::test_v02_lease_table_migrates_in_place PASSED
+tests/test_openai_compat.py::test_sse_decoder_whole_stream PASSED
+tests/test_openai_compat.py::test_sse_decoder_every_split_point_and_bytewise PASSED
+tests/test_openai_compat.py::test_sse_decoder_rejects_bad_utf8_truncated_sequence_and_oversize PASSED
+tests/test_openai_compat.py::test_sse_decoder_drops_event_cut_off_by_eof PASSED
+tests/test_openai_compat.py::test_normal_completion_with_usage_and_wire_shape PASSED
+tests/test_openai_compat.py::test_chunked_transfer_crlf_and_length_finish PASSED
+tests/test_openai_compat.py::test_fragmented_writes_split_unicode_and_keepalives PASSED
+tests/test_openai_compat.py::test_multiline_data_event_and_role_only_chunk PASSED
+tests/test_openai_compat.py::test_two_simultaneous_calls_on_one_provider_keep_their_own_results PASSED
+tests/test_openai_compat.py::test_empty_content_with_finish_is_a_valid_empty_answer PASSED
+tests/test_openai_compat.py::test_missing_usage_yields_none_never_an_estimate PASSED
+tests/test_openai_compat.py::test_malformed_usage_is_treated_as_missing[bad0] PASSED
+tests/test_openai_compat.py::test_malformed_usage_is_treated_as_missing[bad1] PASSED
+tests/test_openai_compat.py::test_malformed_usage_is_treated_as_missing[bad2] PASSED
+tests/test_openai_compat.py::test_malformed_usage_is_treated_as_missing[bad3] PASSED
+tests/test_openai_compat.py::test_malformed_usage_is_treated_as_missing[bad4] PASSED
+tests/test_openai_compat.py::test_stream_usage_off_omits_stream_options PASSED
+tests/test_openai_compat.py::test_malformed_or_truncated_streams_interrupt[reply0-before \\[DONE\\]] PASSED
+tests/test_openai_compat.py::test_malformed_or_truncated_streams_interrupt[reply1-before \\[DONE\\]] PASSED
+tests/test_openai_compat.py::test_malformed_or_truncated_streams_interrupt[reply2-before \\[DONE\\]] PASSED
+tests/test_openai_compat.py::test_malformed_or_truncated_streams_interrupt[reply3-without a finish reason] PASSED
+tests/test_openai_compat.py::test_malformed_or_truncated_streams_interrupt[reply4-undecodable] PASSED
+tests/test_openai_compat.py::test_malformed_or_truncated_streams_interrupt[reply5-no choices] PASSED
+tests/test_openai_compat.py::test_malformed_or_truncated_streams_interrupt[reply6-content_filter] PASSED
+tests/test_openai_compat.py::test_malformed_or_truncated_streams_interrupt[reply7-failed] PASSED
+tests/test_openai_compat.py::test_malformed_or_truncated_streams_interrupt[reply8-not an event] PASSED
+tests/test_openai_compat.py::test_malformed_or_truncated_streams_interrupt[reply9-UTF 8] PASSED
+tests/test_openai_compat.py::test_stream_error_object_and_tool_calls PASSED
+tests/test_openai_compat.py::test_premature_disconnect_mid_stream_keeps_no_partial_result PASSED
+tests/test_openai_compat.py::test_status_mapping[401-AuthFailed] PASSED
+tests/test_openai_compat.py::test_status_mapping[403-AuthFailed] PASSED
+tests/test_openai_compat.py::test_status_mapping[500-ProviderUnavailable] PASSED
+tests/test_openai_compat.py::test_status_mapping[502-ProviderUnavailable] PASSED
+tests/test_openai_compat.py::test_status_mapping[503-ProviderUnavailable] PASSED
+tests/test_openai_compat.py::test_status_mapping[408-Timeout] PASSED
+tests/test_openai_compat.py::test_status_mapping[400-InvalidRequest] PASSED
+tests/test_openai_compat.py::test_status_mapping[404-InvalidRequest] PASSED
+tests/test_openai_compat.py::test_rate_limit_retry_after[headers0-7.0] PASSED
+tests/test_openai_compat.py::test_rate_limit_retry_after[headers1-1.5] PASSED
+tests/test_openai_compat.py::test_rate_limit_retry_after[headers2-5.0] PASSED
+tests/test_openai_compat.py::test_rate_limit_retry_after[headers3-300.0] PASSED
+tests/test_openai_compat.py::test_rate_limit_retry_after_http_date PASSED
+tests/test_openai_compat.py::test_redirect_is_refused_not_followed PASSED
+tests/test_openai_compat.py::test_connection_refused_is_unavailable PASSED
+tests/test_openai_compat.py::test_cancel_during_stalled_socket_read PASSED
+tests/test_openai_compat.py::test_cancel_while_waiting_for_response_headers PASSED
+tests/test_openai_compat.py::test_deadline_expires_during_stalled_read PASSED
+tests/test_openai_compat.py::test_idle_stall_within_deadline_interrupts PASSED
+tests/test_openai_compat.py::test_cancel_wins_over_expired_deadline_and_nothing_is_sent PASSED
+tests/test_openai_compat.py::test_close_abandons_stream_and_closes_socket PASSED
+tests/test_openai_compat.py::test_generate_refuses_before_dispatch PASSED
+tests/test_openai_compat.py::test_locality_derives_from_validated_endpoint[http://127.0.0.1:30000/v1-Locality.LOCAL] PASSED
+tests/test_openai_compat.py::test_locality_derives_from_validated_endpoint[http://127.8.9.10:1234/v1-Locality.LOCAL] PASSED
+tests/test_openai_compat.py::test_locality_derives_from_validated_endpoint[http://[::1]:8080/v1-Locality.LOCAL] PASSED
+tests/test_openai_compat.py::test_locality_derives_from_validated_endpoint[http://[::ffff:127.0.0.1]:8080/v1-Locality.LOCAL] PASSED
+tests/test_openai_compat.py::test_locality_derives_from_validated_endpoint[https://127.0.0.1/v1-Locality.LOCAL] PASSED
+tests/test_openai_compat.py::test_locality_derives_from_validated_endpoint[https://api.openai.com/v1-Locality.CLOUD] PASSED
+tests/test_openai_compat.py::test_locality_derives_from_validated_endpoint[https://10.0.0.5:30000/v1-Locality.CLOUD] PASSED
+tests/test_openai_compat.py::test_locality_derives_from_validated_endpoint[https://127.0.0.1.nip.io/v1-Locality.CLOUD] PASSED
+tests/test_openai_compat.py::test_endpoint_rejections[http://localhost:1234/v1-localhost] PASSED
+tests/test_openai_compat.py::test_endpoint_rejections[http://api.example.com/v1-requires https] PASSED
+tests/test_openai_compat.py::test_endpoint_rejections[http://10.0.0.5:30000/v1-requires https] PASSED
+tests/test_openai_compat.py::test_endpoint_rejections[http://192.168.1.2/v1-requires https] PASSED
+tests/test_openai_compat.py::test_endpoint_rejections[https://user:pw@api.example.com/v1-credentials] PASSED
+tests/test_openai_compat.py::test_endpoint_rejections[ftp://127.0.0.1/v1-scheme] PASSED
+tests/test_openai_compat.py::test_endpoint_rejections[https://api.example.com/v1?key=x-query] PASSED
+tests/test_openai_compat.py::test_locality_label_cannot_be_supplied PASSED
+tests/test_openai_compat.py::test_key_is_sent_on_the_wire_and_redacted_everywhere_else PASSED
+tests/test_openai_compat.py::test_config_fingerprint_tracks_key_endpoint_and_model PASSED
+tests/test_openai_compat.py::test_health_ok_degraded_down PASSED
+tests/test_openai_compat.py::test_router_commits_http_answer_and_settles_reported_usage PASSED
+tests/test_openai_compat.py::test_missing_usage_through_router_charges_full_reservation PASSED
+tests/test_openai_compat.py::test_failed_stream_commits_no_partial_text_and_falls_back PASSED
+tests/test_openai_compat.py::test_failed_only_provider_leaves_call_pending_with_no_message PASSED
+tests/test_openai_compat.py::test_router_falls_back_from_refused_local_provider PASSED
+tests/test_openai_compat.py::test_cloud_http_provider_needs_durable_grant PASSED
+tests/test_openai_compat.py::test_auth_failure_records_fingerprint_not_key PASSED
+tests/test_openai_compat.py::test_rate_limit_from_http_opens_circuit PASSED
+tests/test_openai_compat.py::test_crash_points_recover_with_http_provider[E1_before_reserve] PASSED
+tests/test_openai_compat.py::test_crash_points_recover_with_http_provider[E2_after_reserve] PASSED
+tests/test_openai_compat.py::test_crash_points_recover_with_http_provider[E3_after_provider] PASSED
+tests/test_openai_compat.py::test_crash_points_recover_with_http_provider[E4_after_commit] PASSED
 tests/test_recovery.py::test_a_crash_before_intent PASSED
 tests/test_recovery.py::test_b_crash_after_intent_before_dispatch PASSED
 tests/test_recovery.py::test_c_crash_after_remote_before_journal PASSED
@@ -661,7 +802,7 @@ tests/test_recovery.py::test_stale_external_effect_rejected_by_destination PASSE
 tests/test_recovery.py::test_authorization_revocation_survives_restart PASSED
 tests/test_recovery.py::test_real_subprocess_kill_then_recover PASSED
 tests/test_takeover.py::test_stale_owner_exits_and_successor_recovers_after_sigkill PASSED
-211 passed
+293 passed
 ```
 
-All 184 tests that predate the router run unchanged. `uv run ruff check .` reports no findings.
+All 211 tests that predate the HTTP provider run unchanged. `uv run ruff check .` reports no findings.
