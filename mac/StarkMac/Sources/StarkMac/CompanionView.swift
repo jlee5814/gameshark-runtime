@@ -15,17 +15,28 @@ struct CompanionView: View {
                            height: PanelController.cardSize.height)
                     .transition(.opacity.combined(with: .move(edge: .bottom)))
             }
-            AvatarView(state: model.avatar, clickThrough: model.clickThrough)
-                .frame(width: PanelController.avatarSide, height: PanelController.avatarSide)
+            body(for: model)
+                .frame(width: model.avatarSize.width, height: model.avatarSize.height)
                 .contentShape(Rectangle())
                 .gesture(DragGesture(minimumDistance: 3, coordinateSpace: .global)
                     .onChanged { _ in controller.dragChanged() }
                     .onEnded { _ in controller.dragEnded() })
-                .onTapGesture { controller.toggleChat() }
-                .help("Click to talk to Stark. Drag to move him.")
+                .gesture(TapGesture(count: 2).onEnded { controller.openChat() }
+                    .exclusively(before: TapGesture().onEnded { controller.toggleChat() }))
+                .help("Click to talk to Stark, drag to move him, right click for options.")
         }
         .padding(PanelController.inset)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
+    }
+
+    @ViewBuilder
+    private func body(for model: StarkModel) -> some View {
+        if let stage = model.stage {
+            SpriteAvatarView(stage: stage, size: model.avatarSize, ghost: model.avatar == .ghost,
+                             clickThrough: model.clickThrough)
+        } else {
+            AvatarView(state: model.avatar, clickThrough: model.clickThrough)
+        }
     }
 }
 
@@ -51,6 +62,9 @@ struct ChatCard: View {
                 }
                 .onChange(of: model.state.rows.last?.seq) { _, seq in
                     if let seq { withAnimation { proxy.scrollTo(seq, anchor: .bottom) } }
+                }
+                .onAppear {
+                    if let seq = model.visibleRows.last?.seq { proxy.scrollTo(seq, anchor: .bottom) }
                 }
             }
             if !model.state.isActiveSurface && model.state.connection.isLive {

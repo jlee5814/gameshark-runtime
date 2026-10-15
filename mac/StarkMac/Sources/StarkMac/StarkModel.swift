@@ -8,10 +8,26 @@ import StarkKit
 final class StarkModel {
     private(set) var state: ClientState
     var draft = "" { didSet { draftBox.set(draft) } }
-    var inputFocused = false
-    var chatOpen = false { didSet { markViewed() } }
+    var inputFocused = false { didSet { followRuntime() } }
+    var chatOpen = false {
+        didSet {
+            // SwiftUI reports no focus loss when the field leaves the view with the card.
+            if !chatOpen { inputFocused = false }
+            markViewed()
+        }
+    }
     var clickThrough = false
-    private(set) var viewedSeq = -1
+    private(set) var viewedSeq = -1 { didSet { followRuntime() } }
+
+    /// Stark's sprite body, or nil when no atlas loaded (the vector avatar draws instead).
+    let stage: SpriteStage?
+    /// Device pixels per sheet pixel: 1, 2, or 3. A local preference, never agent state.
+    var avatarScale: Int {
+        didSet { defaults.set(avatarScale, forKey: Self.scaleKey) }
+    }
+    var backingScale: CGFloat = 2
+    static let scales = [1, 2, 3]
+    private static let scaleKey = "avatarScale"
 
     @ObservationIgnored let client: GatewayClient
     @ObservationIgnored private let draftBox = DraftBox()
@@ -19,11 +35,24 @@ final class StarkModel {
 
     init(config: ClientConfig) {
         state = ClientState(surface: config.surface)
+        stage = SpriteAtlas.load().map { SpriteStage(atlas: $0) }
+        let saved = UserDefaults.standard.integer(forKey: Self.scaleKey)
+        avatarScale = Self.scales.contains(saved) ? saved : 1
         let relay = Relay()
         client = GatewayClient(config: config, onChange: { s in relay.forward(s) })
         relay.model = self
         let box = draftBox
         client.setDraftProvider { box.get() }
+        followRuntime()
+    }
+
+    /// Point size of Stark's body at the current scale and display.
+    var avatarSize: CGSize {
+        stage?.size(scale: avatarScale, backing: backingScale) ?? CGSize(width: 112, height: 112)
+    }
+
+    private func followRuntime() {
+        stage?.follow(state, listening: inputFocused, viewedSeq: viewedSeq)
     }
 
     func start() { client.start() }
@@ -54,6 +83,7 @@ final class StarkModel {
             viewedSeq = defaults.object(forKey: viewedKey(uuid)) as? Int ?? -1
         }
         markViewed()
+        followRuntime()
     }
 
     private func markViewed() {

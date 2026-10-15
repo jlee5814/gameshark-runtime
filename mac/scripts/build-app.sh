@@ -1,5 +1,6 @@
 #!/bin/sh
-# Build StarkMac.app from the SwiftPM package: release binary, Info.plist, ad hoc signature.
+# Build StarkMac.app from the SwiftPM package: release binary, sprite atlas, Info.plist,
+# ad hoc signature.
 # Output: mac/build/StarkMac.app
 set -eu
 here="$(cd "$(dirname "$0")" && pwd)"
@@ -7,8 +8,11 @@ here="$(cd "$(dirname "$0")" && pwd)"
 bin="$(cd "$here/../StarkMac" && "$here/swiftpm.sh" build -c release --show-bin-path)/StarkMac"
 app="$here/../build/StarkMac.app"
 rm -rf "$app"
-mkdir -p "$app/Contents/MacOS"
+mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources/stark"
 cp "$bin" "$app/Contents/MacOS/StarkMac"
+# Stark's body: the extracted atlas and its manifest (mac/tools/extract_sprites.py).
+cp "$here/../StarkMac/Assets/stark/manifest.json" "$here/../StarkMac/Assets/stark/stark-atlas.png" \
+  "$app/Contents/Resources/stark/"
 cat > "$app/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">

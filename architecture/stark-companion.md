@@ -109,6 +109,12 @@ Show Chat, Reconnect, Save Snapshot, Quit), and an original vector avatar with i
 listening, working, notification, ghost, and disconnected states. Public APIs only. See
 [mac/StarkMac/README.md](../mac/StarkMac/README.md).
 
+Stark's sprite animation is view state. `StarkAnimation.base(for:)` reads ClientState
+(connection, presence, reply in flight, blocked duties, unviewed replies) and the chat
+field's focus; nothing in the animation path can send a frame to the runtime. Position and
+scale live in the app's UserDefaults. A visual change can therefore never alter identity,
+ownership, presence, or inference (G3).
+
 ## Not yet built
 
 Pinned TLS gateway, device pairing, Bonjour, StarkPhone, voice, system notifications.

@@ -8,8 +8,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var model: StarkModel!
     private var panel: PanelController!
     private var statusItem: NSStatusItem!
-    private var clickThroughItem: NSMenuItem!
-    private var stateItem: NSMenuItem!
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         model = StarkModel(config: .fromEnvironment())
@@ -20,6 +18,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let env = ProcessInfo.processInfo.environment
         if env["STARK_CLICK_THROUGH"] == "1" {
             setClickThrough(true)
+        }
+        if env["STARK_AVATAR_DEMO"] == "1" {
+            model.stage?.setCycle(true)
         }
         if env["STARK_DEMO_CONTROL"] == "1" {
             listenForDemoControl()
@@ -38,6 +39,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func watchForSnapshots() {
         withObservationTracking {
             _ = model.avatar
+            _ = model.stage?.animation
+            _ = model.avatarScale
             _ = model.chatOpen
             _ = model.state.rows.count
             _ = model.state.presence
@@ -54,7 +57,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func recordSnapshot() {
         guard let dir = snapshotDir else { return }
         let s = model.state
-        let line = "\(model.avatar.rawValue) chat=\(model.chatOpen) rows=\(s.rows.count) "
+        let anim = model.stage.map { " anim=\($0.animation.rawValue) scale=\(model.avatarScale)" } ?? ""
+        let line = "\(model.avatar.rawValue)\(anim) chat=\(model.chatOpen) rows=\(s.rows.count) "
             + "presence=\(s.presence.map { "\($0.surface)@\($0.generation)" } ?? "-") "
             + "origin=\(Int(panel.panel.frame.minX)),\(Int(panel.panel.frame.minY))"
         guard line != lastShot else { return }
@@ -104,6 +108,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             model.client.reconnectNow()
         case "snapshot" where args.count == 1:
             panel.snapshot(to: URL(fileURLWithPath: args[0]))
+        case "avatar" where args.count == 1:
+            switch args[0] {
+            case "follow": model.stage?.show(nil)
+            case "cycle": model.stage?.setCycle(true)
+            default: model.stage?.show(StarkAnimation(rawValue: args[0]))
+            }
+        case "scale" where args.count == 1:
+            panel.setScale(Int(args[0]) ?? 0)
         default:
             NSLog("starkctl: unknown command %@", cmd)
         }
@@ -128,18 +140,73 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                                            accessibilityDescription: "Stark")
         let menu = NSMenu()
         menu.delegate = self
-        stateItem = NSMenuItem(title: "Stark", action: nil, keyEquivalent: "")
-        stateItem.isEnabled = false
-        menu.addItem(stateItem)
+        statusItem.menu = menu
+        panel.menuProvider = { [weak self] in self?.buildMenu() }
+    }
+
+    /// One menu for the status item and for right clicking Stark, rebuilt on every open
+    /// so checkmarks and status are current.
+    func buildMenu(into menu: NSMenu = NSMenu()) -> NSMenu {
+        menu.removeAllItems()
+        let s = model.state
+        let gen = s.presence.map { " · \($0.surface) gen \($0.generation)" } ?? ""
+        let status = NSMenuItem(title: "Stark \(s.identity.map { String($0.uuid.prefix(8)) } ?? "")"
+            + " · \(connectionText(s.connection))\(gen)", action: nil, keyEquivalent: "")
+        status.isEnabled = false
+        menu.addItem(status)
         menu.addItem(.separator())
         menu.addItem(item("Show Chat", #selector(showChat), "k"))
-        clickThroughItem = item("Click Through", #selector(toggleClickThrough), "t")
-        menu.addItem(clickThroughItem)
+
+        if model.stage != nil {
+            let scale = NSMenu()
+            for n in StarkModel.scales {
+                let i = item("\(n)×", #selector(pickScale(_:)), "")
+                i.tag = n
+                i.state = model.avatarScale == n ? .on : .off
+                scale.addItem(i)
+            }
+            menu.addItem(submenu("Avatar Scale", scale))
+
+            let gallery = NSMenu()
+            let follow = item("Follow Runtime", #selector(pickAnimation(_:)), "")
+            follow.representedObject = nil
+            follow.state = model.stage?.overriding == nil ? .on : .off
+            gallery.addItem(follow)
+            gallery.addItem(.separator())
+            for a in StarkAnimation.allCases {
+                let i = item(a.rawValue, #selector(pickAnimation(_:)), "")
+                i.representedObject = a.rawValue
+                i.state = model.stage?.overriding == a && model.stage?.cycling == false ? .on : .off
+                gallery.addItem(i)
+            }
+            menu.addItem(submenu("Animation Gallery", gallery))
+            let cycle = item("Cycle Demo", #selector(toggleCycle), "")
+            cycle.state = model.stage?.cycling == true ? .on : .off
+            menu.addItem(cycle)
+        }
+
+        let ct = item("Click Through", #selector(toggleClickThrough), "t")
+        ct.state = model.clickThrough ? .on : .off
+        menu.addItem(ct)
         menu.addItem(item("Reconnect", #selector(reconnect), "r"))
         menu.addItem(item("Save Snapshot", #selector(saveSnapshot), "s"))
         menu.addItem(.separator())
         menu.addItem(item("Quit StarkMac", #selector(quit), "q"))
-        statusItem.menu = menu
+        return menu
+    }
+
+    private func connectionText(_ c: Connection) -> String {
+        switch c {
+        case .live: model.state.isActiveSurface ? "live" : "read only"
+        case .disconnected(let why): why ?? "offline"
+        default: "connecting"
+        }
+    }
+
+    private func submenu(_ title: String, _ sub: NSMenu) -> NSMenuItem {
+        let i = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+        i.submenu = sub
+        return i
     }
 
     private func item(_ title: String, _ action: Selector, _ key: String) -> NSMenuItem {
@@ -148,13 +215,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return i
     }
 
-    func menuWillOpen(_ menu: NSMenu) {
-        let s = model.state
-        let gen = s.presence.map { " · \($0.surface) gen \($0.generation)" } ?? ""
-        stateItem.title = "Stark \(s.identity.map { String($0.uuid.prefix(8)) } ?? "")"
-            + " · \(model.avatar.rawValue)\(gen)"
-        clickThroughItem.state = model.clickThrough ? .on : .off
+    func menuNeedsUpdate(_ menu: NSMenu) { _ = buildMenu(into: menu) }
+
+    @objc private func pickScale(_ sender: NSMenuItem) { panel.setScale(sender.tag) }
+
+    @objc private func pickAnimation(_ sender: NSMenuItem) {
+        model.stage?.show((sender.representedObject as? String).flatMap(StarkAnimation.init(rawValue:)))
     }
+
+    @objc private func toggleCycle() { model.stage?.setCycle(!(model.stage?.cycling ?? false)) }
 
     @objc private func showChat() {
         if model.clickThrough { setClickThrough(false) }

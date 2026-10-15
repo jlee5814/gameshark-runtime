@@ -6,7 +6,6 @@ import SwiftUI
 /// click through. Position is surface local UI state, kept in UserDefaults.
 @MainActor
 final class PanelController {
-    static let avatarSide: CGFloat = 112
     static let inset: CGFloat = 8
     static let cardSize = CGSize(width: 340, height: 380)
     private static let originKey = "panelOrigin"
@@ -14,36 +13,83 @@ final class PanelController {
     let panel: FloatingPanel
     private let model: StarkModel
     private var dragStart: (mouse: NSPoint, origin: NSPoint)?
+    private var lastMouseX: CGFloat = 0
+    /// Builds the right click menu; the app delegate shares it with the status item.
+    var menuProvider: () -> NSMenu? = { nil }
 
     init(model: StarkModel) {
         self.model = model
-        panel = FloatingPanel(contentRect: NSRect(origin: .zero, size: Self.size(open: false)))
-        let host = NSHostingView(rootView: CompanionView(model: model, controller: self))
+        panel = FloatingPanel(contentRect: NSRect(origin: .zero, size: NSSize(width: 10, height: 10)))
+        let host = AvatarHostingView(rootView: CompanionView(model: model, controller: self))
         host.sizingOptions = []
         panel.contentView = host
-        panel.setFrameOrigin(Self.savedOrigin() ?? Self.defaultOrigin())
+        host.menuProvider = { [weak self] in self?.menuProvider() }
+        model.backingScale = panel.backingScaleFactor
+        panel.setFrame(NSRect(origin: Self.savedOrigin() ?? defaultOrigin(), size: size(open: false)),
+                       display: false)
         clampToScreen()
+        let center = NotificationCenter.default
+        center.addObserver(forName: NSWindow.didChangeBackingPropertiesNotification, object: panel,
+                           queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.backingChanged() }
+        }
+        center.addObserver(forName: NSWindow.didChangeOcclusionStateNotification, object: panel,
+                           queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.model.stage?.setVisible(self.panel.occlusionState.contains(.visible))
+            }
+        }
     }
 
     func show() { panel.orderFrontRegardless() }
 
-    static func size(open: Bool) -> NSSize {
-        let side = avatarSide + 2 * inset
-        guard open else { return NSSize(width: side, height: side) }
-        return NSSize(width: max(side, cardSize.width + 2 * inset),
-                      height: side + cardSize.height + 6)
+    func size(open: Bool) -> NSSize {
+        let a = model.avatarSize
+        let closed = NSSize(width: a.width + 2 * Self.inset, height: a.height + 2 * Self.inset)
+        guard open else { return closed }
+        return NSSize(width: max(closed.width, Self.cardSize.width + 2 * Self.inset),
+                      height: closed.height + Self.cardSize.height + 6)
+    }
+
+    /// Resize for a new scale or display, keeping Stark's feet where they were.
+    func relayout() {
+        var f = panel.frame
+        f.size = size(open: model.chatOpen)
+        panel.setFrame(f, display: true)
+        clampToScreen()
+    }
+
+    func setScale(_ s: Int) {
+        guard StarkModel.scales.contains(s) else { return }
+        model.avatarScale = s
+        relayout()
+    }
+
+    private func backingChanged() {
+        guard model.backingScale != panel.backingScaleFactor else { return }
+        model.backingScale = panel.backingScaleFactor
+        relayout()
     }
 
     // MARK: chat
 
-    func toggleChat() { setChat(open: !model.chatOpen) }
+    func toggleChat() {
+        model.stage?.poke()
+        setChat(open: !model.chatOpen)
+    }
+
+    func openChat() {
+        model.stage?.poke()
+        setChat(open: true)
+        panel.makeKey()
+    }
 
     func setChat(open: Bool) {
         guard model.chatOpen != open else { return }
         // Grow or shrink upward: the bottom left corner, where Stark sits, stays put.
         var frame = panel.frame
-        let size = Self.size(open: open)
-        frame.size = size
+        frame.size = size(open: open)
         if open {
             model.chatOpen = true
             panel.setFrame(frame, display: true)
@@ -59,7 +105,12 @@ final class PanelController {
 
     func dragChanged() {
         let mouse = NSEvent.mouseLocation
-        if dragStart == nil { dragStart = (mouse, panel.frame.origin) }
+        if dragStart == nil {
+            dragStart = (mouse, panel.frame.origin)
+            lastMouseX = mouse.x
+        }
+        model.stage?.dragged(dx: mouse.x - lastMouseX)
+        lastMouseX = mouse.x
         guard let s = dragStart else { return }
         panel.setFrameOrigin(NSPoint(x: s.origin.x + mouse.x - s.mouse.x,
                                      y: s.origin.y + mouse.y - s.mouse.y))
@@ -67,6 +118,7 @@ final class PanelController {
 
     func dragEnded() {
         dragStart = nil
+        model.stage?.dragEnded()
         settle()
     }
 
@@ -111,7 +163,7 @@ final class PanelController {
         return NSPoint(x: xy[0], y: xy[1])
     }
 
-    private static func defaultOrigin() -> NSPoint {
+    private func defaultOrigin() -> NSPoint {
         let v = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
         let side = size(open: false)
         return NSPoint(x: v.maxX - side.width - 24, y: v.minY + 24)
@@ -133,4 +185,11 @@ final class PanelController {
 
 private extension NSRect {
     var area: CGFloat { isNull ? 0 : width * height }
+}
+
+/// Hosting view whose right click shows the shared avatar menu.
+final class AvatarHostingView: NSHostingView<CompanionView> {
+    var menuProvider: () -> NSMenu? = { nil }
+
+    override func menu(for event: NSEvent) -> NSMenu? { menuProvider() }
 }

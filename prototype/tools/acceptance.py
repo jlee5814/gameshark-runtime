@@ -126,10 +126,11 @@ class Demo:
         return self.last_state()
 
     def s2_drag(self) -> str:
+        # Only x is exact: the panel clamps y to keep a tall open chat on screen.
         self.ctl("move", "320", "260")
-        self.wait(lambda: "origin=320,260" in self.last_state(), 5, "panel at 320,260")
+        self.wait(lambda: "origin=320," in self.last_state(), 5, "panel at 320,260")
         self.ctl("move", "760", "420")
-        self.wait(lambda: "origin=760,420" in self.last_state(), 5, "panel at 760,420")
+        self.wait(lambda: "origin=760," in self.last_state(), 5, "panel at 760,420")
         detail = "starkctl moved 320,260 then 760,420"
         if self.args.interactive:
             before = self.last_state()
@@ -191,6 +192,9 @@ class Demo:
         self.ctl("say", "Take your time thinking about this one.")
         self.wait(lambda: any(" working " in s for s in self.states()[marker:]), 10,
                   "the working state")
+        if self.args.sprites:
+            self.wait(lambda: any("anim=thinking" in s for s in self.states()[marker:]), 5,
+                      "the thinking animation")
         worst = 0.0
         with self.client() as c:
             for i in range(20):
@@ -200,11 +204,12 @@ class Demo:
                 if i == 5:
                     self.ctl("move", "700", "380")
         assert worst < 0.1, f"gateway ping {worst * 1000:.1f} ms during inference"
-        moved = self.wait(lambda: any(" working " in s and "origin=700,380" in s
+        moved = self.wait(lambda: any(" working " in s and "origin=700," in s
                                       for s in self.states()[marker:]), 5,
                           "the panel to move while working")
         self.wait(lambda: self.rows()[-1][1] == "assistant", 30, "the reply")
-        return f"worst ping {worst * 1000:.1f} ms; panel moved while working: {bool(moved)}"
+        anim = "; thinking animation shown" if self.args.sprites else ""
+        return f"worst ping {worst * 1000:.1f} ms; panel moved while working: {bool(moved)}{anim}"
 
     def s7_restart(self) -> str:
         with self.client() as c:
@@ -219,6 +224,25 @@ class Demo:
             assert c.welcome["identity"]["uuid"] == uuid, "identity changed"
         assert len(self.rows()) == n
         return f"drain exit {code}; same identity {uuid[:8]}; {n} rows intact"
+
+    def s8_gallery(self) -> str:
+        gallery = self.shots / "gallery"
+        gallery.mkdir(exist_ok=True)
+        self.ctl("chat", "close")
+        shown = []
+        for name in ("idle", "blink", "listening", "thinking", "working", "notify",
+                     "walkRight", "walkLeft", "sleep", "error"):
+            self.ctl("avatar", name)
+            self.wait(lambda n=name: f"anim={n} " in self.last_state(), 5, f"the {name} animation")
+            time.sleep(0.4)
+            self.ctl("snapshot", str(gallery / f"{name}.png"))
+            shown.append(name)
+        self.ctl("avatar", "follow")
+        for scale in ("2", "3", "1"):
+            self.ctl("scale", scale)
+            self.wait(lambda v=scale: f"scale={v} " in self.last_state(), 5, f"scale {scale}")
+        self.pause("Stark animates through his states. Continue.")
+        return f"{len(shown)} animations rendered; scales 2, 3, 1 applied"
 
     # ------------------------------------------------------------------ run
     def run(self) -> int:
@@ -239,6 +263,8 @@ class Demo:
                      ("5 obsolete presence generation is rejected", self.s5_obsolete),
                      ("6 inference runs while the avatar stays responsive", self.s6_responsive),
                      ("7 runtime restart keeps identity", self.s7_restart)]
+            if self.args.sprites:
+                steps.append(("8 sprite animations and scales", self.s8_gallery))
             for name, fn in steps:
                 self.check(name, fn)
         finally:
@@ -272,6 +298,8 @@ def main() -> int:
     ap.add_argument("--interactive", action="store_true", help="pause for a real drag and a look")
     ap.add_argument("--fresh", action="store_true", help="start from an empty demo database")
     ap.add_argument("--keep", action="store_true", help="leave the daemon and app running")
+    ap.add_argument("--no-sprites", dest="sprites", action="store_false",
+                    help="the app draws the vector avatar; skip animation checks")
     return Demo(ap.parse_args()).run()
 
 

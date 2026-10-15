@@ -37,6 +37,9 @@ jobs:
         with:
           enable-cache: true
 
+      - name: Sprite extraction tests
+        run: uv run --with pillow==11.0.0 --with numpy==2.1.3 --with pytest pytest mac/tools
+
       - name: Swift unit tests
         run: mac/scripts/swiftpm.sh test
 
