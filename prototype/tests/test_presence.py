@@ -310,13 +310,16 @@ def test_evicting_the_holder_returns_home_under_a_new_generation(pm):
     assert pm.evict("phone") is False                              # idempotent
 
 
-@pytest.mark.parametrize("phase", ["preparing_to", "committed_to", "preparing_from"])
+@pytest.mark.parametrize("phase", ["preparing_to", "committed_to", "preparing_from",
+                                   "committed_from"])
 def test_evicting_a_surface_closes_its_open_handoff(pm, phase):
-    if phase == "preparing_from":
+    if phase in ("preparing_from", "committed_from"):
         pm.request_jack("h0", "phone")
         pm.ready_out("h0", "mac", 1)
         pm.ack_in("h0", "phone", 2)
         pm.request_jack("h1", "mac")                               # phone -> mac preparing
+        if phase == "committed_from":
+            pm.ready_out("h1", "phone", 2)
     else:
         pm.request_jack("h1", "phone")
         if phase == "committed_to":
@@ -326,6 +329,30 @@ def test_evicting_a_surface_closes_its_open_handoff(pm, phase):
     assert pm.handoff("h1").state in (ABORTED, REVERTED)
     assert pm.current().surface == "mac"
     surface_write(pm, "mac", pm.current().generation)
+
+
+def test_revoking_the_source_of_a_committed_jack_home_never_returns_presence(pm, clock):
+    """The phone sends Stark home, the Mac holds him unacked, then the phone is revoked.
+    The missed ack must not roll presence back to the revoked phone."""
+    pm.request_jack("h0", "phone")
+    pm.ready_out("h0", "mac", 1)
+    pm.ack_in("h0", "phone", 2)
+    pm.request_jack_by("h1", "phone", 2, "home")
+    assert pm.ready_out("h1", "phone", 2).state == COMMITTED
+    assert (pm.current().surface, pm.current().generation) == ("mac", 3)
+    assert pm.evict("phone") is True
+    assert pm.handoff("h1").state == REVERTED
+    assert pm.open_handoff() is None
+    assert (pm.current().surface, pm.current().generation) == ("mac", 4)
+    clock.advance(ACK_TIMEOUT_S + 1)
+    assert pm.tick() is None
+    assert (pm.current().surface, pm.current().generation) == ("mac", 4)
+    for g in (2, 3, 4):
+        with pytest.raises(StalePresence):
+            surface_write(pm, "phone", g)
+    with pytest.raises(StalePresence):
+        pm.ack_in("h1", "mac", 3)                                  # a late ack is fenced
+    surface_write(pm, "mac", 4)
 
 
 def test_evicting_an_uninvolved_surface_changes_nothing(pm):

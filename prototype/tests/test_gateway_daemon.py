@@ -245,3 +245,36 @@ def test_busy_lan_port_disables_the_whole_gateway(env):
         busy.close()
         if proc.poll() is None:
             stop(proc)
+
+
+def test_revocation_applies_when_the_daemon_runs_without_lan(env):
+    """A phone holds Stark, the daemon dies, the operator revokes the phone, and the next
+    daemon starts without --lan. Presence still returns home under a new generation."""
+    from urllib.parse import parse_qs, urlsplit
+
+    from gameshark.gateway_client import DeviceClient, pair_device
+
+    proc = daemon(env, 0.1, "--lan", "--lan-port", "0")
+    try:
+        info = lan(env)
+        link = json.loads(cli(env, "pair", "--name", "Test Phone", "--json",
+                              "--address", "127.0.0.1"))["link"]
+        q = {k: v[0] for k, v in parse_qs(urlsplit(link).query).items()}
+        pin = bytes.fromhex(q["fp"])
+        device_id, _surface, key = pair_device("127.0.0.1", info["port"], pin, q["id"],
+                                               q["s"], "Test Phone")
+        with client(env) as mac, DeviceClient("127.0.0.1", info["port"], pin, device_id,
+                                              key) as phone:
+            phone.call("jack", handoff_id="in1", to="self", presence_gen=1)
+            out = mac.call("ready_out", handoff_id="in1", presence_gen=1, draft=None)
+            phone.call("ack_in", handoff_id="in1", presence_gen=out["to_gen"])
+            gen = out["to_gen"]
+        stop(proc, signal.SIGKILL)
+        cli(env, "devices", "revoke", device_id)
+        proc = daemon(env, 0.1)
+        with client(env) as mac:
+            wait_for(lambda: mac.call("snapshot")["presence"]
+                     == {"surface": "mac", "home": "mac", "generation": gen + 1})
+    finally:
+        if proc.poll() is None:
+            stop(proc)

@@ -155,7 +155,7 @@ def start_gateway(sup, chat, args, log):
     from gameshark.surface_api import SurfaceAPI
 
     path = socket_path(args)
-    lan = devices = None
+    lan = None
     # A previous instance's endpoint is never advertised; this boot rewrites it once served.
     try:
         lan_info_path(args).unlink(missing_ok=True)
@@ -165,12 +165,12 @@ def start_gateway(sup, chat, args, log):
         token = load_or_create_token(token_path(args))
         ident = {"agent_id": sup.identity.agent_id, "uuid": sup.identity.uuid}
         server = GatewayServer(path, token, ident, sup.wake)
+        # Revocations apply with or without --lan: a revoked phone never keeps presence.
+        devices = DeviceRegistry(sup.conn, sup.agent_id, sup.lease, sup.generation, sup.clock)
         if getattr(args, "lan", False):
             identity = load_or_create_identity(path.parent)
             lan = LanListener(identity, port=args.lan_port)
             server.attach(lan)
-            devices = DeviceRegistry(sup.conn, sup.agent_id, sup.lease, sup.generation,
-                                     sup.clock)
         server.start()                    # all or nothing: a failure closes every socket
     except (OSError, ValueError, TypeError) as e:
         log(f"gateway disabled: {type(e).__name__}: {e}")

@@ -38,8 +38,9 @@ apply unchanged. The Unix socket and its token are untouched and mean nothing ov
 
 Revocation: `stark.py devices revoke <id>` marks the row and pings the daemon. The next pump
 closes the device's sessions, drops its queued requests, and evicts it from presence (the
-holder returns home under generation + 1; an open jack it is part of aborts or reverts),
-all before answering anything else.
+holder returns home under generation + 1; an open jack it is part of aborts or reverts
+home, never back to the revoked device, even when it was the jack's source), all before
+answering anything else. The daemon applies revocations with or without `--lan`.
 
 ## Surface initiated jack
 
