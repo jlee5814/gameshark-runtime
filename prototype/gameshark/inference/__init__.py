@@ -1,15 +1,31 @@
-"""Provider independent inference contracts (v0.3 step 1) and the durable journal (step 2).
+"""Provider independent inference contracts (v0.3 step 1), the durable journal (step 2),
+and the router (step 3).
 
-No transport or router yet.
+No transport yet: FakeProvider is the only provider.
 """
 
 from gameshark.inference.fake import FakeCall, FakeProvider, Fault, Script
 from gameshark.inference.journal import CallSpec, Committed, InferenceJournal, Reservation
 from gameshark.inference.provider import Provider, ProviderCall, complete
+from gameshark.inference.router import (
+    CLOUD_GRANT,
+    GRANT_ADAPTER,
+    SOFT_BUDGET_GRANT,
+    BoundKind,
+    InferenceRouter,
+    Overrun,
+    ProviderConfig,
+    ProviderHealth,
+    RouteResult,
+    RouterPolicy,
+    TokenBound,
+)
+from gameshark.inference.scheduler import Scheduler
 from gameshark.inference.types import (
     AttemptsExhausted,
     AuthFailed,
     BudgetExceeded,
+    BudgetUnenforceable,
     CallCancelled,
     Capabilities,
     Capability,
@@ -45,9 +61,14 @@ from gameshark.inference.types import (
 )
 
 __all__ = [
+    "CLOUD_GRANT",
+    "GRANT_ADAPTER",
+    "SOFT_BUDGET_GRANT",
     "AttemptsExhausted",
     "AuthFailed",
+    "BoundKind",
     "BudgetExceeded",
+    "BudgetUnenforceable",
     "CallCancelled",
     "CallSpec",
     "Capabilities",
@@ -65,17 +86,21 @@ __all__ = [
     "Health",
     "HealthStatus",
     "InferenceJournal",
+    "InferenceRouter",
     "InvalidRequest",
     "Locality",
     "Message",
     "ModelCrashed",
     "Overloaded",
+    "Overrun",
     "OwnershipMismatch",
     "Privacy",
     "Provider",
     "ProviderCall",
     "ProviderCancelled",
+    "ProviderConfig",
     "ProviderError",
+    "ProviderHealth",
     "ProviderRequest",
     "ProviderResult",
     "ProviderUnavailable",
@@ -83,11 +108,15 @@ __all__ = [
     "Reservation",
     "ResultMismatch",
     "Role",
+    "RouteResult",
+    "RouterPolicy",
+    "Scheduler",
     "Script",
     "StaleAttempt",
     "StreamInterrupted",
     "StreamNotFinished",
     "Timeout",
+    "TokenBound",
     "Usage",
     "complete",
     "estimate_tokens",

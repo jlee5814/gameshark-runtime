@@ -12,6 +12,7 @@ outcome, so a cancel never tears a durable write.
 from __future__ import annotations
 
 import threading
+from collections.abc import Callable
 from enum import Enum
 
 from gameshark.errors import Cancelled, Draining
@@ -28,12 +29,39 @@ class Phase(Enum):
 class CancelToken:
     def __init__(self) -> None:
         self._event = threading.Event()
+        self._lock = threading.Lock()
+        self._callbacks: dict[int, Callable[[], None]] = {}
+        self._next_id = 0
         self.reason = ""
 
     def cancel(self, reason: str) -> None:
-        if not self._event.is_set():
+        with self._lock:
+            if self._event.is_set():
+                return
             self.reason = reason
             self._event.set()
+            callbacks = list(self._callbacks.values())
+            self._callbacks.clear()
+        for cb in callbacks:
+            cb()
+
+    def on_cancel(self, cb: Callable[[], None]) -> Callable[[], None]:
+        """Run cb once on cancellation (now, if already cancelled). Return an unsubscribe.
+
+        Lets a blocked waiter wake on cancel without polling the token.
+        """
+        with self._lock:
+            if not self._event.is_set():
+                key = self._next_id
+                self._next_id += 1
+                self._callbacks[key] = cb
+                return lambda: self._unsubscribe(key)
+        cb()
+        return lambda: None
+
+    def _unsubscribe(self, key: int) -> None:
+        with self._lock:
+            self._callbacks.pop(key, None)
 
     @property
     def cancelled(self) -> bool:
