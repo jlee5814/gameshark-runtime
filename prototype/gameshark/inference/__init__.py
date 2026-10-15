@@ -1,5 +1,6 @@
 """Provider independent inference contracts (v0.3 step 1), the durable journal (step 2),
-the router (step 3), and the OpenAI compatible HTTP provider (step 4).
+the router (step 3), the OpenAI compatible HTTP provider (step 4), and the model lifecycle
+tracker (step 5).
 
 FakeProvider serves tests and fault injection; OpenAICompatProvider reaches externally
 managed SGLang, mlx_lm.server, LM Studio and Bionic, and compatible cloud endpoints.
@@ -28,6 +29,17 @@ from gameshark.inference.router import (
     TokenBound,
 )
 from gameshark.inference.scheduler import Scheduler
+from gameshark.inference.tracker import (
+    IllegalTransition,
+    LoadPlan,
+    ModelState,
+    ModelTracker,
+    ModelView,
+    Readiness,
+    ReplaceReport,
+    TrackerPolicy,
+    Transition,
+)
 from gameshark.inference.types import (
     AttemptsExhausted,
     AuthFailed,
@@ -48,6 +60,8 @@ from gameshark.inference.types import (
     Locality,
     Message,
     ModelCrashed,
+    ModelReplaced,
+    ModelUnavailable,
     Overloaded,
     OwnershipMismatch,
     Privacy,
@@ -93,12 +107,19 @@ __all__ = [
     "FinishReason",
     "Health",
     "HealthStatus",
+    "IllegalTransition",
     "InferenceJournal",
     "InferenceRouter",
     "InvalidRequest",
+    "LoadPlan",
     "Locality",
     "Message",
     "ModelCrashed",
+    "ModelReplaced",
+    "ModelState",
+    "ModelTracker",
+    "ModelUnavailable",
+    "ModelView",
     "OpenAICompatCall",
     "OpenAICompatProvider",
     "Overloaded",
@@ -115,6 +136,8 @@ __all__ = [
     "ProviderResult",
     "ProviderUnavailable",
     "RateLimited",
+    "Readiness",
+    "ReplaceReport",
     "Reservation",
     "ResultMismatch",
     "Role",
@@ -128,6 +151,8 @@ __all__ = [
     "StreamNotFinished",
     "Timeout",
     "TokenBound",
+    "TrackerPolicy",
+    "Transition",
     "Usage",
     "complete",
     "estimate_tokens",

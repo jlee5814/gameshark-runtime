@@ -13,7 +13,7 @@ from __future__ import annotations
 import hashlib
 import threading
 import time
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 
 from gameshark.inference.types import (
@@ -70,6 +70,8 @@ class FakeProvider:
         now: Callable[[], float] = time.monotonic,
         sleep: Callable[[float, CancelToken], None] = _wait_on_token,
         health: Health = HEALTHY,
+        health_script: Sequence[Health] = (),
+        on_health: Callable[[float], None] | None = None,
     ) -> None:
         self.name = name
         self._caps = capabilities or Capabilities(
@@ -79,6 +81,9 @@ class FakeProvider:
         self.now = now
         self.sleep = sleep
         self.health_status = health
+        self._health_script = list(health_script)  # one per probe; then health_status
+        self.on_health = on_health  # called with the probe timeout; may block or raise
+        self.health_timeouts: list[float] = []
         self._lock = threading.Lock()
         self._invocations: list[ProviderRequest] = []
         self.health_checks = 0
@@ -91,7 +96,11 @@ class FakeProvider:
     def health(self, timeout_s: float) -> Health:
         with self._lock:
             self.health_checks += 1
-        return self.health_status
+            self.health_timeouts.append(timeout_s)
+            scripted = self._health_script.pop(0) if self._health_script else None
+        if self.on_health is not None:
+            self.on_health(timeout_s)
+        return scripted or self.health_status
 
     def generate(self, req: ProviderRequest, cancel: CancelToken) -> FakeCall:
         if not self._caps.supports(req.needs):

@@ -176,6 +176,23 @@ class ProviderUnavailable(ProviderError):
     retryable = True
 
 
+class ModelUnavailable(ProviderUnavailable):
+    """The lifecycle tracker refused admission: model failed and cooling down, still
+    loading past the wait bound, or replaced. Raised before dispatch, so it consumes no
+    attempt and no budget."""
+
+    before_dispatch = True
+
+    def __init__(self, message: str = "", retry_after: float = 0.0) -> None:
+        super().__init__(message)
+        self.retry_after = retry_after
+
+
+class ModelReplaced(ModelUnavailable):
+    """The configuration a call selected was replaced before or during the call; the
+    router selects again against the active configuration."""
+
+
 class ModelCrashed(ProviderError):
     retryable = True
 
