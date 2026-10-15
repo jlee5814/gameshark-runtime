@@ -208,18 +208,39 @@ struct Composer: View {
 
     var body: some View {
         let canSend = model.summary?.canSend ?? false
-        HStack {
-            TextField(canSend ? "Message Stark" : "Jack In to talk to Stark here",
-                      text: $model.draft, axis: .vertical)
-                .textFieldStyle(.roundedBorder)
-                .focused(focused)
-                .disabled(!canSend)
-                .accessibilityIdentifier("composer")
-            Button("Send") { model.send() }
-                .disabled(!canSend || model.draft.isEmpty)
-                .accessibilityIdentifier("sendButton")
+        VStack(spacing: 0) {
+            if let offer = model.draftOffer {
+                VStack(alignment: .leading, spacing: 6) {
+                    Label("Stark brought unsent text", systemImage: "text.bubble")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Text(offer.text).font(.callout).lineLimit(3)
+                        .accessibilityIdentifier("draftOfferText")
+                    HStack {
+                        Button("Use It") { model.useCarriedDraft() }
+                            .accessibilityIdentifier("useDraftButton")
+                        Button("Keep Mine") { model.keepCurrentDraft() }
+                            .accessibilityIdentifier("keepDraftButton")
+                    }
+                    .buttonStyle(.bordered)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(10)
+                .background(.quaternary, in: RoundedRectangle(cornerRadius: 10))
+                .padding(.horizontal)
+            }
+            HStack {
+                TextField(canSend ? "Message Stark" : "Jack In to talk to Stark here",
+                          text: $model.draft, axis: .vertical)
+                    .textFieldStyle(.roundedBorder)
+                    .focused(focused)
+                    .disabled(!canSend)
+                    .accessibilityIdentifier("composer")
+                Button("Send") { model.send() }
+                    .disabled(!canSend || model.draft.isEmpty)
+                    .accessibilityIdentifier("sendButton")
+            }
+            .padding()
         }
-        .padding()
     }
 }
 

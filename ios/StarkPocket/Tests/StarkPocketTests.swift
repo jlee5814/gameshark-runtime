@@ -79,6 +79,8 @@ final class FakeClient: PocketClient, @unchecked Sendable {
     var stopped = false
     var jacks: [GatewayClient.JackDirection] = []
     var draftProvider: (@Sendable () -> String?)?
+    var confirmed: [String] = []
+    var clearedSent: [String] = []
     /// What the runtime does when this surface asks for a jack; nothing by default.
     var onJack: (FakeClient, GatewayClient.JackDirection) -> Void = { _, _ in }
 
@@ -102,6 +104,14 @@ final class FakeClient: PocketClient, @unchecked Sendable {
         return "h"
     }
     func setDraftProvider(_ provider: @escaping @Sendable () -> String?) { draftProvider = provider }
+    func confirmDraft(_ handoffId: String) {
+        confirmed.append(handoffId)
+        emit { if $0.incomingDraft?.handoffId == handoffId { $0.incomingDraft = nil } }
+    }
+    func clearSentDraft(_ handoffId: String) {
+        clearedSent.append(handoffId)
+        emit { if $0.sentDraft?.handoffId == handoffId { $0.sentDraft = nil } }
+    }
 }
 
 @MainActor
@@ -237,6 +247,61 @@ final class PocketModelTests: XCTestCase {
         XCTAssertTrue(c.stopped)
         XCTAssertFalse(model.isPaired)
         XCTAssertNil(store.loadDevice())
+    }
+
+    // Draft continuity: Mac -> iPhone arrival, and iPhone -> Mac departure.
+    func testACarriedDraftFillsAnEmptyComposerWithoutSending() async throws {
+        let model = try pairedModel()
+        let c = clients[0]
+        holding(c)
+        c.emit { $0.incomingDraft = CarriedDraft(handoffId: "in1", text: "from my mac") }
+        await settle { model.draft == "from my mac" }
+        XCTAssertEqual(model.draft, "from my mac")
+        XCTAssertEqual(c.confirmed, ["in1"])
+        XCTAssertNil(model.draftOffer)
+        XCTAssertTrue(model.pendingOutbox.isEmpty)               // restored, never sent
+    }
+
+    func testACarriedDraftNeverOverwritesOtherText() async throws {
+        let model = try pairedModel()
+        let c = clients[0]
+        holding(c)
+        model.draft = "my own words"
+        c.emit { $0.incomingDraft = CarriedDraft(handoffId: "in1", text: "from my mac") }
+        await settle { model.draftOffer != nil }
+        XCTAssertEqual(model.draftOffer?.text, "from my mac")
+        XCTAssertEqual(model.draft, "my own words")
+        XCTAssertEqual(c.confirmed, [])                          // nothing confirmed yet
+        model.useCarriedDraft()
+        XCTAssertEqual(model.draft, "from my mac")
+        XCTAssertEqual(c.confirmed, ["in1"])
+        XCTAssertNil(model.draftOffer)
+
+        model.draft = "edited again"
+        c.emit { $0.incomingDraft = CarriedDraft(handoffId: "in2", text: "another") }
+        await settle { model.draftOffer != nil }
+        model.keepCurrentDraft()
+        XCTAssertEqual(model.draft, "edited again")
+        XCTAssertEqual(c.confirmed, ["in1", "in2"])
+    }
+
+    func testTheComposerClearsOnceStarkLeftWithItsText() async throws {
+        let model = try pairedModel()
+        let c = clients[0]
+        holding(c)
+        model.draft = "unsent from my pocket"
+        c.emit {
+            $0.sentDraft = CarriedDraft(handoffId: "here1", text: "unsent from my pocket")
+            $0.handoff = HandoffInfo(id: "here1", from: self.surface, to: "mac",
+                                     state: "committed", fromGen: 2, toGen: 3)
+            $0.presence = PresenceInfo(surface: "mac", home: "mac", generation: 3)
+        }
+        await settle()
+        XCTAssertEqual(model.draft, "unsent from my pocket")     // jack still open
+        c.emit { $0.handoff = nil }
+        await settle { model.draft.isEmpty }
+        XCTAssertEqual(model.draft, "")
+        XCTAssertEqual(c.clearedSent, ["here1"])
     }
 
     func testRevocationStillForgetsImmediately() async throws {

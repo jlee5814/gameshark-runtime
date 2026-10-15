@@ -13,6 +13,7 @@ One prompt assigns a responsibility; the daemon keeps it across restarts.
     uv run python stark.py run --lan                 # also serve paired phones on the LAN
     uv run python stark.py pair --name "My iPhone"   # one time pairing link for Stark Pocket
     uv run python stark.py devices                   # paired devices; `devices revoke <id>`
+    uv run python stark.py drafts                    # carried drafts no surface confirmed
 
 State lives in ~/.gameshark/runtime.db (override with --db or GAMESHARK_DB). The GitHub
 token comes from GITHUB_TOKEN, else `gh auth token`. Every GitHub call is a GET.
@@ -370,6 +371,25 @@ def cmd_devices(args) -> int:
     return 0
 
 
+def cmd_drafts(args) -> int:
+    """Read only recovery: unsent text a jack carried that no target confirmed (it
+    reverted, or the target moved on or never came back). Copy it out by hand."""
+    conn = connect(args.db)
+    try:
+        rows = conn.execute(
+            "SELECT id, from_surface, to_surface, state, created, draft FROM handoffs "
+            "WHERE agent_id=? AND draft_state='pending' ORDER BY created", (AGENT,)).fetchall()
+    finally:
+        conn.close()
+    for r in rows:
+        when = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(r["created"]))
+        print(f"{when}  {r['id']}  {r['from_surface']} -> {r['to_surface']} ({r['state']})")
+        print(f"    {r['draft']}")
+    if not rows:
+        print("no undelivered drafts")
+    return 0
+
+
 def _poke_daemon(args) -> None:
     """Ask a running daemon to pump now, so a revocation lands at once (a ping)."""
     from gameshark.gateway import load_or_create_token
@@ -478,6 +498,7 @@ def build_parser() -> argparse.ArgumentParser:
     dv = sub.add_parser("devices", help="list paired devices, or revoke one")
     dv.add_argument("action", nargs="?", choices=["list", "revoke"], default="list")
     dv.add_argument("device", nargs="?")
+    sub.add_parser("drafts", help="list carried drafts no surface has confirmed")
     j = sub.add_parser("jack", help="move Stark's presence to another surface")
     j.add_argument("surface")
     sub.add_parser("status")
@@ -495,7 +516,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd in ("watch", "unwatch", "resume", "jack"):
         return cmd_control(args, args.cmd)
     return {"run": cmd_run, "status": cmd_status, "feed": cmd_feed, "ack": cmd_ack,
-            "pair": cmd_pair, "devices": cmd_devices}[args.cmd](args)
+            "pair": cmd_pair, "devices": cmd_devices, "drafts": cmd_drafts}[args.cmd](args)
 
 
 if __name__ == "__main__":

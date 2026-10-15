@@ -330,3 +330,32 @@ def test_pair_refuses_an_endpoint_the_running_daemon_does_not_serve(env):
     finally:
         assert stop(proc) == 0
     assert not (env["sock"].parent / "lan.json").exists()         # a clean stop withdraws it
+
+
+def test_a_draft_survives_sigkill_between_ack_and_receipt(env):
+    """Interrupted transfer: the target acks, the daemon dies before the target confirms
+    the draft, and the next daemon offers the same draft to the same target, once."""
+    proc = daemon(env, 0.1)
+    try:
+        with client(env) as mac, GatewayClient(env["sock"],
+                                               bytes.fromhex(env["token"].read_text()),
+                                               "pad") as pad:
+            pad.call("jack", handoff_id="d1", to="self", presence_gen=1)
+            out = mac.call("ready_out", handoff_id="d1", presence_gen=1, draft="half typed")
+            assert pad.call("ack_in", handoff_id="d1", presence_gen=out["to_gen"])["draft"] \
+                == "half typed"
+        assert stop(proc, signal.SIGKILL) == -signal.SIGKILL
+        assert "half typed" in cli(env, "drafts")                    # recoverable meanwhile
+        proc = daemon(env, 0.1)
+        token = bytes.fromhex(env["token"].read_text())
+        with GatewayClient(env["sock"], token, "pad") as pad:
+            assert pad.call("snapshot")["draft"] == {"handoff_id": "d1", "text": "half typed"}
+            pad.call("draft_ack", handoff_id="d1", presence_gen=out["to_gen"])
+        assert stop(proc, signal.SIGKILL) == -signal.SIGKILL
+        proc = daemon(env, 0.1)
+        with GatewayClient(env["sock"], token, "pad") as pad:
+            assert pad.call("snapshot")["draft"] is None
+        assert "no undelivered drafts" in cli(env, "drafts")
+    finally:
+        if proc.poll() is None:
+            stop(proc)

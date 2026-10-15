@@ -172,3 +172,72 @@ import Testing
         #expect(c.tokenURL.path == "/t/secret")
     }
 }
+
+@Suite struct DraftContinuityTests {
+    let carried = CarriedDraft(handoffId: "h1", text: "from my pocket")
+
+    @Test func anEmptyComposerTakesTheDraftWithoutSending() {
+        #expect(DraftContinuity.arrival(of: carried, composer: "") == .restore("from my pocket"))
+        #expect(DraftContinuity.arrival(of: carried, composer: "  \n") == .restore("from my pocket"))
+    }
+
+    @Test func theSameTextIsAlreadyHere() {
+        #expect(DraftContinuity.arrival(of: carried, composer: "from my pocket") == .alreadyHere)
+    }
+
+    @Test func differentTextIsAConflictNeverAnOverwrite() {
+        #expect(DraftContinuity.arrival(of: carried, composer: "my own words") == .conflict)
+    }
+
+    func state(holder: String, handoff: HandoffInfo? = nil) -> ClientState {
+        var s = ClientState(surface: "mac")
+        s.presence = PresenceInfo(surface: holder, home: "mac", generation: 3)
+        s.handoff = handoff
+        return s
+    }
+
+    @Test func theSourceClearsOnlyTextThatLeftWithStark() {
+        let sent = CarriedDraft(handoffId: "h1", text: "half typed")
+        let open = HandoffInfo(id: "h1", from: "mac", to: "phone", state: "committed",
+                               fromGen: 2, toGen: 3)
+        #expect(DraftContinuity.departure(of: sent, composer: "half typed",
+                                          state: state(holder: "phone", handoff: open)) == .pending)
+        #expect(DraftContinuity.departure(of: sent, composer: "half typed",
+                                          state: state(holder: "phone")) == .clearComposer)
+        #expect(DraftContinuity.departure(of: sent, composer: "half typed and more",
+                                          state: state(holder: "phone")) == .keepComposer)
+        #expect(DraftContinuity.departure(of: sent, composer: "half typed",
+                                          state: state(holder: "mac")) == .keepComposer)  // reverted
+    }
+}
+
+extension DraftContinuityTests {
+    @Test func followRestoresIntoAnEmptyComposerAndConfirms() {
+        var s = state(holder: "mac")
+        s.incomingDraft = carried
+        let steps = DraftContinuity.follow(s, composer: "", offered: nil)
+        #expect(steps.composer == "from my pocket" && steps.confirm == "h1" && steps.offer == nil)
+    }
+
+    @Test func followOffersAConflictAndWaitsForTheUser() {
+        var s = state(holder: "mac")
+        s.incomingDraft = carried
+        let first = DraftContinuity.follow(s, composer: "mine", offered: nil)
+        #expect(first.offer == carried && first.composer == nil && first.confirm == nil)
+        let again = DraftContinuity.follow(s, composer: "mine", offered: carried)
+        #expect(again == DraftContinuity.Steps())
+        s.incomingDraft = nil
+        #expect(DraftContinuity.follow(s, composer: "mine", offered: carried).withdrawOffer)
+    }
+
+    @Test func followClearsTheSourceThenTakesARoundTripBackWithoutConflict() {
+        var s = state(holder: "phone")
+        s.sentDraft = CarriedDraft(handoffId: "h1", text: "half typed")
+        let left = DraftContinuity.follow(s, composer: "half typed", offered: nil)
+        #expect(left.composer == "" && left.clearSent == "h1")
+        s = state(holder: "mac")
+        s.incomingDraft = CarriedDraft(handoffId: "h2", text: "half typed, finished on the phone")
+        let back = DraftContinuity.follow(s, composer: "", offered: nil)
+        #expect(back.composer == "half typed, finished on the phone" && back.confirm == "h2")
+    }
+}

@@ -167,6 +167,14 @@ public struct Snapshot: Decodable, Equatable, Sendable {
     public var activity: Activity
     /// Paired devices by surface; absent from a runtime before Stark Pocket.
     public var devices: [DeviceName]?
+    /// A draft an acked jack carried here, awaiting this surface's receipt.
+    public var draft: CarriedDraft?
+}
+
+struct AckInResult: Decodable {
+    var handoffId: String
+    var state: String
+    var draft: String?
 }
 
 struct PresenceEvent: Decodable {

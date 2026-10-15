@@ -59,6 +59,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let s = model.state
         let anim = model.stage.map { " anim=\($0.animation.rawValue) scale=\(model.avatarScale)" } ?? ""
         let line = "\(model.avatar.rawValue)\(anim) chat=\(model.chatOpen) rows=\(s.rows.count) "
+            + "draft=\(model.draft.count) offer=\(model.draftOffer != nil) "
             + "presence=\(s.presence.map { "\($0.surface)@\($0.generation)" } ?? "-") "
             + "origin=\(Int(panel.panel.frame.minX)),\(Int(panel.panel.frame.minY))"
         guard line != lastShot else { return }
@@ -98,6 +99,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
         case "chat":
             panel.setChat(open: args.first != "close")
+        case "draft":
+            // Typed, not sent, and the chat card left as it is: opening it would take the
+            // keyboard from whatever app the user is in.
+            model.draft = args.joined(separator: " ")
         case "say":
             panel.setChat(open: true)
             model.draft = args.joined(separator: " ")

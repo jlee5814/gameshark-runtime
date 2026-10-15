@@ -8,6 +8,8 @@ import StarkKit
 final class StarkModel {
     private(set) var state: ClientState
     var draft = "" { didSet { draftBox.set(draft) } }
+    /// Unsent text Stark brought from another surface while this composer held other text.
+    private(set) var draftOffer: CarriedDraft?
     var inputFocused = false { didSet { followRuntime() } }
     var chatOpen = false {
         didSet {
@@ -93,7 +95,39 @@ final class StarkModel {
             viewedSeq = defaults.object(forKey: viewedKey(uuid)) as? Int ?? -1
         }
         markViewed()
+        followDrafts()
         followRuntime()
+    }
+
+    /// Restore a carried draft into the composer (never sending it), clear one that left
+    /// with Stark, and raise a choice instead of overwriting different text. Quietly: the
+    /// chat card stays as it is, so an arriving draft never takes the keyboard from
+    /// whatever app the user is typing in; the text waits in the composer.
+    private func followDrafts() {
+        let steps = DraftContinuity.follow(state, composer: draft, offered: draftOffer)
+        if let text = steps.composer { draft = text }
+        if let hid = steps.clearSent { client.clearSentDraft(hid) }
+        if let hid = steps.confirm { client.confirmDraft(hid) }
+        if let offer = steps.offer {
+            draftOffer = offer
+        } else if steps.withdrawOffer {
+            draftOffer = nil
+        }
+    }
+
+    /// The conflict choice: put the carried text in the composer.
+    func useCarriedDraft() {
+        guard let offer = draftOffer else { return }
+        draft = offer.text
+        draftOffer = nil
+        client.confirmDraft(offer.handoffId)
+    }
+
+    /// The conflict choice: keep what is here; the runtime stops offering the other text.
+    func keepCurrentDraft() {
+        guard let offer = draftOffer else { return }
+        draftOffer = nil
+        client.confirmDraft(offer.handoffId)
     }
 
     private func markViewed() {

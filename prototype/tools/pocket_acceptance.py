@@ -178,8 +178,22 @@ class Pocket:
         self.wait(lambda: self.rows()[-1][1] == "assistant", 30, "reply on the Mac")
         return f"StarkMac: {line.split(' ', 1)[1][:60]}; history row from the Mac answered"
 
+    def mac_draft_lengths(self) -> list[tuple[str, int]]:
+        """(presence, composer length) from every StarkMac state that reports a draft."""
+        out = []
+        for s in self.states():
+            if " draft=" in s and "presence=" in s:
+                out.append((s.split("presence=")[1].split()[0],
+                            int(s.split(" draft=")[1].split()[0])))
+        return out
+
     def s2_handoff(self) -> str:
         link = self.pair_link("iPhone Simulator")
+        # Mac -> iPhone: StarkMac holds unsent text when the phone Jacks In.
+        subprocess.run([str(self.args.ctl), "draft", "Hello", "from", "my", "pocket"],
+                       check=True, timeout=10)
+        self.wait(lambda: any(n == 20 for _p, n in self.mac_draft_lengths()), 10,
+                  "StarkMac composer holding the draft")
         timeline: list[str] = []
         stop = threading.Event()
 
@@ -229,12 +243,22 @@ class Pocket:
         self.timeline = timeline
         if not jacked_in:
             raise AssertionError("the phone never signalled its unsent draft")
-        carried = self.q("SELECT draft FROM handoffs WHERE state='acked' AND to_surface='mac' "
-                         "AND from_surface LIKE 'pocket-%' ORDER BY created DESC LIMIT 1")
-        if not carried or carried[0][0] != "unsent from my pocket":
-            raise AssertionError(f"Mac Jack In Here carried draft {carried}")
-        return (f"UI test passed; presence timeline {' -> '.join(timeline)}; Mac Jack In Here "
-                f"journaled the phone's draft {carried[0][0]!r}")
+        hops = self.q("SELECT from_surface, to_surface, draft, draft_state FROM handoffs "
+                      "WHERE state='acked' AND draft IS NOT NULL ORDER BY created")
+        want = [("mac", "Hello from my pocket"), ("pocket", "unsent from my pocket")]
+        got = [(a.split("-")[0], d) for a, _b, d, _st in hops]
+        if got != want or any(st != "delivered" for *_x, st in hops):
+            raise AssertionError(f"carried drafts {hops}")
+        lengths = self.mac_draft_lengths()
+        if not any(p.startswith("pocket-") and n == 0 for p, n in lengths):
+            raise AssertionError(f"StarkMac kept the draft that left: {lengths[-5:]}")
+        if not any(p.startswith("mac@") and n == 21 for p, n in lengths):
+            raise AssertionError(f"StarkMac never restored the phone's draft: {lengths[-6:]}")
+        # Leave StarkMac's composer empty for the fault run's own pairing.
+        subprocess.run([str(self.args.ctl), "draft"], check=True, timeout=10)
+        return (f"UI test passed; presence timeline {' -> '.join(timeline)}; Mac -> iPhone "
+                f"draft restored on the phone and confirmed; iPhone -> Mac draft restored in "
+                f"StarkMac's composer (21 chars) and confirmed; both delivered, neither sent")
 
     def s3_mac_dimmed(self) -> str:
         ghost = [s for s in self.states() if s.split(" ")[1] == "ghost" and "presence=pocket-" in s]

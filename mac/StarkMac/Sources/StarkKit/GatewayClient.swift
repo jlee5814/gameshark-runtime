@@ -65,6 +65,11 @@ public struct ClientState: Equatable, Sendable {
     /// Surface to display name for paired devices, from the snapshot.
     public var deviceNames: [String: String] = [:]
 
+    /// A draft a jack carried here that this surface has not confirmed (confirmDraft).
+    public var incomingDraft: CarriedDraft?
+    /// The draft this surface sent with its last ready_out, until clearSentDraft.
+    public var sentDraft: CarriedDraft?
+
     public var isActiveSurface: Bool { presence?.surface == surface }
 
     /// Who holds Stark when this surface does not: a device name, "Mac" for home, or nil.
@@ -146,7 +151,8 @@ public final class GatewayClient: @unchecked Sendable {
     public typealias MakeTransport = @Sendable (String) throws -> Transport
 
     private enum Pending {
-        case snapshot, sync, send(String), readyOut(String), ackIn(String), jack(String)
+        case snapshot, sync, send(String), readyOut(String), ackIn(String), jack(String),
+             draftAck(String)
     }
 
     public enum JackDirection: String, Sendable {
@@ -181,6 +187,12 @@ public final class GatewayClient: @unchecked Sendable {
     private var handoffDone: Set<String> = []
     private var running = false
     private var draft: @Sendable () -> String? = { nil }
+    /// Drafts the UI confirmed. Kept across reconnects, so one is never offered again.
+    private var draftsConfirmed: Set<String> = []
+    /// Confirmed drafts whose receipt the runtime has not answered; resent when live.
+    private var draftAcksOwed: Set<String> = []
+    /// draft_ack requests sent on this connection and awaiting a result.
+    private var draftAcksSent: Set<String> = []
 
     /// Each connection dials the next host in turn; a paired phone keeps an address and a
     /// Bonjour name, and either may be the one that works on this network.
@@ -232,6 +244,28 @@ public final class GatewayClient: @unchecked Sendable {
     /// Supplies the unsent draft when this surface is asked to jack out.
     public func setDraftProvider(_ provider: @escaping @Sendable () -> String?) {
         queue.async { self.draft = provider }
+    }
+
+    /// The UI put an incoming draft in its composer, or the user chose to keep their own
+    /// text: tell the runtime, which then stops offering it. Retried across reconnects.
+    public func confirmDraft(_ handoffId: String) {
+        queue.async {
+            guard !self.draftsConfirmed.contains(handoffId) else { return }
+            self.draftsConfirmed.insert(handoffId)
+            self.draftAcksOwed.insert(handoffId)
+            if self.st.incomingDraft?.handoffId == handoffId { self.st.incomingDraft = nil }
+            self.sendDraftAcks()
+            self.publish()
+        }
+    }
+
+    /// The UI dealt with the draft this surface sent out (cleared or kept its composer).
+    public func clearSentDraft(_ handoffId: String) {
+        queue.async {
+            guard self.st.sentDraft?.handoffId == handoffId else { return }
+            self.st.sentDraft = nil
+            self.publish()
+        }
     }
 
     /// Queue a user message. presenceGen overrides the held generation, which exists only to
@@ -292,6 +326,7 @@ public final class GatewayClient: @unchecked Sendable {
         pending = [:]
         inFlight = []
         handoffSent = []
+        draftAcksSent = []
         haveSnapshot = false
         haveSync = false
         clearActivity()
@@ -459,6 +494,11 @@ public final class GatewayClient: @unchecked Sendable {
             st.activity = s.activity                 // rebuilt wholesale, never merged
             st.deviceNames = Dictionary((s.devices ?? []).map { ($0.surface, $0.name) },
                                         uniquingKeysWith: { a, _ in a })
+            if let d = s.draft {
+                offer(d)
+            } else if let d = st.incomingDraft, !draftAcksOwed.contains(d.handoffId) {
+                st.incomingDraft = nil              // the runtime no longer offers it here
+            }
             haveSnapshot = true
             followHandoff()
         case .sync:
@@ -478,6 +518,11 @@ public final class GatewayClient: @unchecked Sendable {
             settle(hid + "preparing")
         case .ackIn(let hid):
             settle(hid + "committed")
+            let r = try Wire.decode(Result<AckInResult>.self, from: body).data
+            if let text = r.draft, !text.isEmpty { offer(CarriedDraft(handoffId: hid, text: text)) }
+        case .draftAck(let hid):
+            draftAcksSent.remove(hid)
+            draftAcksOwed.remove(hid)
         case .jack:
             break                                   // the presence push carries the handoff
         }
@@ -485,6 +530,7 @@ public final class GatewayClient: @unchecked Sendable {
             st.connection = .live
             backoff.reset()
             flushOutbox()
+            sendDraftAcks()
         }
         publish()
     }
@@ -505,6 +551,11 @@ public final class GatewayClient: @unchecked Sendable {
             } else {
                 handoffSent.remove(key)
             }
+        case .draftAck(let hid):
+            draftAcksSent.remove(hid)
+            // A fenced refusal is final: this surface no longer holds the draft's jack, and
+            // the runtime keeps the text recoverable. Anything else retries when live.
+            if code == "stale_presence" || code == "invalid" { draftAcksOwed.remove(hid) }
         case .jack(let hid):
             st.lastError = "jack \(hid): \(code)"
             if code == "stale_presence" { request("snapshot", .snapshot) }
@@ -525,6 +576,7 @@ public final class GatewayClient: @unchecked Sendable {
             let p = try Wire.decode(Event<PresenceEvent>.self, from: body).data
             st.presence = p.presence
             st.handoff = p.handoff
+            if p.presence.surface != config.surface { st.incomingDraft = nil }   // stale now
             followHandoff()
             let holder = p.presence.surface
             if holder != p.presence.home, holder != config.surface, st.deviceNames[holder] == nil {
@@ -566,11 +618,27 @@ public final class GatewayClient: @unchecked Sendable {
         if h.state == "preparing" && h.from == config.surface && p.surface == config.surface {
             handoffSent.insert(key)
             var fields: [String: Any] = ["handoff_id": h.id, "presence_gen": p.generation]
-            if let d = draft(), !d.isEmpty { fields["draft"] = d }
+            if let d = draft(), !d.isEmpty {
+                fields["draft"] = d
+                st.sentDraft = CarriedDraft(handoffId: h.id, text: d)
+            }
             request("ready_out", .readyOut(h.id), fields)
         } else if h.state == "committed" && h.to == config.surface && p.surface == config.surface {
             handoffSent.insert(key)
             request("ack_in", .ackIn(h.id), ["handoff_id": h.id, "presence_gen": p.generation])
+        }
+    }
+
+    private func offer(_ d: CarriedDraft) {
+        guard !draftsConfirmed.contains(d.handoffId) else { return }
+        st.incomingDraft = d
+    }
+
+    private func sendDraftAcks() {
+        guard st.connection == .live, let gen = st.presence?.generation else { return }
+        for hid in draftAcksOwed.subtracting(draftAcksSent).sorted() {
+            draftAcksSent.insert(hid)
+            request("draft_ack", .draftAck(hid), ["handoff_id": hid, "presence_gen": gen])
         }
     }
 
