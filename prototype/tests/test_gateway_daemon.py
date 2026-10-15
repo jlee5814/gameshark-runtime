@@ -394,3 +394,115 @@ def test_a_lost_ready_out_reply_reconciles_after_sigkill(env):
     finally:
         if proc.poll() is None:
             stop(proc)
+
+
+# ---------------------------------------------------------------------- shared gateway dir
+@pytest.fixture
+def other(env):
+    """A second runtime in the same gateway directory: its own database and socket."""
+    sock = env["sock"].parent / "other.sock"
+    return {"env": {**env["env"], "STARK_SOCKET": str(sock)},
+            "db": env["db"].parent / "other.db", "sock": sock, "token": env["token"]}
+
+
+def ad_path(e) -> Path:
+    return e["sock"].with_name(e["sock"].name + ".lan.json")
+
+
+def link_of(e) -> dict:
+    from urllib.parse import parse_qs, urlsplit
+
+    out = pair_cli(e)
+    assert out.returncode == 0, out.stderr
+    link = json.loads(out.stdout)["link"]
+    return {k: v[0] for k, v in parse_qs(urlsplit(link).query).items()}
+
+
+def free_port() -> int:
+    import socket
+
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+def pairs_with(q: dict) -> str:
+    from gameshark.gateway_client import pair_device
+
+    device_id, _surface, _key = pair_device("127.0.0.1", int(q["p"]), bytes.fromhex(q["fp"]),
+                                            q["id"], q["s"], "Test Phone")
+    return device_id
+
+
+def test_a_runtime_without_lan_leaves_a_live_neighbors_advertisement(env, other):
+    a = daemon(env, 0.1, "--lan", "--lan-port", "0")
+    try:
+        b = daemon(other, 0.1)                                    # no --lan
+        assert stop(b) == 0
+        q = link_of(env)                                          # A is still pairable
+        pairs_with(q)
+    finally:
+        if a.poll() is None:
+            stop(a)
+
+
+def test_two_lan_runtimes_in_one_directory_each_pair_their_own_devices(env, other):
+    pa, pb = free_port(), free_port()
+    a = daemon(env, 0.1, "--lan", "--lan-port", str(pa))
+    b = daemon(other, 0.1, "--lan", "--lan-port", str(pb))
+    try:
+        qa, qb = link_of(env), link_of(other)
+        assert (int(qa["p"]), int(qb["p"])) == (pa, pb)
+        assert pairs_with(qa) in cli(env, "devices")
+        assert pairs_with(qb) in cli(other, "devices")
+        assert stop(b) == 0                                       # B withdraws only its own
+        assert not ad_path(other).exists()
+        assert int(link_of(env)["p"]) == pa
+    finally:
+        for p in (a, b):
+            if p.poll() is None:
+                stop(p)
+
+
+def test_a_killed_neighbor_never_breaks_or_impersonates_a_live_runtime(env, other):
+    pa, pb = free_port(), free_port()
+    a = daemon(env, 0.1, "--lan", "--lan-port", str(pa))
+    b = daemon(other, 0.1, "--lan", "--lan-port", str(pb))
+    try:
+        assert stop(a, signal.SIGKILL) == -signal.SIGKILL
+        assert ad_path(env).exists()                              # SIGKILL leaves it
+        out = pair_cli(env)
+        assert out.returncode != 0 and "not running" in out.stderr
+        assert int(link_of(other)["p"]) == pb                     # B unaffected
+        a = daemon(env, 0.1, "--lan", "--lan-port", str(pa))      # restart rewrites A's
+        assert int(link_of(env)["p"]) == pa
+        assert int(link_of(other)["p"]) == pb
+    finally:
+        for p in (a, b):
+            if p.poll() is None:
+                stop(p)
+
+
+def test_pair_refuses_an_advertisement_naming_another_runtime(env, other):
+    """Both runtimes share the directory's TLS key, so the pin alone cannot tell them
+    apart. A's advertisement pointing at B must not mint a pairing in A's database."""
+    a = daemon(env, 0.1, "--lan", "--lan-port", str(free_port()))
+    b = daemon(other, 0.1, "--lan", "--lan-port", str(free_port()))
+    try:
+        wait_for(lambda: ad_path(env).exists() and ad_path(other).exists())
+        mine = json.loads(ad_path(env).read_text())
+        theirs = json.loads(ad_path(other).read_text())
+        assert mine["pin"] == theirs["pin"]
+        for forged in ({**mine, "port": theirs["port"]},
+                       {**theirs}):
+            ad_path(env).write_text(json.dumps(forged))
+            out = pair_cli(env)
+            assert out.returncode != 0, forged
+            assert "starkpocket://" not in out.stdout
+            assert pairings(env) == 0
+        ad_path(env).write_text(json.dumps(mine))
+        assert pair_cli(env).returncode == 0
+    finally:
+        for p in (a, b):
+            if p.poll() is None:
+                stop(p)
