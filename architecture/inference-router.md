@@ -1,6 +1,6 @@
 # GameShark inference router: v0.3 design
 
-Status: design, with steps 0 to 4 of Minimal v0.3 scope implemented (graceful drain; provider contracts, the inference journal, the router, and the OpenAI compatible HTTP provider in `prototype/gameshark/inference/`). v0.1 and v0.2 runtime code stays unchanged.
+Status: design, with steps 0 to 5 of Minimal v0.3 scope implemented (graceful drain; provider contracts, the inference journal, the router, the OpenAI compatible HTTP provider, and the model lifecycle tracker in `prototype/gameshark/inference/`). v0.1 and v0.2 runtime code stays unchanged.
 
 Stark gains inference without letting any model own Stark. Providers become disposable executors behind one contract; identity, memory, and responsibilities stay in GameShark's SQLite store under the existing fenced lease. The Bionic (LM Studio) study supplies the problem shape (`../research/bionic/deep-analysis.md`); GameShark code stays clean room.
 
@@ -42,6 +42,8 @@ Statements about GameShark itself are design requirements, not evidence.
 | `mlx_lm.server` serves `/v1/chat/completions` and `/v1/models`, streams `chat.completion.chunk`, defaults to localhost:8080, and is not recommended for production | DOCUMENTED (mlx_lm SERVER.md) | Same transport; treat as single slot and loopback only |
 | Behavior of Bionic or LM Studio under concurrent external load | UNKNOWN | Slot counts come from GameShark config and live tests, never from the Bionic study |
 | Whether closing an HTTP stream aborts generation on each server | UNKNOWN | Cancellation charges the full reservation; verify per provider in live smoke |
+| A routed call through `OpenAICompatProvider` to an externally managed SGLang/MLX server serving `mlx-community/Qwen3-4B-4bit` committed durably to SQLite, and replay after constructing a new supervisor made zero provider calls | OBSERVED (one manual live run after PR #15, not CI) | Supports the step 4 transport and the replay short circuit on a real server; not a CI guarantee. The step 5 tracker has no live run yet |
+| Whether a model is resident in GPU memory | UNKNOWN through the OpenAI API (`/v1/models` lists names, not residency) | Residency is inferred only from a streamed token on the current incarnation |
 
 ## Architecture
 
@@ -235,6 +237,16 @@ The tracker keeps one in memory record per configured model. No lifecycle state 
 
 **Model replacement.** A config change for a model drains the old record (`unloading`) and creates a new one at `discovered`. Calls during the gap take the next candidate or queue. Conversations need no migration: the next call resends full context. A smaller replacement window yields `ContextTooLong` at the capability filter, which picks another candidate or refuses; v0.3 never silently truncates context.
 
+**Revised in step 5** (`inference/tracker.py`, opt in through `InferenceRouter(tracker=...)` until step 6 wires the worker):
+
+- *Ready versus idle.* `ready` means a probe passed and no token has streamed on this incarnation; `idle` means it served one. The last call to end moves `executing` to `idle`, or back to `ready` when no token arrived. This resolves the diagram's two exits from `executing`.
+- *Three readiness levels.* Endpoint ready (`/v1/models` answers), model available (the id is listed), GPU resident (a token streamed on this incarnation). The OpenAI API exposes no residency query, so residency is never assumed from a probe.
+- *Load plans.* `probe` (1 s, listed), `patient` (2 s delay, 10 s, listed), `endpoint_only` (2 s delay, 10 s, unlisted accepted for LM Studio JIT). A repeated plan or a fourth plan is refused at configuration, which realizes "a plan that changes nothing stops at once".
+- *Suspicion before crash.* Connection refused or a reset mid stream is one request's observation, not proof the process died. It records a suspicion; the next demand probes, and only an endpoint that no longer answers becomes `crashed`. Request level errors never change state. A verify TTL (30 s) also reprobes unused models on demand, which detects LM Studio auto evict as `unloaded`.
+- *Bounded recovery.* Three consecutive crash cycles without a completed call move the model to `failed` with the same 5 minute cooldown.
+- *Replacement drain.* The drain is bounded; calls still running at the deadline are cancelled through a child token, settled `lost`, and rerun on the successor rather than treated as operator cancellation. A caller that selected the old configuration waits up to `replace_wait_s`, then the router selects again (at most twice), so capability, privacy, and the egress grant are judged against the new configuration. Tracker refusals (`ModelUnavailable`, `ModelReplaced`) are before dispatch: no attempt, no budget.
+- *Reuse.* `Scheduler` stays the sole slot and queue owner; `ProviderHealth` keeps circuits and auth blocks (`blocked`) and gains `reset` for a replaced name; cancellation is the existing `CancelToken`.
+
 ## Error taxonomy
 
 | Error | Class | Retry rule | Responsibility effect |
@@ -365,7 +377,7 @@ These extend I1 to I7 in `continuity-invariants.md`.
 | SIGKILL after commit, before handler continues (E4) | replay finds `done`, returns the committed text with no provider call | R2 | `test_sigkill_at_crash_point_recovers_to_one_answer[E4_after_commit]` |
 | Crash loop on one call | third attempt fails → `AttemptsExhausted`, responsibility `blocked`, one notification | R8 | `test_attempt_cap_survives_crash_loop_restarts` |
 | Budget exhausted mid responsibility | `BudgetExceeded`; `next_due = reset_at`; zero provider calls until reset | R6 | `test_budget_refusal_no_dispatch` |
-| Local model replaced by config | old record drains; new loads lazily; conversation continues with full context resent | R1, R3 | `test_model_swap_keeps_identity` |
+| Local model replaced by config | old record drains; new loads lazily; conversation continues with full context resent | R1, R3 | `test_replacement_keeps_identity_and_conversation_and_resends_full_context`, `test_replacement_drains_the_active_call_and_serves_new_arrivals` |
 | Stale worker commits after takeover | `FencedError`; no message row; successor's answer is the only one | R2, R4 | `test_stale_owner_cannot_commit_after_takeover` |
 | `inference.cloud` revoked with a pending cloud bound call | replay filters cloud out; local answers or `EgressDenied` blocks; zero cloud bytes | R7, R9 | `test_revoke_egress_pending_call` |
 | Two calls race on one conversation | second waits; if forced, commit sees `next_seq` moved and raises `ContextConflict` | R3 | `test_two_calls_on_one_conversation_conflict_then_rebase` |
@@ -392,7 +404,7 @@ Ordered increments; each lands with its own tests and leaves the suite green.
 2. **Journal.** Done. Tables plus `InferenceJournal` (reserve, commit, short circuit, recovery settlement) with crash points E1 to E4 using the existing `crash_at` hook; `collect` verifies chunk and result identity; new errors `ResultMismatch`, `StaleAttempt`, `OwnershipMismatch`, `CallCancelled`; effects citing an uncommitted `call_id` are refused (R5). Tests in `tests/test_inference_journal.py`; see `prototype/README.md`, Inference journal.
 3. **Router.** Done. `inference/router.py` (selection, policy, failover, degraded flag, `TokenBound`), `inference/scheduler.py` (slots, bounded FIFO queues, per agent and per conversation limits), `inference/budget.py` (fixed window admission inside the reserve transaction). Journal additions are optional arguments (`prompt_tokens`, `admit`, `error_kind`, `degraded`); E1 to E4 unchanged. Fake providers only; no worker executor (step 6) or lifecycle tracker (step 5): health is a cached `health()` probe plus rate limit circuits and auth blocks. Tests in `tests/test_inference_router.py`; see `prototype/README.md`, Inference router.
 4. **OpenAI compatible provider.** Done. `inference/openai_compat.py`: stdlib `http.client`, incremental SSE decoding, endpoint validated locality, cancellation and deadlines inside socket reads, typed error mapping, key redaction, `unmetered` settlement for missing usage. Tested against a loopback fixture in `tests/test_openai_compat.py`, including E1 to E4 with the HTTP provider; see `prototype/README.md`, OpenAI compatible provider. No new runtime dependency.
-5. **Lifecycle tracker.** Health probes, crashed, failed with cooldown, lazy load, replacement drain. Externally managed servers only.
+5. **Lifecycle tracker.** Done. `inference/tracker.py`: nine states with an enforced transition table, single flight lazy load with three distinct plans, suspicion before crash, bounded recovery, cooldown, verify TTL, and replacement drain with reselection. Externally managed servers only; memory only. Opt in on the router until step 6. Tests in `tests/test_model_tracker.py`; see `prototype/README.md`, Model lifecycle tracker.
 6. **Worker integration.** Executor, completion queue, tick thread commits, handoff steps 1 to 6; subprocess SIGKILL tests in the style of `tests/test_daemon.py`.
 7. **Live smoke (opt in, not CI).** One local server (SGLang or `mlx_lm.server`) and one cloud endpoint, gated by environment variables; records first token latency, cancel behavior, and slot behavior per provider.
 
@@ -422,7 +434,7 @@ All run in CI on `FakeProvider` and a local HTTP fixture; no network, no model w
 | Provider swap mid conversation | uuid, conversation rows, and responsibility state unchanged; the next call resends the full context |
 | Stale commit | a commit at generation N after takeover at N + 1 raises `FencedError` and writes nothing |
 | Graceful drain | calls shorter than the deadline commit; longer ones end `pending`; drain completes within `drain_deadline` + 2 s |
-| Startup retry | `loading` makes at most 3 attempts; each attempt's plan differs; a plan that changes nothing stops at once |
+| Startup retry | `loading` makes at most 3 attempts; each attempt's plan differs; a plan that changes nothing stops at once (`test_unavailable_http_endpoint_fails_after_three_plans_with_zero_requests`, `test_transition_table_plans_and_wiring_are_validated`) |
 | Replay short circuit | replay of a `done` call makes zero provider calls |
 | Router overhead | selection plus admission p99 under 1 ms excluding SQLite; full durable overhead (two fenced writes) p99 under 10 ms on a local SSD, measured on 1,000 fake calls |
 | Regression | all v0.1 and v0.2 tests pass unchanged; Ruff clean |
