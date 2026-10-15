@@ -30,6 +30,17 @@ final class FakeRuntime: @unchecked Sendable {
     var received: [String] = []
     /// Paired device names the snapshot reports.
     var devices: [[String: Any]] = []
+    /// The draft awaiting this surface's receipt, as the snapshot and ack_in report it.
+    var draft: [String: Any]?
+    /// When false, a confirmed draft stays in the snapshot (a lagging view).
+    var applyDraftAcks = true
+    /// When set, the next draft_ack is lost on the way and the connection drops.
+    var dropNextDraftAck = false
+    /// When set, draft_ack is refused as stale.
+    var staleDraftAcks = false
+    /// Every draft_ack's handoff id, and every ready_out's draft, in order.
+    var draftAcks: [String] = []
+    var readyOutDrafts: [String?] = []
 
     func connect() -> FakeTransport {
         let t = FakeTransport(runtime: self)
@@ -55,7 +66,8 @@ final class FakeRuntime: @unchecked Sendable {
                 "presence": ["surface": surface, "home": "mac", "generation": generation],
                 "handoff": handoff.map { $0 as Any } ?? NSNull(),
                 "responsibilities": [], "conversation": ["id": Wire.conversation, "head_seq": rows.count - 1],
-                "activity": activity, "devices": devices]])
+                "activity": activity, "devices": devices,
+                "draft": draft.map { $0 as Any } ?? NSNull()]])
         case "sync":
             let after = msg["after_seq"] as? Int ?? -1
             t.push(["type": "result", "id": id, "data": [
@@ -81,8 +93,23 @@ final class FakeRuntime: @unchecked Sendable {
                 return
             }
             t.push(["type": "result", "id": id, "data": ["seq": seq, "replayed": false]])
+        case "draft_ack":
+            draftAcks.append(msg["handoff_id"] as? String ?? "")
+            if dropNextDraftAck {
+                dropNextDraftAck = false
+                t.hangUp()
+                return
+            }
+            if staleDraftAcks {
+                t.push(["type": "error", "id": id, "code": "stale_presence", "message": "stale"])
+                return
+            }
+            if applyDraftAcks { draft = nil }
+            t.push(["type": "result", "id": id, "data": ["handoff_id": msg["handoff_id"]!,
+                                                         "draft_state": "delivered"]])
         case "ready_out", "ack_in":
             handoffCalls.append(type)
+            if type == "ready_out" { readyOutDrafts.append(msg["draft"] as? String) }
             if dropNextHandoff {
                 dropNextHandoff = false
                 t.hangUp()
@@ -104,7 +131,8 @@ final class FakeRuntime: @unchecked Sendable {
                 handoff = h
             }
             t.push(["type": "result", "id": id, "data": [
-                "handoff_id": h["id"]!, "state": h["state"]!, "to_gen": h["to_gen"] ?? NSNull()]])
+                "handoff_id": h["id"]!, "state": h["state"]!, "to_gen": h["to_gen"] ?? NSNull(),
+                "draft": type == "ack_in" ? (draft?["text"] ?? NSNull()) : NSNull()]])
         case "jack":
             // A silent source: the runtime commits at once and the caller must ack.
             guard msg["to"] as? String == "self", msg["presence_gen"] as? Int == generation,
@@ -441,6 +469,127 @@ func eventually(_ timeout: TimeInterval = 5, _ cond: () -> Bool) -> Bool {
         #expect(eventually { c.state.connection == .disconnected("runtime unreachable") })
         up.value = true
         #expect(eventually { c.state.connection == .live })
+    }
+}
+
+// MARK: draft continuity
+
+extension ClientTests {
+    static var committedToMac: [String: Any] {
+        ["id": "h1", "from": "phone", "to": "mac", "state": "committed", "from_gen": 1,
+         "to_gen": 2]
+    }
+
+    func arriving(_ rt: FakeRuntime) {
+        rt.surface = "mac"
+        rt.generation = 2
+        rt.handoff = Self.committedToMac
+        rt.draft = ["handoff_id": "h1", "text": "from my pocket"]
+    }
+
+    @Test func aCarriedDraftArrivesWithTheAckAndIsConfirmedOnce() throws {
+        let rt = FakeRuntime()
+        arriving(rt)
+        let c = try client(rt)
+        c.start()
+        defer { c.stop() }
+        #expect(eventually { c.state.incomingDraft == CarriedDraft(handoffId: "h1", text: "from my pocket") })
+        c.confirmDraft("h1")
+        #expect(eventually { rt.lock.withLock { rt.draftAcks == ["h1"] } })
+        #expect(c.state.incomingDraft == nil)
+        c.reconnectNow()
+        #expect(eventually { c.state.connection == .live && rt.lock.withLock { rt.connections.count == 2 } })
+        Thread.sleep(forTimeInterval: 0.1)
+        #expect(c.state.incomingDraft == nil)
+        rt.lock.withLock { #expect(rt.draftAcks == ["h1"]) }
+    }
+
+    @Test func aLostReceiptIsResentAfterReconnect() throws {
+        let rt = FakeRuntime()
+        arriving(rt)
+        rt.dropNextDraftAck = true
+        let c = try client(rt)
+        c.start()
+        defer { c.stop() }
+        #expect(eventually { c.state.incomingDraft != nil })
+        c.confirmDraft("h1")
+        #expect(eventually { rt.lock.withLock { rt.draftAcks == ["h1", "h1"] && rt.draft == nil } })
+        #expect(c.state.incomingDraft == nil)                   // never offered twice
+    }
+
+    @Test func anUnconfirmedDraftIsOfferedAgainAfterReconnect() throws {
+        let rt = FakeRuntime()
+        rt.draft = ["handoff_id": "h0", "text": "kept by the runtime"]
+        let c = try client(rt)
+        c.start()
+        defer { c.stop() }
+        #expect(eventually { c.state.incomingDraft?.text == "kept by the runtime" })
+        c.reconnectNow()
+        #expect(eventually { c.state.connection == .live && rt.lock.withLock { rt.connections.count == 2 } })
+        #expect(c.state.incomingDraft?.handoffId == "h0")
+    }
+
+    @Test func aConfirmedDraftStaysConfirmedWhileTheSnapshotLags() throws {
+        let rt = FakeRuntime()
+        rt.draft = ["handoff_id": "h0", "text": "t"]
+        rt.applyDraftAcks = false
+        let c = try client(rt)
+        c.start()
+        defer { c.stop() }
+        #expect(eventually { c.state.incomingDraft != nil })
+        c.confirmDraft("h0")
+        #expect(eventually { rt.lock.withLock { rt.draftAcks == ["h0"] } })
+        c.reconnectNow()
+        #expect(eventually { c.state.connection == .live && rt.lock.withLock { rt.connections.count == 2 } })
+        Thread.sleep(forTimeInterval: 0.1)
+        #expect(c.state.incomingDraft == nil)
+    }
+
+    @Test func aStaleReceiptIsFinalAndTheOfferIsWithdrawn() throws {
+        let rt = FakeRuntime()
+        arriving(rt)
+        rt.staleDraftAcks = true
+        let c = try client(rt)
+        c.start()
+        defer { c.stop() }
+        #expect(eventually { c.state.incomingDraft != nil })
+        c.confirmDraft("h1")
+        #expect(eventually { rt.lock.withLock { rt.draftAcks == ["h1"] } })
+        c.reconnectNow()
+        #expect(eventually { c.state.connection == .live && rt.lock.withLock { rt.connections.count == 2 } })
+        Thread.sleep(forTimeInterval: 0.1)
+        rt.lock.withLock { #expect(rt.draftAcks == ["h1"]) }  // not retried
+    }
+
+    @Test func theOfferIsWithdrawnWhenPresenceLeaves() throws {
+        let rt = FakeRuntime()
+        arriving(rt)
+        let c = try client(rt)
+        c.start()
+        defer { c.stop() }
+        #expect(eventually { c.state.incomingDraft != nil })
+        rt.lock.withLock {
+            rt.surface = "phone"                       // the runtime no longer offers it here
+            rt.generation = 3
+            rt.draft = nil
+            rt.connections.last?.push(["type": "event", "kind": "presence", "rev": 2, "data": [
+                "presence": ["surface": "phone", "home": "mac", "generation": 3],
+                "handoff": NSNull()]])
+        }
+        #expect(eventually { c.state.incomingDraft == nil })
+    }
+
+    @Test func readyOutRecordsTheDraftThatLeft() throws {
+        let rt = FakeRuntime()
+        rt.handoff = Self.preparing
+        let c = try client(rt)
+        c.setDraftProvider { "half typed" }
+        c.start()
+        defer { c.stop() }
+        #expect(eventually { rt.lock.withLock { rt.readyOutDrafts == ["half typed"] } })
+        #expect(eventually { c.state.sentDraft == CarriedDraft(handoffId: "h1", text: "half typed") })
+        c.clearSentDraft("h1")
+        #expect(eventually { c.state.sentDraft == nil })
     }
 }
 

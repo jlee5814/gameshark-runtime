@@ -79,6 +79,20 @@ struct ChatCard: View {
                     }
                 }
             }
+            if let offer = model.draftOffer {
+                VStack(alignment: .leading, spacing: 6) {
+                    Label("Stark brought unsent text", systemImage: "text.bubble")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Text(offer.text).font(.callout).lineLimit(3)
+                    HStack {
+                        Button("Use It") { model.useCarriedDraft() }
+                        Button("Keep Mine") { model.keepCurrentDraft() }
+                    }
+                    .controlSize(.small)
+                }
+                .padding(8)
+                .background(.quaternary, in: RoundedRectangle(cornerRadius: 8))
+            }
             HStack {
                 TextField("Message Stark", text: $model.draft)
                     .textFieldStyle(.roundedBorder)

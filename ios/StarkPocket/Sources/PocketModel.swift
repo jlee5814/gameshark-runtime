@@ -14,6 +14,8 @@ protocol PocketClient: AnyObject {
     @discardableResult func send(_ text: String, presenceGen: Int?) -> String
     @discardableResult func jack(_ to: GatewayClient.JackDirection) -> String
     func setDraftProvider(_ provider: @escaping @Sendable () -> String?)
+    func confirmDraft(_ handoffId: String)
+    func clearSentDraft(_ handoffId: String)
 }
 
 extension GatewayClient: PocketClient {}
@@ -31,6 +33,8 @@ final class PocketModel {
     /// Unpair is waiting for Stark to reach home.
     private(set) var unpairing = false
     var draft = "" { didSet { draftBox.set(draft) } }
+    /// Unsent text Stark brought from the Mac while this composer held other text.
+    private(set) var draftOffer: CarriedDraft?
     var inputFocused = false { didSet { followStage() } }
     var deviceName = UIDevice.current.name
 
@@ -209,7 +213,38 @@ final class PocketModel {
             pairingError = "This iPhone is no longer paired with the Mac."
             return
         }
+        followDrafts()
         followStage()
+    }
+
+    /// Restore a carried draft into the composer (never sending it), clear one that left
+    /// with Stark, and raise a choice instead of overwriting different text.
+    private func followDrafts() {
+        guard let s = state, let c = client else { return }
+        let steps = DraftContinuity.follow(s, composer: draft, offered: draftOffer)
+        if let text = steps.composer { draft = text }
+        if let hid = steps.clearSent { c.clearSentDraft(hid) }
+        if let hid = steps.confirm { c.confirmDraft(hid) }
+        if let offer = steps.offer {
+            draftOffer = offer
+        } else if steps.withdrawOffer {
+            draftOffer = nil
+        }
+    }
+
+    /// The conflict choice: put the carried text in the composer.
+    func useCarriedDraft() {
+        guard let offer = draftOffer else { return }
+        draft = offer.text
+        draftOffer = nil
+        client?.confirmDraft(offer.handoffId)
+    }
+
+    /// The conflict choice: keep what is here; the runtime stops offering the other text.
+    func keepCurrentDraft() {
+        guard let offer = draftOffer else { return }
+        draftOffer = nil
+        client?.confirmDraft(offer.handoffId)
     }
 
     // MARK: actions
