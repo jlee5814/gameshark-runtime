@@ -1,11 +1,18 @@
 """Provider independent inference contracts (v0.3 step 1), the durable journal (step 2),
-and the router (step 3).
+the router (step 3), and the OpenAI compatible HTTP provider (step 4).
 
-No transport yet: FakeProvider is the only provider.
+FakeProvider serves tests and fault injection; OpenAICompatProvider reaches externally
+managed SGLang, mlx_lm.server, LM Studio and Bionic, and compatible cloud endpoints.
 """
 
 from gameshark.inference.fake import FakeCall, FakeProvider, Fault, Script
 from gameshark.inference.journal import CallSpec, Committed, InferenceJournal, Reservation
+from gameshark.inference.openai_compat import (
+    Endpoint,
+    OpenAICompatCall,
+    OpenAICompatProvider,
+    SSEDecoder,
+)
 from gameshark.inference.provider import Provider, ProviderCall, complete
 from gameshark.inference.router import (
     CLOUD_GRANT,
@@ -79,6 +86,7 @@ __all__ = [
     "ContextConflict",
     "ContextTooLong",
     "EgressDenied",
+    "Endpoint",
     "FakeCall",
     "FakeProvider",
     "Fault",
@@ -91,6 +99,8 @@ __all__ = [
     "Locality",
     "Message",
     "ModelCrashed",
+    "OpenAICompatCall",
+    "OpenAICompatProvider",
     "Overloaded",
     "Overrun",
     "OwnershipMismatch",
@@ -110,6 +120,7 @@ __all__ = [
     "Role",
     "RouteResult",
     "RouterPolicy",
+    "SSEDecoder",
     "Scheduler",
     "Script",
     "StaleAttempt",
