@@ -36,6 +36,12 @@ public struct HandoffInfo: Codable, Equatable, Sendable {
     public var toGen: Int?
 }
 
+/// A paired device's display name: never a credential.
+public struct DeviceName: Codable, Equatable, Sendable {
+    public var surface: String
+    public var name: String
+}
+
 public struct Responsibility: Codable, Equatable, Sendable, Identifiable {
     public var id: String
     public var kind: String
@@ -144,6 +150,8 @@ public struct Snapshot: Decodable, Equatable, Sendable {
     public var responsibilities: [Responsibility]
     public var conversation: Conversation
     public var activity: Activity
+    /// Paired devices by surface; absent from a runtime before Stark Pocket.
+    public var devices: [DeviceName]?
 }
 
 struct PresenceEvent: Decodable {

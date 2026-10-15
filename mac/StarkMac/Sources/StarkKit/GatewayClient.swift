@@ -62,7 +62,16 @@ public struct ClientState: Equatable, Sendable {
     public var outbox: [OutgoingMessage] = []
     public var lastError: String?
 
+    /// Surface to display name for paired devices, from the snapshot.
+    public var deviceNames: [String: String] = [:]
+
     public var isActiveSurface: Bool { presence?.surface == surface }
+
+    /// Who holds Stark when this surface does not: a device name, "Mac" for home, or nil.
+    public var holderName: String? {
+        guard let p = presence, p.surface != surface else { return nil }
+        return deviceNames[p.surface] ?? (p.surface == p.home ? "Mac" : p.surface)
+    }
     public var isWorking: Bool { activity?.isWorking ?? false }
     public var isThinking: Bool { activity?.isThinking ?? working }
 
@@ -448,6 +457,8 @@ public final class GatewayClient: @unchecked Sendable {
             st.responsibilities = s.responsibilities
             st.working = s.activity.working
             st.activity = s.activity                 // rebuilt wholesale, never merged
+            st.deviceNames = Dictionary((s.devices ?? []).map { ($0.surface, $0.name) },
+                                        uniquingKeysWith: { a, _ in a })
             haveSnapshot = true
             followHandoff()
         case .sync:
@@ -515,6 +526,10 @@ public final class GatewayClient: @unchecked Sendable {
             st.presence = p.presence
             st.handoff = p.handoff
             followHandoff()
+            let holder = p.presence.surface
+            if holder != p.presence.home, holder != config.surface, st.deviceNames[holder] == nil {
+                request("snapshot", .snapshot)      // a device paired since our snapshot
+            }
         case "responsibilities":
             st.responsibilities = try Wire.decode(Event<ResponsibilitiesEvent>.self, from: body)
                 .data.responsibilities

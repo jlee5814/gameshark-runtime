@@ -156,6 +156,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(status)
         menu.addItem(.separator())
         menu.addItem(item("Show Chat", #selector(showChat), "k"))
+        if model.canJackIn {
+            menu.addItem(item("Jack In Here (from \(s.holderName ?? "elsewhere"))",
+                              #selector(jackIn), "j"))
+        }
 
         if model.stage != nil {
             let scale = NSMenu()
@@ -218,6 +222,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func menuNeedsUpdate(_ menu: NSMenu) { _ = buildMenu(into: menu) }
 
     @objc private func pickScale(_ sender: NSMenuItem) { panel.setScale(sender.tag) }
+
+    @objc private func jackIn() { model.jackIn() }
 
     @objc private func pickAnimation(_ sender: NSMenuItem) {
         model.stage?.show((sender.representedObject as? String).flatMap(StarkAnimation.init(rawValue:)))

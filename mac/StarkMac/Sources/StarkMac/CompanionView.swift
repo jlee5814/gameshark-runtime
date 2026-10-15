@@ -68,9 +68,16 @@ struct ChatCard: View {
                 }
             }
             if !model.state.isActiveSurface && model.state.connection.isLive {
-                Label("Stark is on \(model.state.presence?.surface ?? "another surface"). "
-                      + "This panel is read only.", systemImage: "moon.zzz")
-                    .font(.caption).foregroundStyle(.secondary)
+                HStack {
+                    Label("Stark is on \(model.state.holderName ?? "another surface"). "
+                          + "This panel is read only.", systemImage: "moon.zzz")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Spacer()
+                    if model.canJackIn {
+                        Button("Jack In Here") { model.jackIn() }
+                            .controlSize(.small)
+                    }
+                }
             }
             HStack {
                 TextField("Message Stark", text: $model.draft)
