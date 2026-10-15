@@ -359,3 +359,38 @@ def test_a_draft_survives_sigkill_between_ack_and_receipt(env):
     finally:
         if proc.poll() is None:
             stop(proc)
+
+
+def test_a_lost_ready_out_reply_reconciles_after_sigkill(env):
+    """The commit lands, the daemon dies before its reply reaches the source, and the next
+    daemon answers the source's replay from the durable row: the text traveled, once."""
+    proc = daemon(env, 0.1)
+    try:
+        token = bytes.fromhex(env["token"].read_text())
+        with client(env) as mac, GatewayClient(env["sock"], token, "pad") as pad:
+            pad.call("jack", handoff_id="k1", to="self", presence_gen=1)
+            mac.write({"type": "ready_out", "id": 77, "handoff_id": "k1", "presence_gen": 1,
+                       "draft": "only copy"})                      # reply never read
+
+            def committed() -> bool:
+                conn = sqlite3.connect(env["db"], timeout=5)
+                try:
+                    return conn.execute("SELECT state FROM handoffs WHERE id='k1'"
+                                        ).fetchone()[0] != "preparing"
+                finally:
+                    conn.close()
+            wait_for(committed)
+            # Dies with both sessions open, so no disconnect reverts the jack first.
+            assert stop(proc, signal.SIGKILL) == -signal.SIGKILL
+        proc = daemon(env, 0.1)
+        with client(env) as mac:
+            out = mac.call("ready_out", handoff_id="k1", presence_gen=1, draft="only copy")
+            assert out["draft_carried"] is True
+            assert mac.call("ready_out", handoff_id="k1", presence_gen=1,
+                            draft="edited since")["draft_carried"] is False
+        with GatewayClient(env["sock"], token, "pad") as pad:
+            out = pad.call("ack_in", handoff_id="k1", presence_gen=2)
+            assert out["draft"] == "only copy"
+    finally:
+        if proc.poll() is None:
+            stop(proc)
