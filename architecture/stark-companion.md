@@ -19,7 +19,8 @@ runtime stays on the Mac because stock iOS suspends background apps and runs no 
 - P3 every handoff resolves to one committed generation: deadlines persist as absolute
   times, so a runtime killed mid jack resolves identically after restart through `tick()`.
 - Surface writes dedup by `client_msg_id` (I4); a dedup hit wins over the presence check,
-  so a message that landed before a jack stays landed. Reconnect resync replays rows after
+  so a message that landed before a jack stays landed. A resend must match the original
+  conversation and text; a reused id with other text is rejected. Reconnect resync replays rows after
   `last_seq` (I5).
 
 ## Jack state machine (`gameshark/presence.py`)
@@ -31,6 +32,12 @@ committed --ack_in-------------------------------> acked
 committed --ack deadline (10 s) | target lost----> reverted   gen+1, surface = home,
                                                               or source when home failed
 ```
+
+`ready_out` names the calling surface and generation; only the jack's source at the
+generation the jack started under may commit, checked in the commit transaction, and its
+replay after commit returns the same handoff. The prepare deadline is a separate trusted
+path driven only by `tick()`. An `ack_in` at or past its deadline reverts in its own
+transaction and is rejected, so a late ack never lands even before `tick()` runs.
 
 A silent source commits without its draft rather than stranding a live target. Crash
 points `P1_after_prepare` and `P2_after_commit` are proven by real SIGKILL in

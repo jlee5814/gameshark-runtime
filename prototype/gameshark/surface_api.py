@@ -195,7 +195,7 @@ class SurfaceAPI:
         draft = _text(msg, "draft", required=False)
         gen = _int(msg, "presence_gen", 0)
         assert self.sup.presence is not None
-        h = self.sup.presence.ready_out(hid, draft, surface=sess.surface, presence_gen=gen)
+        h = self.sup.presence.ready_out(hid, sess.surface, gen, draft)
         return {"handoff_id": h.id, "state": h.state, "to_gen": h.to_gen}
 
     def _ack_in(self, sess: Session, msg: dict) -> dict:

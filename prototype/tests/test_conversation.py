@@ -56,7 +56,7 @@ def test_stale_surface_writes_nothing(sc):
 def test_landed_message_survives_a_jack(sc):
     sc.submit("mac", 1, "m1", CONV, "before jack")
     sc.presence.request_jack("h1", "phone")
-    sc.presence.ready_out("h1")
+    sc.presence.ready_out("h1", "mac", 1)
     assert sc.submit("mac", 1, "m1", CONV, "before jack").replayed   # dedup beats stale
     with pytest.raises(StalePresence):
         sc.submit("mac", 1, "m2", CONV, "after jack")
@@ -67,6 +67,24 @@ def test_client_id_cannot_switch_conversation(sc):
     sc.submit("mac", 1, "m1", CONV, "x")
     with pytest.raises(InvalidRequest):
         sc.submit("mac", 1, "m1", "other", "x")
+
+
+def test_client_id_reused_for_other_text_is_rejected(sc):
+    sc.submit("mac", 1, "m1", CONV, "original")
+    with pytest.raises(InvalidRequest):
+        sc.submit("mac", 1, "m1", CONV, "edited offline")
+    assert count(sc) == 1
+    assert [r.content for r in sc.since(CONV, -1)] == ["original"]
+    assert sc.submit("mac", 1, "m1", CONV, "original").replayed
+
+
+def test_conflicting_resend_after_a_jack_is_still_rejected(sc):
+    sc.submit("mac", 1, "m1", CONV, "before jack")
+    sc.presence.request_jack("h1", "phone")
+    sc.presence.ready_out("h1", "mac", 1)
+    with pytest.raises(InvalidRequest):
+        sc.submit("mac", 1, "m1", CONV, "rewritten")
+    assert count(sc) == 1
 
 
 def test_since_returns_exactly_the_gap(sc):
