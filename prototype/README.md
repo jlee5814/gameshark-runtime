@@ -164,7 +164,7 @@ the property does not hold.
 cd /Users/jaebonglee/Projects/gameshark-research/prototype
 uv venv --python 3.13
 uv pip install pytest
-uv run pytest -v                 # all 316 tests (v0.1, v0.2, fencing, draining, expiry, v0.3 steps 1 to 5)
+uv run pytest -v                 # all 327 tests (v0.1, v0.2, fencing, draining, expiry, v0.3 steps 1 to 5)
 uv run python demo.py            # v0.1 narrated Stark run with a real SIGKILL
 uv run python demo_v2.py         # v0.2 PR monitoring across a real SIGKILL and a revoke
 uv run python companion.py <runtime_db>   # render the companion feed for a run
@@ -576,13 +576,24 @@ still applies on top.
 
 Replacement. `tracker.replace(new_config, drain_timeout_s)`:
 
+0. Every successor setting (slots, queue depth) passes `Scheduler.check` before the old
+   record changes. A malformed config raises `ValueError` and the old model keeps
+   serving; a later valid replace proceeds normally.
 1. The old record moves to `unloading`; it admits nothing new.
 2. Admitted calls finish on the old configuration until `drain_timeout_s`. Calls still
-   running then are cancelled through their own child `CancelToken`; the router settles
-   that attempt `lost` and reruns the call on the successor, not as an operator cancel.
+   running then are evicted: cancelled through their own child `CancelToken`, a request a
+   remote server may ignore. The router settles that attempt `lost` and reruns the call on
+   the successor, not as an operator cancel, within the durable three attempt cap.
+   The commit boundary is the tracker lock: a finished call seals its `Use` before
+   `journal.commit`, and eviction skips sealed uses. A sealed call counts as drained and
+   commits on the old incarnation; an evicted call's late result, even a successful one,
+   never commits.
 3. The old record moves to `unloaded`; the successor starts at `discovered` with the next
-   generation. `Scheduler.configure` takes its slot count; `ProviderHealth.reset` clears
-   circuits, demotion, and cached health for the name.
+   generation, in the same critical section. `Scheduler.configure` takes its slot count;
+   `ProviderHealth.reset` clears circuits, demotion, and cached health for the name. An
+   exception during the drain still completes this step before it propagates: the
+   transition only moves forward, so the name never stays `unloading` and the retired
+   configuration never serves again.
 4. A call arriving during the drain waits up to `replace_wait_s` for the successor, then
    selects again: capability, privacy, and the egress grant are judged against the new
    configuration, so a replacement can neither bypass `inference.cloud` nor silently
@@ -830,6 +841,17 @@ tests/test_model_tracker.py::test_drain_deadline_cancels_the_old_call_and_reruns
 tests/test_model_tracker.py::test_arrival_during_replacement_without_wait_fails_over_without_an_attempt PASSED
 tests/test_model_tracker.py::test_replacement_mid_load_is_judged_again_against_the_new_window PASSED
 tests/test_model_tracker.py::test_replacement_that_turns_cloud_still_needs_the_egress_grant PASSED
+tests/test_model_tracker.py::test_evicted_call_returning_late_never_commits_and_reruns_on_the_successor PASSED
+tests/test_model_tracker.py::test_evicted_late_result_on_the_last_attempt_exhausts_without_a_successor_call PASSED
+tests/test_model_tracker.py::test_deaf_call_finishing_inside_the_drain_window_commits_on_the_old_generation PASSED
+tests/test_model_tracker.py::test_eviction_at_the_commit_boundary_discards_the_result PASSED
+tests/test_model_tracker.py::test_seal_before_eviction_commits_and_eviction_is_a_no_op PASSED
+tests/test_model_tracker.py::test_completion_and_eviction_race_linearizes PASSED
+tests/test_model_tracker.py::test_invalid_successor_leaves_the_active_model_usable
+tests/test_model_tracker.py::test_invalid_successor_leaves_the_active_model_usable
+tests/test_model_tracker.py::test_invalid_successor_during_an_active_call_does_not_disturb_it PASSED
+tests/test_model_tracker.py::test_failed_replacement_can_be_retried_with_a_valid_config PASSED
+tests/test_model_tracker.py::test_exception_during_the_drain_still_installs_the_successor PASSED
 tests/test_model_tracker.py::test_replacement_keeps_identity_and_conversation_and_resends_full_context PASSED
 tests/test_model_tracker.py::test_restart_rebuilds_lifecycle_and_replays_without_provider_calls PASSED
 tests/test_model_tracker.py::test_concurrent_calls_faults_and_replacements_leak_nothing PASSED
