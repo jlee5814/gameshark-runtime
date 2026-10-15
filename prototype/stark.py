@@ -256,6 +256,8 @@ def cmd_run(args) -> int:
         gateway = start_gateway(sup, chat, args, log) if args.gateway else None
         code = run_forever(sup, stop, args.interval, log=log,
                            drain_deadline_s=args.drain_deadline, gateway=gateway)
+        if gateway is not None:
+            lan_info_path(args).unlink(missing_ok=True)   # nothing serves it any more
         log("stopped")
         sup.close()
         return code
@@ -275,6 +277,22 @@ def lan_address() -> str:
         s.close()
 
 
+def lan_served(port: int, pin: bytes) -> bool:
+    """Whether this Mac answers on port with the pinned key and a device challenge. Closes
+    before any hello, which the gateway counts as a disconnect, not a failed handshake."""
+    from gameshark.gateway import FrameError, read_frame
+    from gameshark.gateway_client import GatewayError, tls_connect
+
+    try:
+        with tls_connect("127.0.0.1", port, pin, timeout_s=2.0) as s:
+            alive = threading.Event()
+            alive.set()
+            first = read_frame(s, alive)
+    except (OSError, GatewayError, FrameError):
+        return False
+    return first.get("type") == "challenge" and first.get("server_fp") == pin.hex()
+
+
 def cmd_pair(args) -> int:
     from urllib.parse import urlencode
 
@@ -284,10 +302,20 @@ def cmd_pair(args) -> int:
     if not info.exists():
         print("no LAN gateway yet: start `stark.py run --lan` first", file=sys.stderr)
         return 2
-    lan = json.loads(info.read_text())
     if not InstanceLock(args.db).held_elsewhere():
-        print("warning: the daemon is not running; the link works once it serves --lan",
-              file=sys.stderr)
+        print("the daemon is not running, so lan.json is stale: start `stark.py run --lan` "
+              "first", file=sys.stderr)
+        return 2
+    try:
+        lan = json.loads(info.read_text())
+        port, pin = int(lan["port"]), bytes.fromhex(lan["pin"])
+    except (OSError, ValueError, KeyError, TypeError) as e:
+        print(f"unreadable {info}: {e}", file=sys.stderr)
+        return 2
+    if not lan_served(port, pin):
+        print(f"the running daemon does not serve LAN port {port} with this pin; restart it "
+              "with `stark.py run --lan`", file=sys.stderr)
+        return 2
     conn = connect(args.db)
     try:
         pid, secret = create_pairing(conn, AGENT, args.name, time.time(), args.ttl)
@@ -298,8 +326,8 @@ def cmd_pair(args) -> int:
         conn.close()
     host = socket.gethostname()
     host = host if host.endswith(".local") else host + ".local"
-    query = {"v": 1, "h": host, "a": args.address or lan_address(), "p": lan["port"],
-             "fp": lan["pin"], "id": pid, "s": secret}
+    query = {"v": 1, "h": host, "a": args.address or lan_address(), "p": port,
+             "fp": pin.hex(), "id": pid, "s": secret}
     link = "starkpocket://pair?" + urlencode(query)
     if args.json:
         print(json.dumps({"link": link, "pairing_id": pid, "expires_in": args.ttl}))

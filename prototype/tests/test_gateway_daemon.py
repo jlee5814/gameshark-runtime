@@ -278,3 +278,55 @@ def test_revocation_applies_when_the_daemon_runs_without_lan(env):
     finally:
         if proc.poll() is None:
             stop(proc)
+
+
+def pairings(env) -> int:
+    conn = sqlite3.connect(env["db"], timeout=5)
+    try:
+        return conn.execute("SELECT COUNT(*) FROM pairings").fetchone()[0]
+    finally:
+        conn.close()
+
+
+def pair_cli(env) -> subprocess.CompletedProcess:
+    return subprocess.run([sys.executable, str(ROOT / "stark.py"), "--db", str(env["db"]),
+                           "pair", "--name", "Test Phone", "--json", "--address", "127.0.0.1"],
+                          env=env["env"], cwd=ROOT, capture_output=True, text=True,
+                          timeout=30, check=False)
+
+
+def test_pair_refuses_lan_json_from_a_killed_daemon(env):
+    proc = daemon(env, 0.1, "--lan", "--lan-port", "0")
+    lan(env)
+    stop(proc, signal.SIGKILL)
+    assert (env["sock"].parent / "lan.json").exists()             # SIGKILL leaves it
+    out = pair_cli(env)
+    assert out.returncode != 0
+    assert "starkpocket://" not in out.stdout
+    assert "not running" in out.stderr
+    assert pairings(env) == 0
+
+
+def test_pair_refuses_an_endpoint_the_running_daemon_does_not_serve(env):
+    import socket
+
+    proc = daemon(env, 0.1, "--lan", "--lan-port", "0")
+    try:
+        info_path = env["sock"].parent / "lan.json"
+        info = lan(env)
+        with socket.socket() as s:
+            s.bind(("127.0.0.1", 0))
+            dead = s.getsockname()[1]                             # closed once released
+        for wrong in ({**info, "port": dead}, {**info, "pin": "11" * 32}):
+            info_path.write_text(json.dumps(wrong))
+            out = pair_cli(env)
+            assert out.returncode != 0, wrong
+            assert "does not serve" in out.stderr
+            assert pairings(env) == 0
+        info_path.write_text(json.dumps(info))
+        for _ in range(6):                                        # probes never trip the limiter
+            assert pair_cli(env).returncode == 0
+        assert pairings(env) == 6
+    finally:
+        assert stop(proc) == 0
+    assert not (env["sock"].parent / "lan.json").exists()         # a clean stop withdraws it

@@ -74,7 +74,9 @@ database and the token), the operator, and the phone's OS.
 ## Connection requirements
 
 - `stark.py run --lan` (off by default). Port 47820 unless `--lan-port`; the runtime records
-  the port and pin in `gateway/lan.json` for `stark.py pair`.
+  the port and pin in `gateway/lan.json` for `stark.py pair`, drops it at every boot and
+  clean stop, and `pair` issues no link unless the running daemon answers a pinned TLS
+  probe on that port with that key.
 - Same LAN or a link local path. No relay, no cloud, no port forwarding, no UPnP.
 - macOS may ask once to allow incoming connections for Python.
 - iOS asks for local network permission on first connect (`NSLocalNetworkUsageDescription`).
