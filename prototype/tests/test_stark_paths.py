@@ -63,6 +63,11 @@ def test_endpoint_flags_build_one_http_provider_with_its_extra_body(monkeypatch)
     assert (p.model, p.extra_body) == ("qwen", {"chat_template_kwargs":
                                                 {"enable_thinking": False}})
     assert cfg.fingerprint == p.config_fingerprint
+    # Routing sizes prompts with the history window's own byte bound (Codex P2).
+    from gameshark.inference.journal import HISTORY_FIXED, HISTORY_PER_MESSAGE
+    assert cfg.token_bound.trusted
+    assert (cfg.token_bound.per_message, cfg.token_bound.fixed) == (HISTORY_PER_MESSAGE,
+                                                                    HISTORY_FIXED)
     spec = stark.chat_spec(args)
     assert spec.max_tokens == args.max_tokens
     assert spec.history_budget is not None

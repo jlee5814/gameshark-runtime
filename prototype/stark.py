@@ -151,12 +151,18 @@ HISTORY_MARGIN = 256
 def make_provider(args):
     """The model behind Stark's replies: the named endpoint, or the fake when asked for."""
     from gameshark.inference import OpenAICompatProvider, ProviderConfig
+    from gameshark.inference.journal import HISTORY_FIXED, HISTORY_PER_MESSAGE
+    from gameshark.inference.router import BoundKind, TokenBound
     from gameshark.stark_chat import CompanionFakeProvider
 
     if args.inference_url:
         p = OpenAICompatProvider("local", args.inference_url, args.model, args.context_window,
                                  max_concurrency=2, extra_body=args.inference_extra)
-        return ProviderConfig(p, fingerprint=p.config_fingerprint)
+        # Route with the history window's byte bound (byte level BPE, as SGLang and MLX
+        # serve Qwen and Llama), so a context the model cannot hold fails here as
+        # ContextTooLong instead of reaching the server.
+        bound = TokenBound(BoundKind.TRUSTED_BYTES, HISTORY_PER_MESSAGE, HISTORY_FIXED)
+        return ProviderConfig(p, token_bound=bound, fingerprint=p.config_fingerprint)
     return ProviderConfig(CompanionFakeProvider(args.fake_delay))
 
 

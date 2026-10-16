@@ -397,3 +397,25 @@ def test_jack_in_and_out_while_a_reply_is_pending(tmp_path, fx):
         rt.close()
     assert roles(rt.db) == ["system", "user", "assistant", "user", "assistant"]
     assert len(fx.chats()) == 2
+
+
+def test_a_message_the_model_cannot_hold_fails_before_any_request(tmp_path, fx):
+    """Codex P2: routing sizes the prompt with the same byte bound as the history window,
+    so an oversized message without spaces fails as ContextTooLong locally, never as an
+    InvalidRequest from an undersized server."""
+    import stark
+
+    args = stark.build_parser().parse_args([
+        "run", "--inference-url", f"{fx.base}/v1", "--model", "m",
+        "--context-window", "1024", "--max-tokens", "512"])
+    rt = Runtime(tmp_path / "runtime.db", short_dir(),
+                 providers=lambda: [stark.make_provider(args)], spec=stark.chat_spec(args),
+                 tracker_policy=QUICK).start()
+    try:
+        with rt.client() as mac:
+            send(mac, "big", "x" * 8000)
+            failed = wait_for(lambda: (r := reply_state(mac)) and r["state"] == "failed" and r)
+            assert failed["error"] == "ContextTooLong"
+    finally:
+        rt.close()
+    assert roles(rt.db) == ["system", "user"] and fx.chats() == []
