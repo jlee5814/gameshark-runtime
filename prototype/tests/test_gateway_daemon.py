@@ -112,7 +112,7 @@ def test_sigkill_restart_keeps_identity_conversation_and_dedup(env):
 def test_run_without_a_model_refuses_to_start(env):
     out = subprocess.run([sys.executable, str(ROOT / "stark.py"), "--db", str(env["db"]),
                           "run"], env=env["env"], cwd=ROOT, capture_output=True, text=True,
-                         timeout=30)
+                         timeout=30, check=False)
     assert out.returncode == 2 and "--inference-url" in out.stderr
     assert not env["sock"].exists()
 

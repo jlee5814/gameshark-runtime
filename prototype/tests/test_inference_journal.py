@@ -703,8 +703,9 @@ def test_fit_history_keeps_leading_system_rows_and_the_newest_suffix():
     out = fit_history(msgs, 200)
     assert out[0] == msgs[0] and out[-1] == msgs[-1]
     assert out[1:] == msgs[len(msgs) - (len(out) - 1):]          # a contiguous suffix
+    assert out[1].role is Role.USER                               # starting on a user turn
     assert sum(len(m.content.encode()) + HISTORY_PER_MESSAGE for m in out) + HISTORY_FIXED <= 200
-    bigger = fit_history(msgs, 260)
+    bigger = fit_history(msgs, 300)
     assert len(bigger) > len(out)
     # The newest row always rides along, even past the budget: the router then refuses it
     # as ContextTooLong rather than sending a request without the question.

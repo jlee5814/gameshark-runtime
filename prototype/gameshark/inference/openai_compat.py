@@ -22,6 +22,10 @@ Usage is never invented. With stream_usage the request asks for a final usage ch
 none arrives, or it is malformed, the result carries usage=None and the journal charges
 the attempt its full reservation (ledger status 'unmetered').
 
+extra_body adds server specific request fields, such as SGLang's chat_template_kwargs to
+turn off Qwen3 thinking. It joins the config fingerprint and can never replace a field this
+provider sets.
+
 The API key lives only in this object and in the Authorization header of a live request.
 It never enters ProviderRequest, results, errors, health details, or repr.
 """
@@ -216,6 +220,11 @@ class SSEDecoder:
 
 
 # ---------------------------------------------------------------------- provider
+# Request fields this provider owns; extra_body may add others, never these.
+FIXED_FIELDS = frozenset({"model", "messages", "max_tokens", "temperature", "stream",
+                          "stream_options"})
+
+
 class OpenAICompatProvider:
     def __init__(
         self,
@@ -232,11 +241,16 @@ class OpenAICompatProvider:
         read_idle_s: float = 30.0,
         connect_timeout_s: float = 5.0,
         max_response_bytes: int = MAX_RESPONSE,
+        extra_body: dict | None = None,
         monotonic: Callable[[], float] = time.monotonic,
         _connect: Connect | None = None,
     ) -> None:
         self.name = name
         self.endpoint = Endpoint.parse(base_url)
+        clash = sorted(FIXED_FIELDS & set(extra_body or {}))
+        if clash:
+            raise ValueError(f"extra_body may not set {', '.join(clash)}")
+        self.extra_body = dict(extra_body or {})
         # Tools, JSON mode, and vision stay unadvertised until implemented and tested.
         self._caps = Capabilities(model=model, locality=self.endpoint.locality,
                                   context_window=context_window,
@@ -259,9 +273,12 @@ class OpenAICompatProvider:
 
     @property
     def config_fingerprint(self) -> str:
-        """Changes when endpoint, model, or key change; reveals none of them."""
+        """Changes when endpoint, model, key, or extra body change; reveals none of them."""
         key_digest = hashlib.sha256((self._key or "").encode()).hexdigest()
-        h = hashlib.sha256(f"{self.endpoint.url}\0{self.model}\0{key_digest}".encode())
+        text = f"{self.endpoint.url}\0{self.model}\0{key_digest}"
+        if self.extra_body:      # absent extra keeps the fingerprints recorded before it
+            text += "\0" + json.dumps(self.extra_body, sort_keys=True)
+        h = hashlib.sha256(text.encode())
         return h.hexdigest()[:16]
 
     def capabilities(self) -> Capabilities:
@@ -281,6 +298,7 @@ class OpenAICompatProvider:
 
     def body(self, req: ProviderRequest) -> bytes:
         payload: dict = {
+            **self.extra_body,
             "model": self.model,
             "messages": [{"role": m.role.value, "content": m.content} for m in req.messages],
             "max_tokens": req.max_tokens,

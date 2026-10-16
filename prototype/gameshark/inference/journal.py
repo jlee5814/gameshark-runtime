@@ -17,6 +17,10 @@ Crash points, fired through the supervisor's crash hook:
     E3_after_provider   the answer dies in memory; same as E2, provider ran twice
     E4_after_commit     replay finds the call done and returns it with no provider call
 
+A CallSpec with history_budget sends a window, not the whole conversation: the leading
+system rows plus the newest rows whose byte bound fits (fit_history). The window is a pure
+function of the rows before base_seq, so select, reserve, and every replay agree on it.
+
 Execution is at least once; commit is at most once. Recovery only settles abandoned
 reservations. It never dispatches: the owner replays and reissues the same call_id.
 Nothing here claims exactly once provider execution or billing.
@@ -51,6 +55,7 @@ from gameshark.inference.types import (
     Role,
     StaleAttempt,
     estimate_tokens,
+    prompt_bytes_bound,
 )
 from gameshark.lease import LeaseManager
 from gameshark.lifecycle import CancelToken
@@ -63,12 +68,41 @@ RESERVED, SETTLED, LOST = "reserved", "settled", "lost"
 UNMETERED = "unmetered"
 
 
+# Chat template overhead charged per message and once per request by the history window.
+HISTORY_PER_MESSAGE = 8
+HISTORY_FIXED = 16
+
+
+def fit_history(messages: tuple[Message, ...], budget: int | None) -> tuple[Message, ...]:
+    """The leading system rows plus the newest suffix whose byte bound fits budget.
+
+    The newest row always stays, even alone past the budget: the router then refuses the
+    call as ContextTooLong instead of sending a request without its question.
+    """
+    if budget is None or not messages:
+        return messages
+    head = 0
+    while head < len(messages) - 1 and messages[head].role is Role.SYSTEM:
+        head += 1
+    keep = len(messages) - 1                # index where the kept suffix starts
+    while keep > head and prompt_bytes_bound(
+            messages[:head] + messages[keep - 1:], HISTORY_PER_MESSAGE,
+            HISTORY_FIXED) <= budget:
+        keep -= 1
+    # Start the window on a user turn: strict chat templates refuse an assistant first.
+    while keep < len(messages) - 1 and messages[keep].role is Role.ASSISTANT:
+        keep += 1
+    return messages[:head] + messages[keep:]
+
+
 @dataclass(frozen=True)
 class CallSpec:
     max_tokens: int
     temperature: float = 0.0
     needs: frozenset[Capability] = frozenset()
     timeout_s: float = 60.0
+    # Upper bound, in prompt_bytes_bound units, on the context sent; None sends every row.
+    history_budget: int | None = None
 
 
 @dataclass(frozen=True)
@@ -221,12 +255,13 @@ class InferenceJournal:
 
         return self._fenced(body)
 
-    def context(self, conversation_id: str, before_seq: int) -> tuple[Message, ...]:
+    def context(self, conversation_id: str, before_seq: int,
+                budget: int | None = None) -> tuple[Message, ...]:
         rows = self.conn.execute(
             "SELECT role, content FROM messages WHERE conversation_id=? AND seq<? ORDER BY seq",
             (conversation_id, before_seq),
         ).fetchall()
-        return tuple(Message(Role(r["role"]), r["content"]) for r in rows)
+        return fit_history(tuple(Message(Role(r["role"]), r["content"]) for r in rows), budget)
 
     # ------------------------------------------------------------------ calls
     def lookup(self, call_id: str) -> Committed | None:
@@ -290,7 +325,7 @@ class InferenceJournal:
                     return None
             base_seq = conv["next_seq"]
             attempt = (row["attempts"] if row is not None else 0) + 1
-            messages = self.context(conversation_id, base_seq)
+            messages = self.context(conversation_id, base_seq, spec.history_budget)
             if not messages:
                 raise InvalidRequest(f"conversation {conversation_id} has no context")
             req = ProviderRequest(

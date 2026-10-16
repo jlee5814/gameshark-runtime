@@ -340,7 +340,8 @@ class InferenceRouter:
     def select(self, conversation_id: str, spec: CallSpec) -> list[Candidate]:
         """Ordered eligible candidates for the conversation's next call, or a typed refusal."""
         conv = self.journal.conversation(conversation_id)
-        messages = self.journal.context(conversation_id, conv["next_seq"])
+        messages = self.journal.context(conversation_id, conv["next_seq"],
+                                        spec.history_budget)
         privacy = Privacy(conv["privacy"])
 
         # 1. Capability: features, model constraint, context window under the prompt bound.
