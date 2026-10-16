@@ -58,8 +58,9 @@ final class PocketModel {
     /// background learns it before it dials.
     @ObservationIgnored private var network: NetworkPath?
     /// The client is held until NWPathMonitor reports, so its first dial follows the
-    /// network: on cellular, the tailnet before any LAN timeout.
-    @ObservationIgnored private var awaitingPath = false
+    /// network: on cellular, the tailnet before any LAN timeout. The fallback for the
+    /// current foreground only; cancelled when the path arrives or the app leaves.
+    @ObservationIgnored private var firstPathWait: Task<Void, Never>?
     /// How long a client waits for a first path before it dials in the link's order.
     @ObservationIgnored var firstPathTimeout: Duration = .seconds(1)
     /// What Settings shows for diagnosis: the path class and the routes this pairing dials.
@@ -229,13 +230,12 @@ final class PocketModel {
             client?.start()
             return
         }
-        guard !awaitingPath else { return }
-        awaitingPath = true
+        guard firstPathWait == nil else { return }
         let wait = firstPathTimeout
-        Task { @MainActor [weak self] in
+        firstPathWait = Task { @MainActor [weak self] in
             try? await Task.sleep(for: wait)
-            guard let self, self.awaitingPath, self.foreground else { return }
-            self.awaitingPath = false
+            guard !Task.isCancelled, let self, self.foreground else { return }
+            self.firstPathWait = nil
             NetLog.trace("no network path after \(wait), dialing in the link's order")
             self.client?.start()
         }
@@ -329,7 +329,8 @@ final class PocketModel {
         case .background:
             NetLog.trace("scene background")
             foreground = false
-            awaitingPath = false
+            firstPathWait?.cancel()
+            firstPathWait = nil
             stage?.setVisible(false)
             guard let c = client else { return }
             if pendingOutbox.contains(where: { $0.status == .pending }) {
@@ -359,8 +360,9 @@ final class PocketModel {
         networkLabel = path.rawValue
         guard foreground else { return }
         client?.setPath(path)
-        if awaitingPath {
-            awaitingPath = false
+        if let wait = firstPathWait {
+            wait.cancel()
+            firstPathWait = nil
             client?.start()
         }
     }
