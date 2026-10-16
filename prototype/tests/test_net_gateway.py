@@ -502,3 +502,134 @@ def test_snapshot_names_live_devices_for_display(rt):
         assert mac.call("snapshot")["devices"] == [{"surface": surface, "name": "Jae's iPhone"}]
         operator_revoke(rt, device_id)
         assert mac.call("snapshot")["devices"] == []
+
+
+# ---------------------------------------------------------------------- tailnet path
+def loopback_only(ip: str) -> bool:
+    return ip == "127.0.0.1"
+
+
+@pytest.fixture
+def both(tmp_path):
+    r = Runtime(tmp_path / "runtime.db", short_dir(), lan=True,
+                tailnet_allow=loopback_only).start()
+    yield r
+    r.close()
+
+
+def count(db: Path, sql: str) -> int:
+    conn = sqlite3.connect(db)
+    try:
+        return conn.execute(sql).fetchone()[0]
+    finally:
+        conn.close()
+
+
+def test_network_listeners_bind_the_tailnet_address_and_share_one_gate():
+    from gameshark.tailscale import tailnet_peer
+
+    from gameshark.net_gateway import network_listeners
+
+    lan, tail = network_listeners(load_or_create_identity(short_dir()), lan_port=47820,
+                                  tailnet=("100.123.57.23", 47821), instance="i1")
+    assert (lan.host, lan.requested_port, lan.allow, lan.path) == ("", 47820, lan_peer, "lan")
+    assert (tail.host, tail.requested_port, tail.allow, tail.path) == (
+        "100.123.57.23", 47821, tailnet_peer, "tailnet")
+    assert lan.limiter is tail.limiter and lan.slots is tail.slots
+    assert lan.instance == tail.instance == "i1" and lan.identity is tail.identity
+
+
+def test_a_tailnet_listener_binds_only_its_address(both):
+    assert both.tailnet.port != both.lan.port
+    assert both.tailnet._sock.getsockname()[0] == "127.0.0.1"
+
+
+def test_the_tailnet_listener_refuses_peers_its_policy_does_not_admit(tmp_path):
+    r = Runtime(tmp_path / "runtime.db", short_dir(), lan=True,
+                tailnet_allow=lambda _ip: False).start()
+    try:
+        device_id, _surface, key = paired(r)
+        r.device(device_id, key).close()                     # the LAN path still works
+        with pytest.raises((GatewayError, ssl.SSLError, ConnectionError, OSError)):
+            r.device(device_id, key, via="tailnet")
+    finally:
+        r.close()
+
+
+def test_lan_and_tailnet_sessions_share_one_cap(both):
+    from gameshark.net_gateway import MAX_LAN_SESSIONS
+
+    half = MAX_LAN_SESSIONS // 2
+    idle = [socket.create_connection(("127.0.0.1", port), timeout=5)
+            for port in [both.lan.port] * half + [both.tailnet.port] * half]
+    try:
+        time.sleep(0.2)
+        for port in (both.tailnet.port, both.lan.port):
+            with pytest.raises((GatewayError, ssl.SSLError, ConnectionError, OSError)):
+                tls_connect("127.0.0.1", port, both.identity.pin)
+    finally:
+        for s in idle:
+            s.close()
+
+
+def test_failures_on_one_path_block_the_address_on_both(tmp_path):
+    r = Runtime(tmp_path / "runtime.db", short_dir(), lan=True, tailnet_allow=loopback_only,
+                limiter=FailureLimiter(limit=3, window_s=60)).start()
+    try:
+        device_id, _surface, key = paired(r)
+        for _ in range(3):
+            with pytest.raises(GatewayError):
+                r.device(device_id, new_device_key(), via="tailnet")
+        time.sleep(0.1)
+        with pytest.raises((GatewayError, ssl.SSLError, ConnectionError, OSError)):
+            r.device(device_id, key)                         # LAN, right key, still blocked
+    finally:
+        r.close()
+
+
+def test_moving_from_lan_to_tailnet_keeps_one_stark_one_device_and_no_duplicate(both):
+    """Wi-Fi to cellular: the phone's LAN socket is still open when it proves itself on the
+    tailnet. The newest session supersedes the old one, presence never moves, and the
+    message resent under its original id lands once."""
+    device_id, surface, key = paired(both)
+    with both.client() as mac:
+        old = both.device(device_id, key)
+        gen = jack_in(both, mac, old)
+        sent = old.call("send", conversation_id=CONVERSATION, client_msg_id="m1",
+                        text="from the train", presence_gen=gen)
+        with both.device(device_id, key, via="tailnet") as new:
+            last = ended(old.sock)
+            assert last is not None and last.get("type") == "bye", last
+            assert last.get("reason") == "superseded"
+            again = new.call("send", conversation_id=CONVERSATION, client_msg_id="m1",
+                             text="from the train", presence_gen=gen)
+            assert again == {**sent, "replayed": True}
+            time.sleep(0.5)                                  # let a wrong revert show
+            assert presence(new) == {"surface": surface, "home": "mac", "generation": gen}
+            assert presence(mac)["surface"] == surface
+            wait_for(lambda: rows(both.db)[-1][1] == "assistant")
+        old.close()
+    assert [r[1] for r in rows(both.db)] == ["system", "user", "assistant"]
+    assert calls(both.db) == 1
+    assert count(both.db, "SELECT COUNT(*) FROM devices") == 1
+    assert count(both.db, "SELECT COUNT(*) FROM handoffs") == 1        # only the Jack In
+    assert any(f"as {surface} via tailnet" in line for line in both.logs), both.logs
+
+
+def test_moving_back_to_lan_supersedes_the_tailnet_session(both):
+    device_id, surface, key = paired(both)
+    with both.client() as mac:
+        first = both.device(device_id, key, via="tailnet")
+        gen = jack_in(both, mac, first)
+        with both.device(device_id, key) as home:
+            assert ended(first.sock)["reason"] == "superseded"
+            time.sleep(0.3)
+            assert presence(home) == {"surface": surface, "home": "mac", "generation": gen}
+        first.close()
+
+
+def test_another_device_does_not_supersede(both):
+    a_id, _a_surface, a_key = paired(both, "Phone A")
+    b_id, _b_surface, b_key = paired(both, "Phone B")
+    with both.device(a_id, a_key) as a, both.device(b_id, b_key, via="tailnet") as b:
+        assert a.call("ping")["pong"] and b.call("ping")["pong"]

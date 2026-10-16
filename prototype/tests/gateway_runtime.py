@@ -51,7 +51,7 @@ class Gate:
 class Runtime:
     def __init__(self, db: Path, sock_dir: Path, gate: Gate | None = None,
                  github=None, lan: bool = False, allow=None, limiter=None,
-                 port: int = 0) -> None:
+                 port: int = 0, tailnet_allow=None) -> None:
         self.db = db
         self.sock = sock_dir / "stark.sock"
         self.token_path = sock_dir / "gateway.token"
@@ -68,6 +68,10 @@ class Runtime:
         self.sup: AgentSupervisor | None = None
         self.identity = load_or_create_identity(sock_dir) if lan else None
         self.lan: LanListener | None = None
+        # Set: also serve a tailnet listener on loopback that admits what this allows, as
+        # stark.py does on the Tailscale address (the address itself is not testable here).
+        self.tailnet_allow = tailnet_allow
+        self.tailnet: LanListener | None = None
         self._lan_kw = {k: v for k, v in (("allow", allow), ("limiter", limiter)) if v}
         self._port = port
         self.logs: list[str] = []
@@ -96,9 +100,19 @@ class Runtime:
                                    {"agent_id": AGENT, "uuid": sup.identity.uuid}, sup.wake)
             devices = None
             if self.identity is not None:
-                self.lan = LanListener(self.identity, port=self._port, host="127.0.0.1",
-                                       **self._lan_kw)
-                server.attach(self.lan)
+                if self.tailnet_allow is None:
+                    self.lan = LanListener(self.identity, port=self._port, host="127.0.0.1",
+                                           **self._lan_kw)
+                    server.attach(self.lan)
+                else:
+                    from gameshark.net_gateway import network_listeners
+
+                    self.lan, self.tailnet = network_listeners(
+                        self.identity, lan_port=self._port, lan_host="127.0.0.1",
+                        tailnet=("127.0.0.1", 0), tailnet_allow=self.tailnet_allow,
+                        **self._lan_kw)
+                    server.attach(self.lan)
+                    server.attach(self.tailnet)
                 devices = DeviceRegistry(sup.conn, AGENT, sup.lease, sup.generation, sup.clock)
             server.start()
             self.server = server
@@ -132,7 +146,10 @@ class Runtime:
         assert self.lan is not None
         return self.lan.port
 
-    def device(self, device_id: str, key, **kw) -> DeviceClient:
+    def device(self, device_id: str, key, via: str = "lan", **kw) -> DeviceClient:
         assert self.identity is not None
-        return DeviceClient("127.0.0.1", self.port, self.identity.pin, device_id, key, **kw)
+        listener = self.tailnet if via == "tailnet" else self.lan
+        assert listener is not None
+        return DeviceClient("127.0.0.1", listener.port, self.identity.pin, device_id, key,
+                            **kw)
 
