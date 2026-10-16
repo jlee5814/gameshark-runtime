@@ -31,6 +31,7 @@ from gameshark.errors import Cancelled, Draining, FencedError, HandoffConflict, 
 from gameshark.gateway import HELLO, LOST, PROTO_VERSIONS, GatewayServer, Session
 from gameshark.inference.types import InvalidRequest, OwnershipMismatch
 from gameshark.net_gateway import AuthRequest, TLSSession
+from gameshark.presence import ACKED, COMMITTED
 from gameshark.stark_chat import CONVERSATION, StarkChatAdapter
 from gameshark.supervisor import AgentSupervisor
 
@@ -231,9 +232,11 @@ class SurfaceAPI:
         gen = _int(msg, "presence_gen", 0)
         assert self.sup.presence is not None
         h = self.sup.presence.ready_out(hid, sess.surface, gen, draft)
-        # The source's receipt: the committed row holds exactly this text. A replay asks
+        # The source's receipt: the committed row holds exactly this text and the jack has
+        # not reverted (a reverted row keeps its draft only for recovery). A replay asks
         # again, so a lost reply, a lost request, or a restart all reconcile the same way.
-        carried = h.draft is not None and h.draft == draft
+        # The source clears its composer only once the state is acked.
+        carried = h.state in (COMMITTED, ACKED) and h.draft is not None and h.draft == draft
         return {"handoff_id": h.id, "state": h.state, "to_gen": h.to_gen,
                 "draft_carried": carried}
 
