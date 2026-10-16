@@ -909,3 +909,28 @@ def test_one_thousand_randomized_calls_leak_nothing(tmp_path):
     tally = Counter(outcomes.values())
     assert tally["done"] > n_calls // 2, tally
     sup.close()
+
+
+def test_a_rebuilt_context_too_long_for_one_candidate_fails_over(tmp_path, clock):
+    """Codex P2: a user row landing between select and reserve may outgrow only the
+    claimed candidate's window. Its ContextTooLong is that candidate's outcome, so the
+    route moves on to a provider that fits instead of failing the call."""
+    sup = boot(tmp_path, clock)
+    cid = seed(sup.inference)
+    small, big = local("small", window=600), local("big", window=4096)
+    r = router(sup, cfg(small), cfg(big), policy=RouterPolicy(preference=("small", "big")))
+    state = r.begin("k", cid, CallSpec(max_tokens=64), CancelToken())
+    first = r.claim(state, 0.0)
+    assert first.cand.name == "small"
+    j = sup.inference
+    j.append(cid, Role.USER, "y" * 1500, j.conversation(cid)["next_seq"])
+    out = r.reserve(first)
+    first.release()
+    assert isinstance(out, ContextTooLong)
+    assert ledger(sup.conn, "k") == [] and call_row(sup.conn, "k") is None
+    assert state.note(out) is None                 # not final: another candidate remains
+    second = r.claim(state, 0.0)
+    assert second.cand.name == "big" and r.reserve(second) is None
+    second.release()
+    state.close()
+    sup.close()

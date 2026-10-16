@@ -487,9 +487,14 @@ class InferenceRouter:
         """Reserve the attempt durably, then build the provider call (no I/O). Return None
         when the call is ready to execute, else the outcome of this candidate."""
         state, cand, journal = claim.state, claim.cand, self.journal
-        res = journal.reserve(state.call_id, state.conversation_id, cand.name, cand.caps,
-                              state.spec, prompt_tokens=cand.bound.prompt,
-                              admit=self._admission(cand))
+        try:
+            res = journal.reserve(state.call_id, state.conversation_id, cand.name, cand.caps,
+                                  state.spec, prompt_tokens=cand.bound.prompt,
+                                  admit=self._admission(cand))
+        except ContextTooLong as exc:
+            # A row since select outgrew this candidate's window; reserve wrote nothing.
+            # Another candidate may still fit, so this is the candidate's outcome.
+            return exc
         if isinstance(res, Committed):  # another owner finished it meanwhile
             row = journal.call_row(state.call_id)
             return RouteResult(res, row["provider"], bool(row["degraded"]), False)
