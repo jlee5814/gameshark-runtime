@@ -11,6 +11,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from gameshark.net_gateway import lan_peer
 from gameshark.tailscale import (
     TailnetSelf,
     TailscaleUnavailable,
@@ -19,8 +20,6 @@ from gameshark.tailscale import (
     parse_status,
     tailnet_peer,
 )
-
-from gameshark.net_gateway import lan_peer
 
 RUNNING = {"BackendState": "Running", "MagicDNSSuffix": "tail7fe60e.ts.net",
            "Self": {"DNSName": "mac.tail7fe60e.ts.net.",

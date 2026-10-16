@@ -526,9 +526,8 @@ def count(db: Path, sql: str) -> int:
 
 
 def test_network_listeners_bind_the_tailnet_address_and_share_one_gate():
-    from gameshark.tailscale import tailnet_peer
-
     from gameshark.net_gateway import network_listeners
+    from gameshark.tailscale import tailnet_peer
 
     lan, tail = network_listeners(load_or_create_identity(short_dir()), lan_port=47820,
                                   tailnet=("100.123.57.23", 47821), instance="i1")
