@@ -2,10 +2,13 @@
 
 Off unless `stark.py run --lan`. It feeds the same request queue, session table, and
 session cap as the Unix gateway, so SurfaceAPI stays the single coordinator and the closed
-command table is unchanged. What differs is how a session authenticates:
+command table is unchanged. With `--tailscale` a second listener, bound to this node's
+Tailscale address alone, admits tailnet peers through the same gate (network_listeners).
+What differs is how a session authenticates:
 
-    1. network: the peer address must be loopback, RFC 1918, link local, or ULA; repeated
-       failures from one address block it for a while
+    1. network: on the LAN listener the peer address must be loopback, RFC 1918, link
+       local, or ULA outside the tailnet; on the tailnet listener, a Tailscale node
+       (tailscale.py). Repeated failures from one address block it on both for a while
     2. TLS 1.3 only, with a self signed P256 certificate created once beside the socket.
        The phone pins SHA256 of the server's public key (X9.62 uncompressed), learned from
        the pairing link, so no certificate authority and no hostname are trusted
@@ -43,6 +46,7 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509.oid import NameOID
 
+from gameshark import tailscale
 from gameshark.gateway import (
     IO_TIMEOUT_S,
     MAX_FRAME,
@@ -62,6 +66,9 @@ MAX_OUTBOX = 1 << 20          # queued bytes before a slow reader is dropped
 MAX_LAN_SESSIONS = 4          # of the shared cap, so the Unix socket always has room
 FAIL_LIMIT = 5                # failed handshakes per address within FAIL_WINDOW_S ...
 FAIL_WINDOW_S = 60.0          # ... block that address until the window clears
+KEEPALIVE_IDLE_S = 20         # a peer gone with its network is noticed in about a minute
+KEEPALIVE_INTERVAL_S = 10
+KEEPALIVE_COUNT = 3
 LAN_NETS = tuple(ipaddress.ip_network(n) for n in (
     "127.0.0.0/8", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "169.254.0.0/16",
     "::1/128", "fe80::/10", "fc00::/7"))
@@ -148,6 +155,8 @@ def lan_peer(host: str) -> bool:
         return False
     if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
         ip = ip.ipv4_mapped
+    if ip.version == 6 and ip in tailscale.TAILNET_V6:
+        return False                        # inside fc00::/7, but only --tailscale admits it
     return any(ip in net for net in LAN_NETS if net.version == ip.version)
 
 
@@ -179,6 +188,40 @@ class FailureLimiter:
             return len(q) >= self.limit
 
 
+class SessionSlots:
+    """Network sessions open at once, across every listener of one runtime."""
+
+    def __init__(self, cap: int = MAX_LAN_SESSIONS) -> None:
+        self.cap = cap
+        self._open: set[TLSSession] = set()
+        self._lock = threading.Lock()
+
+    def take(self, sess: TLSSession) -> bool:
+        with self._lock:
+            if len(self._open) >= self.cap:
+                return False
+            self._open.add(sess)
+            return True
+
+    def give_back(self, sess: TLSSession) -> None:
+        with self._lock:
+            self._open.discard(sess)
+
+
+def keepalive(conn: socket.socket) -> None:
+    """Probe an idle peer, so a phone that left with its network frees its session."""
+    conn.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+    idle = getattr(socket, "TCP_KEEPIDLE", None) or getattr(socket, "TCP_KEEPALIVE", None)
+    for opt, value in ((idle, KEEPALIVE_IDLE_S),
+                       (getattr(socket, "TCP_KEEPINTVL", None), KEEPALIVE_INTERVAL_S),
+                       (getattr(socket, "TCP_KEEPCNT", None), KEEPALIVE_COUNT)):
+        if opt is not None:
+            try:
+                conn.setsockopt(socket.IPPROTO_TCP, opt, value)
+            except OSError:
+                pass
+
+
 @dataclass(eq=False)
 class AuthRequest:
     """Queued for the coordinator once a device's first frame arrives. Not a dict, so no
@@ -197,6 +240,7 @@ class TLSSession(Session):
         self.peer = peer
         self.device_id = ""
         self.listener = listener
+        self.path = listener.path               # lan | tailnet: which listener accepted it
         self.live = threading.Event()       # set by the coordinator once authenticated
         self._in, self._out = ssl.MemoryBIO(), ssl.MemoryBIO()
         self._ssl = ctx.wrap_bio(self._in, self._out, server_side=True)
@@ -247,6 +291,11 @@ class TLSSession(Session):
         # its first request must not look like a frame sent before authentication.
         self.live.set()
         self.send(welcome)
+
+    def supersede(self) -> None:
+        """The same device proved itself on a newer session (it changed networks)."""
+        self.send({"type": "bye", "reason": "superseded"})
+        self.close()
 
     def reject(self, code: str, message: str) -> None:
         self._failed = True
@@ -431,7 +480,8 @@ class LanListener:
 
     def __init__(self, identity: ServerIdentity, port: int = DEFAULT_PORT, host: str = "",
                  allow=lan_peer, limiter: FailureLimiter | None = None,
-                 instance: str | None = None) -> None:
+                 instance: str | None = None, slots: SessionSlots | None = None,
+                 path: str = "lan") -> None:
         self.identity = identity
         # Names this runtime process in every challenge. Runtimes sharing a gateway
         # directory share its key, so `stark.py pair` checks this against the
@@ -441,12 +491,12 @@ class LanListener:
         self.requested_port = port
         self.allow = allow
         self.limiter = limiter or FailureLimiter()
+        self.slots = slots or SessionSlots()
+        self.path = path
         self.server: GatewayServer
         self._sock: socket.socket | None = None
         self._thread: threading.Thread | None = None
         self._alive = threading.Event()
-        self._open: set[TLSSession] = set()
-        self._open_lock = threading.Lock()
 
     @property
     def port(self) -> int:
@@ -495,11 +545,9 @@ class LanListener:
                 continue
             conn.settimeout(SEND_TIMEOUT_S)
             conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            keepalive(conn)
             sess = TLSSession(self.server.next_id(), conn, ip, self._ctx, self)
-            with self._open_lock:
-                full = len(self._open) >= MAX_LAN_SESSIONS
-                if not full:
-                    self._open.add(sess)
+            full = not self.slots.take(sess)
             if full or not self.server.admit(sess):
                 self.forget(sess)
                 conn.close()
@@ -507,5 +555,24 @@ class LanListener:
             threading.Thread(target=sess.run, name=f"lan-{sess.id}", daemon=True).start()
 
     def forget(self, sess: TLSSession) -> None:
-        with self._open_lock:
-            self._open.discard(sess)
+        self.slots.give_back(sess)
+
+
+def network_listeners(identity: ServerIdentity, *, lan_port: int = DEFAULT_PORT,
+                      lan_host: str = "", tailnet: tuple[str, int] | None = None,
+                      tailnet_allow=tailscale.tailnet_peer, instance: str | None = None,
+                      allow=lan_peer, limiter: FailureLimiter | None = None
+                      ) -> list[LanListener]:
+    """The LAN listener, plus with tailnet=(address, port) one bound to that address alone.
+    They share the key, instance id, session cap, and failure limiter, so a second path
+    adds no second budget and no second identity."""
+    limiter = limiter or FailureLimiter()
+    slots = SessionSlots()
+    out = [LanListener(identity, port=lan_port, host=lan_host, allow=allow, limiter=limiter,
+                       instance=instance, slots=slots, path="lan")]
+    if tailnet is not None:
+        host, port = tailnet
+        out.append(LanListener(identity, port=port, host=host, allow=tailnet_allow,
+                               limiter=limiter, instance=instance, slots=slots,
+                               path="tailnet"))
+    return out
