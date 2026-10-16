@@ -7,12 +7,13 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		09BCDC524E760CCFC4E4EF8B /* stark-atlas.png in Resources */ = {isa = PBXBuildFile; fileRef = C688939F1743B67DA7AC022C /* stark-atlas.png */; };
 		141AF45E64556DB3D46385C0 /* Views.swift in Sources */ = {isa = PBXBuildFile; fileRef = A914E09BBDFE62551407CD29 /* Views.swift */; };
-		177B4755AEB099C6B50EE6A0 /* manifest.json in Resources */ = {isa = PBXBuildFile; fileRef = 97D18A7CBDBCF51D7D45C013 /* manifest.json */; };
 		221637BD0988AC04A95FA491 /* CredentialStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = C28D8EC3961803EDEDAF02A0 /* CredentialStore.swift */; };
+		311B85F0BBE44CFFF27406C3 /* stark-atlas.png in Resources */ = {isa = PBXBuildFile; fileRef = 4C418BD42BECEFABC849EC5D /* stark-atlas.png */; };
 		393E068475B6453FC978C9F4 /* StarkPocketApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = FC5DD75DDA61B8B6088280DA /* StarkPocketApp.swift */; };
 		43542E31CD93E03E6428CFAE /* PocketModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 997A7751A077753A832111E4 /* PocketModel.swift */; };
+		5CB0ADB3BA0542A1F740F36B /* NetLog.swift in Sources */ = {isa = PBXBuildFile; fileRef = A598C251F479EECDA5B0E5BB /* NetLog.swift */; };
+		713756CCD0341938CAD1B10F /* manifest.json in Resources */ = {isa = PBXBuildFile; fileRef = 3BB0A9DA5F1B604C4F8F4ED1 /* manifest.json */; };
 		962728994671C2BECA2D1964 /* PocketStage.swift in Sources */ = {isa = PBXBuildFile; fileRef = A4A37947410CCAAF59ED11BA /* PocketStage.swift */; };
 		A2227ACD7B2C907C5A7F8D29 /* PocketHandoffUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 478CE09FB466FDC749007054 /* PocketHandoffUITests.swift */; };
 		BCD5BFA6ACC93CA1CF465EA4 /* PresenceSummary.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5CBB4DAAF0DD3FFE975063C7 /* PresenceSummary.swift */; };
@@ -40,17 +41,18 @@
 /* Begin PBXFileReference section */
 		20F44EE20CBC2C651F6607E3 /* StarkPocketTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StarkPocketTests.swift; sourceTree = "<group>"; };
 		3B88F63E372862B0AB0CAD0A /* StarkPocketTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = StarkPocketTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		3BB0A9DA5F1B604C4F8F4ED1 /* manifest.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = manifest.json; sourceTree = "<group>"; };
 		478CE09FB466FDC749007054 /* PocketHandoffUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PocketHandoffUITests.swift; sourceTree = "<group>"; };
+		4C418BD42BECEFABC849EC5D /* stark-atlas.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "stark-atlas.png"; sourceTree = "<group>"; };
 		5CBB4DAAF0DD3FFE975063C7 /* PresenceSummary.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PresenceSummary.swift; sourceTree = "<group>"; };
 		62C53BA124010B81ED1F187A /* StarkPocketUITests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = StarkPocketUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		729BA8D248ABDDBFD3C478E8 /* StarkMac */ = {isa = PBXFileReference; lastKnownFileType = folder; name = StarkMac; path = ../../mac/StarkMac; sourceTree = SOURCE_ROOT; };
 		81D2753F12F81772BB69E85A /* StarkPocket.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = StarkPocket.app; sourceTree = BUILT_PRODUCTS_DIR; };
-		97D18A7CBDBCF51D7D45C013 /* manifest.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = manifest.json; sourceTree = "<group>"; };
 		997A7751A077753A832111E4 /* PocketModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PocketModel.swift; sourceTree = "<group>"; };
 		A4A37947410CCAAF59ED11BA /* PocketStage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PocketStage.swift; sourceTree = "<group>"; };
+		A598C251F479EECDA5B0E5BB /* NetLog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NetLog.swift; sourceTree = "<group>"; };
 		A914E09BBDFE62551407CD29 /* Views.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Views.swift; sourceTree = "<group>"; };
 		C28D8EC3961803EDEDAF02A0 /* CredentialStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CredentialStore.swift; sourceTree = "<group>"; };
-		C688939F1743B67DA7AC022C /* stark-atlas.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "stark-atlas.png"; sourceTree = "<group>"; };
 		FC5DD75DDA61B8B6088280DA /* StarkPocketApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StarkPocketApp.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -66,15 +68,6 @@
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
-		02942FAE3D4556DB46841AB6 /* stark */ = {
-			isa = PBXGroup;
-			children = (
-				97D18A7CBDBCF51D7D45C013 /* manifest.json */,
-				C688939F1743B67DA7AC022C /* stark-atlas.png */,
-			);
-			path = stark;
-			sourceTree = "<group>";
-		};
 		26CF78CA2BF5CCE47C7C76FF /* UITests */ = {
 			isa = PBXGroup;
 			children = (
@@ -83,27 +76,10 @@
 			path = UITests;
 			sourceTree = "<group>";
 		};
-		2A2D30BE30E3DC4375609C27 /* Assets */ = {
+		30453C0D62C0BEF47B6FB7D6 /* StarkMac */ = {
 			isa = PBXGroup;
 			children = (
-				02942FAE3D4556DB46841AB6 /* stark */,
-			);
-			path = Assets;
-			sourceTree = "<group>";
-		};
-		54EE4F817B615962F7D1D1FB /* gameshark-pocket */ = {
-			isa = PBXGroup;
-			children = (
-				CB9A239696FBFC56FAD1D731 /* mac */,
-			);
-			name = "gameshark-pocket";
-			path = ../..;
-			sourceTree = "<group>";
-		};
-		5A8FFDE6815CB796B8899504 /* StarkMac */ = {
-			isa = PBXGroup;
-			children = (
-				2A2D30BE30E3DC4375609C27 /* Assets */,
+				D9E9CE72CEB0F03D604C95C2 /* Assets */,
 			);
 			path = StarkMac;
 			sourceTree = "<group>";
@@ -111,7 +87,7 @@
 		5E821B4309C370AB90CF8083 = {
 			isa = PBXGroup;
 			children = (
-				54EE4F817B615962F7D1D1FB /* gameshark-pocket */,
+				B1DA5C64714BEB16D13647C1 /* gs-lan-accept */,
 				6938B0DAFE7C8339CA7E4106 /* Packages */,
 				F7E4C506D6692E41CC9C140F /* Sources */,
 				FB81F21EEBD4DF0A27A0FDFD /* Tests */,
@@ -130,6 +106,14 @@
 			name = Products;
 			sourceTree = "<group>";
 		};
+		67655FBF2F75332093528DFD /* mac */ = {
+			isa = PBXGroup;
+			children = (
+				30453C0D62C0BEF47B6FB7D6 /* StarkMac */,
+			);
+			path = mac;
+			sourceTree = "<group>";
+		};
 		6938B0DAFE7C8339CA7E4106 /* Packages */ = {
 			isa = PBXGroup;
 			children = (
@@ -138,18 +122,37 @@
 			name = Packages;
 			sourceTree = "<group>";
 		};
-		CB9A239696FBFC56FAD1D731 /* mac */ = {
+		772438FE563BD387C6DE238B /* stark */ = {
 			isa = PBXGroup;
 			children = (
-				5A8FFDE6815CB796B8899504 /* StarkMac */,
+				3BB0A9DA5F1B604C4F8F4ED1 /* manifest.json */,
+				4C418BD42BECEFABC849EC5D /* stark-atlas.png */,
 			);
-			path = mac;
+			path = stark;
+			sourceTree = "<group>";
+		};
+		B1DA5C64714BEB16D13647C1 /* gs-lan-accept */ = {
+			isa = PBXGroup;
+			children = (
+				67655FBF2F75332093528DFD /* mac */,
+			);
+			name = "gs-lan-accept";
+			path = ../..;
+			sourceTree = "<group>";
+		};
+		D9E9CE72CEB0F03D604C95C2 /* Assets */ = {
+			isa = PBXGroup;
+			children = (
+				772438FE563BD387C6DE238B /* stark */,
+			);
+			path = Assets;
 			sourceTree = "<group>";
 		};
 		F7E4C506D6692E41CC9C140F /* Sources */ = {
 			isa = PBXGroup;
 			children = (
 				C28D8EC3961803EDEDAF02A0 /* CredentialStore.swift */,
+				A598C251F479EECDA5B0E5BB /* NetLog.swift */,
 				997A7751A077753A832111E4 /* PocketModel.swift */,
 				A4A37947410CCAAF59ED11BA /* PocketStage.swift */,
 				5CBB4DAAF0DD3FFE975063C7 /* PresenceSummary.swift */,
@@ -195,6 +198,7 @@
 				1BB10D0558DD9A2A668646AB /* Sources */,
 				1CB3E951F1653A9EA173D7A5 /* Resources */,
 				F7817775F08FF9AB2A1FCB05 /* Frameworks */,
+				95B113489B07CBB54E5EE4E0 /* Stamp build commit */,
 			);
 			buildRules = (
 			);
@@ -276,12 +280,34 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				177B4755AEB099C6B50EE6A0 /* manifest.json in Resources */,
-				09BCDC524E760CCFC4E4EF8B /* stark-atlas.png in Resources */,
+				713756CCD0341938CAD1B10F /* manifest.json in Resources */,
+				311B85F0BBE44CFFF27406C3 /* stark-atlas.png in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXResourcesBuildPhase section */
+
+/* Begin PBXShellScriptBuildPhase section */
+		95B113489B07CBB54E5EE4E0 /* Stamp build commit */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			name = "Stamp build commit";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "sha=$(git -C \"$SRCROOT\" rev-parse --short=12 HEAD 2>/dev/null || echo unknown)\ngit -C \"$SRCROOT\" diff --quiet HEAD 2>/dev/null || sha=\"$sha-dirty\"\nplist=\"$TARGET_BUILD_DIR/$INFOPLIST_PATH\"\n/usr/libexec/PlistBuddy -c \"Set :StarkBuildSHA $sha\" \"$plist\" 2>/dev/null ||\n  /usr/libexec/PlistBuddy -c \"Add :StarkBuildSHA string $sha\" \"$plist\"\n";
+		};
+/* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
 		1BB10D0558DD9A2A668646AB /* Sources */ = {
@@ -289,6 +315,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				221637BD0988AC04A95FA491 /* CredentialStore.swift in Sources */,
+				5CB0ADB3BA0542A1F740F36B /* NetLog.swift in Sources */,
 				43542E31CD93E03E6428CFAE /* PocketModel.swift in Sources */,
 				962728994671C2BECA2D1964 /* PocketStage.swift in Sources */,
 				BCD5BFA6ACC93CA1CF465EA4 /* PresenceSummary.swift in Sources */,
@@ -334,6 +361,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				INFOPLIST_FILE = Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -543,6 +571,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				INFOPLIST_FILE = Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",

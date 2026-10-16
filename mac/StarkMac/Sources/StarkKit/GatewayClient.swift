@@ -106,6 +106,8 @@ public struct ClientConfig: Sendable {
     /// Set for a paired device; nil means the Unix socket and token (StarkMac).
     public var device: DeviceEndpoint?
     public var clientName = "StarkMac/0.4"
+    /// Connection lifecycle lines (path, dial, state, retry, send). Never secrets.
+    public var trace: Trace?
 
     public init(socketPath: String, tokenURL: URL, surface: String = "mac",
                 backoff: Backoff = Backoff()) {
@@ -227,7 +229,10 @@ public final class GatewayClient: @unchecked Sendable {
             self.makeTransport = makeTransport
         } else if let device = config.device {
             let pin = device.credential.pin
-            self.makeTransport = { r in try TLSTransport(host: r.host, port: r.port, pin: pin) }
+            let trace = config.trace
+            self.makeTransport = { r in
+                try TLSTransport(host: r.host, port: r.port, pin: pin, trace: trace)
+            }
         } else {
             self.makeTransport = { try SocketTransport(path: $0.host) }
         }
@@ -267,9 +272,13 @@ public final class GatewayClient: @unchecked Sendable {
     /// once, since the old socket rides an interface that may be gone. Messages resend
     /// under their original ids and rows resync by seq, so nothing lands twice.
     public func setPath(_ p: NetworkPath) {
+        trace("path requested \(p.rawValue)")
         queue.async {
             let old = self.path
             self.path = p
+            let redial = old != p && old != nil && p != .none && self.running
+            self.trace("path \(old?.rawValue ?? "nil") -> \(p.rawValue) running=\(self.running) "
+                       + "conn=\(self.st.connection) redial=\(redial)")
             guard old != p else { return }
             self.hostCursor = 0
             guard old != nil, p != .none, self.running else { return }
@@ -328,7 +337,10 @@ public final class GatewayClient: @unchecked Sendable {
     @discardableResult
     public func send(_ text: String, presenceGen: Int? = nil) -> String {
         let id = "\(config.surface)-" + UUID().uuidString.lowercased()
+        // Logged off the queue and again on it: a gap between the two is a stalled queue.
+        trace("send requested msg=\(id)")
         queue.async {
+            self.trace("send queued msg=\(id) conn=\(self.st.connection)")
             self.st.outbox.append(OutgoingMessage(id: id, text: text, status: .pending,
                                                   presenceGenOverride: presenceGen))
             self.flushOutbox()
@@ -345,15 +357,21 @@ public final class GatewayClient: @unchecked Sendable {
         st.connection = .connecting
         publish()
         let t: Transport
+        let route = nextRoute()
+        trace("dial #\(id) \(route.via.rawValue) \(route.host):\(route.port) path="
+              + "\(path?.rawValue ?? "nil") cursor=\(dialing)")
         do {
-            t = try makeTransport(nextRoute())
+            t = try makeTransport(route)
+            trace("dial #\(id) connected")
         } catch TransportFailure.pinMismatch {
+            trace("dial #\(id) pin mismatch")
             st.lastError = "the runtime's key does not match this pairing"
             st.connection = .disconnected("untrusted runtime")
             publish()
             scheduleReconnect(id)
             return
         } catch {
+            trace("dial #\(id) failed: \(error)")
             st.connection = .disconnected("runtime unreachable")
             publish()
             scheduleReconnect(id)
@@ -395,6 +413,7 @@ public final class GatewayClient: @unchecked Sendable {
     }
 
     private func drop(reason: String, reconnect: Bool) {
+        trace("drop \(reason) reconnect=\(reconnect) had=\(transport != nil)")
         transport?.close()
         transport = nil
         connId += 1
@@ -409,6 +428,7 @@ public final class GatewayClient: @unchecked Sendable {
     private func scheduleReconnect(_ id: Int) {
         guard running else { return }
         let delay = backoff.next()
+        trace("retry in \(String(format: "%.2f", delay))s")
         queue.asyncAfter(deadline: .now() + delay) {
             guard self.running, self.connId == id, self.transport == nil else { return }
             self.connect()
@@ -435,8 +455,12 @@ public final class GatewayClient: @unchecked Sendable {
 
     private func write(_ object: [String: Any]) {
         guard let t = transport else { return }
+        let what = "\(object["type"] ?? "?") id=\(object["id"] ?? "-")"
+            + (object["client_msg_id"].map { " msg=\($0)" } ?? "")
+        trace("write \(what)")
         do {
             try t.send(Frame.encode(json: object))
+            trace("wrote \(what)")
         } catch {
             drop(reason: "write failed", reconnect: true)
         }
@@ -500,6 +524,7 @@ public final class GatewayClient: @unchecked Sendable {
                 st.outbox.removeAll { if case .pending = $0.status { false } else { true } }
             }
             st.identity = w.identity
+            trace("welcome on cursor \(dialing)")
             hostCursor = dialing
             st.connection = .syncing
             st.lastError = nil
@@ -561,6 +586,7 @@ public final class GatewayClient: @unchecked Sendable {
             }
         case .send(let msgId):
             let r = try Wire.decode(Result<SendResult>.self, from: body).data
+            trace("sent msg=\(msgId) seq=\(r.seq)")
             inFlight.remove(msgId)
             setStatus(msgId, .sent(seq: r.seq))
         case .readyOut(let hid):
@@ -592,6 +618,7 @@ public final class GatewayClient: @unchecked Sendable {
         }
         if haveSnapshot && haveSync && st.connection != .live {
             st.connection = .live
+            trace("live")
             backoff.reset()
             flushOutbox()
             sendDraftAcks()
@@ -602,6 +629,7 @@ public final class GatewayClient: @unchecked Sendable {
     private func failed(_ kind: Pending, code: String, message: String?) {
         switch kind {
         case .send(let msgId):
+            trace("send msg=\(msgId) refused: \(code)")
             inFlight.remove(msgId)
             setStatus(msgId, .rejected(code: code))
             if code == "stale_presence" { request("snapshot", .snapshot) }
@@ -767,6 +795,10 @@ public final class GatewayClient: @unchecked Sendable {
 
     private func publish() {
         onChange(st)
+    }
+
+    private func trace(_ line: @autoclosure () -> String) {
+        config.trace?(line())
     }
 }
 

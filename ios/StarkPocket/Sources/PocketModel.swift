@@ -57,6 +57,9 @@ final class PocketModel {
     /// The network class the phone is on, as last reported, so a client woken from the
     /// background learns it before it dials.
     @ObservationIgnored private var network: NetworkPath?
+    /// What Settings shows for diagnosis: the path class and the routes this pairing dials.
+    private(set) var networkLabel = "unknown"
+    private(set) var routeSummary: [String] = []
     @ObservationIgnored private var foreground = true
     @ObservationIgnored private(set) var viewedSeq = -1
 
@@ -194,8 +197,12 @@ final class PocketModel {
 
     private func connect(_ endpoint: DeviceEndpoint) {
         client?.stop()                          // never two connections; pair() refuses first
-        let cfg = ClientConfig(device: endpoint, backoff: Backoff(base: 0.25, cap: 5),
+        var cfg = ClientConfig(device: endpoint, backoff: Backoff(base: 0.25, cap: 5),
                                clientName: "StarkPocket/0.4")
+        cfg.trace = NetLog.trace
+        routeSummary = NetLog.routes(endpoint.credential.routes)
+        NetLog.trace("connect build=\(NetLog.build) network=\(network?.rawValue ?? "nil") "
+                     + "foreground=\(foreground) routes=\(routeSummary)")
         let c = makeClient(cfg, { [weak self] s in
             Task { @MainActor in self?.apply(s) }
         })
@@ -290,11 +297,13 @@ final class PocketModel {
     func scenePhase(_ phase: ScenePhase) {
         switch phase {
         case .active:
+            NetLog.trace("scene active network=\(network?.rawValue ?? "nil")")
             foreground = true
             stage?.setVisible(true)
             if let network { client?.setPath(network) }
             client?.start()                     // resyncs rows after the last contiguous seq
         case .background:
+            NetLog.trace("scene background")
             foreground = false
             stage?.setVisible(false)
             guard let c = client else { return }
@@ -322,6 +331,7 @@ final class PocketModel {
     /// client is stopped; the latest class is handed over when the app returns.
     func networkChanged(_ path: NetworkPath) {
         network = path
+        networkLabel = path.rawValue
         guard foreground else { return }
         client?.setPath(path)
     }
@@ -329,11 +339,14 @@ final class PocketModel {
     private func watchNetwork() {
         guard monitor == nil, monitorsNetwork else { return }
         let m = NWPathMonitor()
+        let seen = FirstPath()                  // touched only on the monitor's queue
         m.pathUpdateHandler = { [weak self] path in
             let p = NetworkPath.classify(satisfied: path.status == .satisfied,
                                          wifi: path.usesInterfaceType(.wifi),
                                          wired: path.usesInterfaceType(.wiredEthernet),
                                          cellular: path.usesInterfaceType(.cellular))
+            NetLog.trace(NetLog.describe(path, as: p, initial: !seen.value))
+            seen.value = true
             Task { @MainActor in self?.networkChanged(p) }
         }
         m.start(queue: DispatchQueue(label: "stark.pocket.path"))

@@ -1,6 +1,9 @@
 import Darwin
 import Foundation
 
+/// A diagnostic line sink: device logs on the phone, nothing on the Mac by default.
+public typealias Trace = @Sendable (String) -> Void
+
 /// A byte stream to the runtime. Blocking calls; the client runs reads on its own thread.
 public protocol Transport: AnyObject, Sendable {
     /// Write one whole frame.

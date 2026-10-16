@@ -258,6 +258,11 @@ struct SettingsView: View {
                         LabeledContent("Presence", value: s.presence.map { "\($0.surface) gen \($0.generation)" } ?? "…")
                     }
                 }
+                Section("Diagnostics") {
+                    LabeledContent("Build", value: NetLog.build)
+                    LabeledContent("Network", value: model.networkLabel)
+                    ForEach(model.routeSummary, id: \.self) { Text($0).font(.caption.monospaced()) }
+                }
                 Section {
                     Button(model.unpairing ? "Sending Stark home…" : "Unpair This iPhone",
                            role: .destructive) {
