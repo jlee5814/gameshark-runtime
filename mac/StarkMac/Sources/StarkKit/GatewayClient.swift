@@ -178,6 +178,9 @@ public final class GatewayClient: @unchecked Sendable {
     private var mirror = ConversationMirror()
     private var backoff: Backoff
     private var transport: Transport?
+    /// Sends for the current connection, in order, off the client's queue: a socket that
+    /// stops draining never holds a network change, a reconnect, or stop().
+    private var writer = DispatchQueue(label: "stark.gateway.writer")
     private var reader = FrameReader()
     private var connId = 0
     private var nextId = 1
@@ -378,6 +381,7 @@ public final class GatewayClient: @unchecked Sendable {
             return
         }
         transport = t
+        writer = DispatchQueue(label: "stark.gateway.writer")
         reader = FrameReader()
         pending = [:]
         inFlight = []
@@ -457,12 +461,27 @@ public final class GatewayClient: @unchecked Sendable {
         guard let t = transport else { return }
         let what = "\(object["type"] ?? "?") id=\(object["id"] ?? "-")"
             + (object["client_msg_id"].map { " msg=\($0)" } ?? "")
-        trace("write \(what)")
+        let frame: Data
         do {
-            try t.send(Frame.encode(json: object))
-            trace("wrote \(what)")
+            frame = try Frame.encode(json: object)
         } catch {
             drop(reason: "write failed", reconnect: true)
+            return
+        }
+        trace("write \(what)")
+        let id = connId
+        writer.async { [weak self] in
+            do {
+                try t.send(frame)
+                self?.trace("wrote \(what)")
+            } catch {
+                // A send released by drop() belongs to an older connection: ignored.
+                guard let self else { return }
+                self.queue.async {
+                    guard id == self.connId else { return }
+                    self.drop(reason: "write failed", reconnect: true)
+                }
+            }
         }
     }
 
