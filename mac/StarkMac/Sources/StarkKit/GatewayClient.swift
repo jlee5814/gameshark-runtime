@@ -214,6 +214,9 @@ public final class GatewayClient: @unchecked Sendable {
     /// Bonjour name, and its Mac's tailnet address and name, and any may be the one that
     /// works on this network. The order follows the network the phone is on.
     private var hostCursor = 0
+    /// The cursor of the route being dialed; a welcome on it makes it the next one too, so
+    /// a reconnect on the same network skips routes that already failed there.
+    private var dialing = 0
     private var path: NetworkPath?
 
     public init(config: ClientConfig,
@@ -386,8 +389,9 @@ public final class GatewayClient: @unchecked Sendable {
             return Route(host: config.socketPath, port: 0, via: .lan)
         }
         let ordered = Route.ordered(routes, for: path ?? .none)
-        defer { hostCursor += 1 }
-        return ordered[hostCursor % ordered.count]
+        dialing = hostCursor % ordered.count
+        hostCursor = dialing + 1
+        return ordered[dialing]
     }
 
     private func drop(reason: String, reconnect: Bool) {
@@ -496,6 +500,7 @@ public final class GatewayClient: @unchecked Sendable {
                 st.outbox.removeAll { if case .pending = $0.status { false } else { true } }
             }
             st.identity = w.identity
+            hostCursor = dialing
             st.connection = .syncing
             st.lastError = nil
             request("snapshot", .snapshot)
