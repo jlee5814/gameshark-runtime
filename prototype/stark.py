@@ -11,6 +11,7 @@ One prompt assigns a responsibility; the daemon keeps it across restarts.
     uv run python stark.py unwatch owner/repo#123
     uv run python stark.py jack ghost                # move presence (demo of stale writes)
     uv run python stark.py run --lan                 # also serve paired phones on the LAN
+    uv run python stark.py run --lan --tailscale     # ... and over this Mac's tailnet address
     uv run python stark.py pair --name "My iPhone"   # one time pairing link for Stark Pocket
     uv run python stark.py devices                   # paired devices; `devices revoke <id>`
     uv run python stark.py drafts                    # carried drafts no surface confirmed
@@ -24,6 +25,9 @@ model unless --inference-url names an OpenAI compatible server such as SGLang. W
 also serves paired devices over pinned TLS 1.3 on the local network (net_gateway.py); the
 listener is off by default and refuses addresses outside private ranges. Its endpoint is
 advertised for `pair` beside the socket (gateway/stark.sock.lan.json), one file per socket.
+--tailscale adds a listener bound to this Mac's Tailscale IPv4 alone (tailscale.py), for a
+phone on cellular; it never enables Funnel and refuses to serve while `tailscale serve`
+forwards a runtime port.
 """
 
 from __future__ import annotations
@@ -83,6 +87,17 @@ def make_client():
     from gameshark.github_client import RestGitHubClient, token_from_env
 
     return RestGitHubClient(token_from_env())
+
+
+def make_tailscale():
+    """The Tailscale CLI, read only, unless GAMESHARK_TAILSCALE names a test factory."""
+    spec = os.environ.get("GAMESHARK_TAILSCALE")
+    if spec:
+        mod, _, attr = spec.partition(":")
+        return getattr(importlib.import_module(mod), attr)()
+    from gameshark.tailscale import Tailscale
+
+    return Tailscale()
 
 
 class _LazyClient:
@@ -193,11 +208,12 @@ def start_gateway(sup, chat, args, log, instance: str):
     """Serve surfaces, or log why not. The daemon keeps its duties either way."""
     from gameshark.devices import DeviceRegistry
     from gameshark.gateway import GatewayServer, load_or_create_token
-    from gameshark.net_gateway import LanListener, load_or_create_identity
+    from gameshark.net_gateway import load_or_create_identity, network_listeners
     from gameshark.surface_api import SurfaceAPI
+    from gameshark.tailscale import TailscaleExposed, TailscaleUnavailable
 
     path = socket_path(args)
-    lan = None
+    lan = tail = None
     withdraw_stale_lan_info(args)       # this boot rewrites it once served
     try:
         token = load_or_create_token(token_path(args))
@@ -205,10 +221,27 @@ def start_gateway(sup, chat, args, log, instance: str):
         server = GatewayServer(path, token, ident, sup.wake)
         # Revocations apply with or without --lan: a revoked phone never keeps presence.
         devices = DeviceRegistry(sup.conn, sup.agent_id, sup.lease, sup.generation, sup.clock)
-        if getattr(args, "lan", False):
+        tailnet, serve_lan = None, getattr(args, "lan", False)
+        if serve_lan and getattr(args, "tailscale", False):
+            ts = make_tailscale()
+            try:
+                me = ts.detect({p for p in (args.lan_port, args.tailscale_port) if p})
+                tailnet = (me.address, args.tailscale_port, me.dns, ts.peer)
+            except TailscaleExposed as e:
+                log(f"network listeners refused: {e}")
+                serve_lan = False
+            except TailscaleUnavailable as e:
+                log(f"tailscale disabled: {e}; serving the LAN only")
+        if serve_lan:
             identity = load_or_create_identity(path.parent)
-            lan = LanListener(identity, port=args.lan_port, instance=instance)
-            server.attach(lan)
+            listeners = network_listeners(
+                identity, lan_port=args.lan_port, instance=instance,
+                tailnet=tailnet[:2] if tailnet else None,
+                tailnet_allow=tailnet[3] if tailnet else None)
+            for listener in listeners:
+                server.attach(listener)
+            lan = listeners[0]
+            tail = listeners[1] if tailnet else None
         server.start()                    # all or nothing: a failure closes every socket
     except (OSError, ValueError, TypeError) as e:
         log(f"gateway disabled: {type(e).__name__}: {e}")
@@ -221,10 +254,15 @@ def start_gateway(sup, chat, args, log, instance: str):
         fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         with os.fdopen(fd, "w") as f:
             # uuid and instance let pair prove which live runtime answers on the port.
-            json.dump({"port": lan.port, "pin": lan.identity.pin_hex,
-                       "uuid": sup.identity.uuid, "instance": instance, "pid": os.getpid(),
-                       "db": str(args.db.resolve())}, f)
+            ad = {"port": lan.port, "pin": lan.identity.pin_hex, "uuid": sup.identity.uuid,
+                  "instance": instance, "pid": os.getpid(), "db": str(args.db.resolve())}
+            if tail is not None:
+                assert tailnet is not None
+                ad["tailscale"] = {"address": tail.host, "port": tail.port, "dns": tailnet[2]}
+            json.dump(ad, f)
         tmp.replace(info)
+        if tail is not None:
+            log(f"tailnet gateway on {tail.host}:{tail.port}")
         log(f"lan gateway on port {lan.port}, pin {lan.identity.pin_hex[:16]}...")
     return SurfaceAPI(sup, server, chat, log=log, devices=devices)
 
@@ -319,15 +357,15 @@ def lan_address() -> str:
         s.close()
 
 
-def lan_served(port: int, pin: bytes, instance: str) -> bool:
-    """Whether this Mac answers on port with the pinned key and a device challenge from the
-    runtime instance that wrote the advertisement. Closes before any hello, which the
-    gateway counts as a disconnect, not a failed handshake."""
+def lan_served(port: int, pin: bytes, instance: str, host: str = "127.0.0.1") -> bool:
+    """Whether this Mac answers on host:port with the pinned key and a device challenge
+    from the runtime instance that wrote the advertisement. Closes before any hello, which
+    the gateway counts as a disconnect, not a failed handshake."""
     from gameshark.gateway import FrameError, read_frame
     from gameshark.gateway_client import GatewayError, tls_connect
 
     try:
-        with tls_connect("127.0.0.1", port, pin, timeout_s=2.0) as s:
+        with tls_connect(host, port, pin, timeout_s=2.0) as s:
             alive = threading.Event()
             alive.set()
             first = read_frame(s, alive)
@@ -335,6 +373,33 @@ def lan_served(port: int, pin: bytes, instance: str) -> bool:
         return False
     return (first.get("type") == "challenge" and first.get("server_fp") == pin.hex()
             and first.get("instance") == instance)
+
+
+def tailnet_endpoint(ad, lan_port: int, pin: bytes, instance: str
+                     ) -> tuple[str, int, str] | str | None:
+    """The advertised tailnet endpoint, proven current: Tailscale still runs with that
+    address, nothing forwards a runtime port, and the pinned probe there meets the same
+    runtime instance. None when the daemon serves no tailnet; a reason string when stale."""
+    from gameshark.tailscale import TailscaleUnavailable
+
+    if ad is None:
+        return None
+    try:
+        address, port, dns = str(ad["address"]), int(ad["port"]), str(ad.get("dns") or "")
+    except (KeyError, TypeError, ValueError) as e:
+        return f"unreadable tailnet advertisement: {e}"
+    restart = "restart the daemon with `stark.py run --lan --tailscale`"
+    try:
+        me = make_tailscale().detect({lan_port, port})
+    except TailscaleUnavailable as e:
+        return f"the tailnet endpoint {address}:{port} is stale ({e}); {restart}"
+    if me.address != address:
+        return (f"Tailscale address changed from {address} to {me.address} since the daemon "
+                f"started; {restart}")
+    if not lan_served(port, pin, instance, host=address):
+        return (f"the running daemon does not serve the tailnet endpoint {address}:{port} "
+                f"with this pin; {restart}")
+    return address, port, dns
 
 
 def cmd_pair(args) -> int:
@@ -370,6 +435,10 @@ def cmd_pair(args) -> int:
         print(f"the running daemon does not serve LAN port {port} with this pin; restart it "
               "with `stark.py run --lan`", file=sys.stderr)
         return 2
+    tailnet = tailnet_endpoint(lan.get("tailscale"), port, pin, instance)
+    if isinstance(tailnet, str):
+        print(tailnet, file=sys.stderr)
+        return 2
     conn = connect(args.db)
     try:
         pid, secret = create_pairing(conn, AGENT, args.name, time.time(), args.ttl)
@@ -380,14 +449,21 @@ def cmd_pair(args) -> int:
         conn.close()
     host = socket.gethostname()
     host = host if host.endswith(".local") else host + ".local"
-    query = {"v": 1, "h": host, "a": args.address or lan_address(), "p": port,
-             "fp": pin.hex(), "id": pid, "s": secret}
+    query = {"v": 1, "h": host, "a": args.address or lan_address(), "p": port}
+    if tailnet is not None:
+        query.update(t=tailnet[0], tp=tailnet[1])
+        if tailnet[2]:
+            query["tn"] = tailnet[2]
+    query.update(fp=pin.hex(), id=pid, s=secret)
     link = "starkpocket://pair?" + urlencode(query)
     if args.json:
         print(json.dumps({"link": link, "pairing_id": pid, "expires_in": args.ttl}))
         return 0
     print(f"Pairing link for {args.name!r} (single use, expires in {args.ttl:.0f} s):\n")
     print(link + "\n")
+    if tailnet is not None:
+        print(f"Away from this network the phone reaches {tailnet[0]}:{tailnet[1]} over "
+              "Tailscale; keep Tailscale on on both.\n")
     try:
         import qrcode  # optional: uv run --with qrcode ...
 
@@ -543,6 +619,10 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--lan", action="store_true",
                    help="also serve paired devices over TLS on the local network")
     r.add_argument("--lan-port", type=int, default=47820)
+    r.add_argument("--tailscale", action="store_true",
+                   help="with --lan, also serve paired devices on this Mac's Tailscale "
+                        "address (never Funnel)")
+    r.add_argument("--tailscale-port", type=int, default=47821)
     pr = sub.add_parser("pair", help="print a one time pairing link for Stark Pocket")
     pr.add_argument("--name", default="iPhone", help="the device's display name")
     pr.add_argument("--ttl", type=float, default=300.0, help="seconds the link stays valid")
@@ -564,7 +644,10 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
+    ap = build_parser()
+    args = ap.parse_args(argv)
+    if args.cmd == "run" and args.tailscale and not args.lan:
+        ap.error("--tailscale requires --lan")
     args.db.parent.mkdir(parents=True, exist_ok=True)
     if args.cmd in ("watch", "unwatch", "resume", "jack"):
         return cmd_control(args, args.cmd)

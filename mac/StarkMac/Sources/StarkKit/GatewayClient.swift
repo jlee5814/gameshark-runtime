@@ -150,7 +150,9 @@ public struct ClientConfig: Sendable {
 /// connection feeds bytes into it. On every live session it resyncs rows after the last
 /// contiguous seq it holds and resends unacknowledged messages under their original ids.
 public final class GatewayClient: @unchecked Sendable {
-    public typealias MakeTransport = @Sendable (String) throws -> Transport
+    /// Dials one route: a TLS host and port for a device, the socket path (as the host)
+    /// for StarkMac.
+    public typealias MakeTransport = @Sendable (Route) throws -> Transport
 
     private enum Pending {
         case snapshot, sync, send(String), readyOut(String), ackIn(String), jack(String),
@@ -208,9 +210,14 @@ public final class GatewayClient: @unchecked Sendable {
         var committed = false
     }
 
-    /// Each connection dials the next host in turn; a paired phone keeps an address and a
-    /// Bonjour name, and either may be the one that works on this network.
+    /// Each connection dials the next route in turn; a paired phone keeps a LAN address, a
+    /// Bonjour name, and its Mac's tailnet address and name, and any may be the one that
+    /// works on this network. The order follows the network the phone is on.
     private var hostCursor = 0
+    /// The cursor of the route being dialed; a welcome on it makes it the next one too, so
+    /// a reconnect on the same network skips routes that already failed there.
+    private var dialing = 0
+    private var path: NetworkPath?
 
     public init(config: ClientConfig,
                 makeTransport: MakeTransport? = nil,
@@ -219,10 +226,10 @@ public final class GatewayClient: @unchecked Sendable {
         if let makeTransport {
             self.makeTransport = makeTransport
         } else if let device = config.device {
-            let c = device.credential
-            self.makeTransport = { host in try TLSTransport(host: host, port: c.port, pin: c.pin) }
+            let pin = device.credential.pin
+            self.makeTransport = { r in try TLSTransport(host: r.host, port: r.port, pin: pin) }
         } else {
-            self.makeTransport = { try SocketTransport(path: $0) }
+            self.makeTransport = { try SocketTransport(path: $0.host) }
         }
         self.onChange = onChange
         self.backoff = config.backoff
@@ -252,6 +259,23 @@ public final class GatewayClient: @unchecked Sendable {
             self.drop(reason: "reconnecting", reconnect: false)
             self.backoff.reset()
             if self.running { self.connect() }
+        }
+    }
+
+    /// The phone's network changed (NWPathMonitor). Routes are reordered for it; a move to
+    /// another class of network (Wi-Fi to cellular, offline to online) also redials at
+    /// once, since the old socket rides an interface that may be gone. Messages resend
+    /// under their original ids and rows resync by seq, so nothing lands twice.
+    public func setPath(_ p: NetworkPath) {
+        queue.async {
+            let old = self.path
+            self.path = p
+            guard old != p else { return }
+            self.hostCursor = 0
+            guard old != nil, p != .none, self.running else { return }
+            self.drop(reason: "network changed", reconnect: false)
+            self.backoff.reset()
+            self.connect()
         }
     }
 
@@ -322,7 +346,7 @@ public final class GatewayClient: @unchecked Sendable {
         publish()
         let t: Transport
         do {
-            t = try makeTransport(nextAddress())
+            t = try makeTransport(nextRoute())
         } catch TransportFailure.pinMismatch {
             st.lastError = "the runtime's key does not match this pairing"
             st.connection = .disconnected("untrusted runtime")
@@ -360,12 +384,14 @@ public final class GatewayClient: @unchecked Sendable {
         thread.start()
     }
 
-    private func nextAddress() -> String {
-        guard let hosts = config.device?.credential.hosts, !hosts.isEmpty else {
-            return config.socketPath
+    private func nextRoute() -> Route {
+        guard let routes = config.device?.credential.routes, !routes.isEmpty else {
+            return Route(host: config.socketPath, port: 0, via: .lan)
         }
-        defer { hostCursor += 1 }
-        return hosts[hostCursor % hosts.count]
+        let ordered = Route.ordered(routes, for: path ?? .none)
+        dialing = hostCursor % ordered.count
+        hostCursor = dialing + 1
+        return ordered[dialing]
     }
 
     private func drop(reason: String, reconnect: Bool) {
@@ -459,6 +485,14 @@ public final class GatewayClient: @unchecked Sendable {
                 drop(reason: "surface mismatch", reconnect: false)
                 return
             }
+            if let device = config.device, w.identity.uuid != device.credential.agentUUID {
+                // The pin matched, but another database answers (runtimes sharing a key):
+                // never show a second agent in this view. Try the next route.
+                st.lastError = "another agent answered (\(w.identity.uuid)); this iPhone "
+                    + "is paired with \(device.credential.agentUUID)"
+                drop(reason: "another agent", reconnect: true)
+                return
+            }
             if let known = st.identity, known.uuid != w.identity.uuid {
                 // Another runtime database: nothing cached belongs to it.
                 mirror.reset()
@@ -466,6 +500,7 @@ public final class GatewayClient: @unchecked Sendable {
                 st.outbox.removeAll { if case .pending = $0.status { false } else { true } }
             }
             st.identity = w.identity
+            hostCursor = dialing
             st.connection = .syncing
             st.lastError = nil
             request("snapshot", .snapshot)
@@ -753,15 +788,15 @@ public enum Pairing {
     /// Dial each candidate address, present the link's secret and the signer's public key,
     /// and return the credential to store. A used, expired, or wrong link is refused.
     public static func run(link: PairingLink, name: String, signer: any DeviceSigner,
-                           makeTransport: ((String) throws -> Transport)? = nil) throws
+                           makeTransport: ((Route) throws -> Transport)? = nil) throws
         -> DeviceCredential
     {
-        let dial = makeTransport ?? { try TLSTransport(host: $0, port: link.port, pin: link.pin) }
+        let dial = makeTransport ?? { try TLSTransport(host: $0.host, port: $0.port, pin: link.pin) }
         var transport: Transport?
         var sawUntrusted = false
-        for host in link.candidates {
+        for route in link.routes {
             do {
-                transport = try dial(host)
+                transport = try dial(route)
                 break
             } catch TransportFailure.pinMismatch {
                 sawUntrusted = true
@@ -796,6 +831,6 @@ public enum Pairing {
         let p = try Wire.decode(Paired.self, from: body)
         return DeviceCredential(deviceID: p.deviceId, surface: p.surface, name: name,
                                 hosts: link.candidates, port: link.port, pin: link.pin,
-                                agentUUID: p.identity.uuid)
+                                agentUUID: p.identity.uuid, routes: link.routes)
     }
 }

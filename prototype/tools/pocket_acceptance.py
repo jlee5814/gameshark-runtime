@@ -9,6 +9,12 @@ StarkPocket UI tests in the iOS simulator. Evidence comes from three independent
 the runtime database (handoffs, rows, surface writes, inference calls), StarkMac's own
 states.log and snapshots, and the UI test's screenshots. Writes pocket-acceptance.md.
 
+With --tailscale the runtime also serves this Mac's Tailscale address, and every pairing
+link names a dead LAN address and an unresolvable host, so the simulator reaches Stark only
+by falling back to the tailnet route (the Mac's own utun address). The runtime log must
+show every device session arriving via tailnet. This proves the fallback and the tailnet
+listener, not cellular.
+
 This exercises the iOS simulator on this Mac, not a physical iPhone.
 """
 
@@ -30,6 +36,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+from urllib.parse import parse_qs, urlencode, urlsplit
+
 from gameshark.stark_chat import CONVERSATION
 
 AGENT = "stark"
@@ -49,6 +57,7 @@ class Pocket:
         self.sock = self.dir / "gateway" / "stark.sock"
         self.shots = self.dir / "pocket-shots"
         self.port = free_port()       # fixed across restarts, so the paired phone finds it
+        self.tailnet_port = free_port()
         self.daemon: subprocess.Popen | None = None
         self.app: subprocess.Popen | None = None
         self.results: list[tuple[str, bool, str]] = []
@@ -65,11 +74,19 @@ class Pocket:
         cmd = [sys.executable, str(ROOT / "stark.py"), "--db", str(self.db), "--interval", "2",
                "run", "--lan", "--lan-port", str(self.port),
                "--fake-delay", str(self.args.fake_delay)]
+        if self.args.tailscale:
+            cmd += ["--tailscale", "--tailscale-port", str(self.tailnet_port)]
         self.daemon = subprocess.Popen(cmd, cwd=ROOT, env=env, stdout=log,
                                        stderr=subprocess.STDOUT)
         info = self.sock.with_name(self.sock.name + ".lan.json")
-        self.wait(lambda: info.exists() and json.loads(info.read_text())["port"] == self.port
-                  and self.sock.exists(), 30, "LAN gateway")
+
+        def served() -> bool:
+            if not (info.exists() and self.sock.exists()):
+                return False
+            ad = json.loads(info.read_text())
+            return ad["port"] == self.port and (not self.args.tailscale or "tailscale" in ad)
+
+        self.wait(served, 30, "tailnet gateway" if self.args.tailscale else "LAN gateway")
 
     def stop_daemon(self, sig=signal.SIGTERM) -> int:
         assert self.daemon is not None
@@ -91,8 +108,39 @@ class Pocket:
         return out.stdout
 
     def pair_link(self, name: str) -> str:
-        return json.loads(self.cli("pair", "--name", name, "--json",
-                                   "--address", "127.0.0.1"))["link"]
+        if not self.args.tailscale:
+            return json.loads(self.cli("pair", "--name", name, "--json",
+                                       "--address", "127.0.0.1"))["link"]
+        link = json.loads(self.cli("pair", "--name", name, "--json",
+                                   "--address", "192.0.2.1"))["link"]   # TEST-NET-1: dead
+        q = {k: v[0] for k, v in parse_qs(urlsplit(link).query).items()}
+        if "t" not in q:
+            raise AssertionError(f"pair issued no tailnet endpoint: {link}")
+        q["h"] = "no-such-mac.invalid"            # the Bonjour name must not rescue it either
+        return "starkpocket://pair?" + urlencode(q)
+
+    def device_paths(self) -> dict[str, int]:
+        """Device sessions per path, from every daemon log of this run."""
+        out: dict[str, int] = {}
+        for f in sorted(self.dir.glob("pocket-daemon-*.log")):
+            for line in f.read_text().splitlines():
+                if "device " in line and " via " in line:
+                    via = line.split(" via ", 1)[1].split()[0]
+                    out[via] = out.get(via, 0) + 1
+        return out
+
+    def s6_tailnet_only(self) -> str:
+        paths = self.device_paths()
+        if not paths.get("tailnet") or set(paths) != {"tailnet"}:
+            raise AssertionError(f"device sessions by path: {paths}")
+        # Every user row came from exactly one surface write (deduplicated by client id).
+        writes = self.q("SELECT COUNT(*), COUNT(DISTINCT seq) FROM surface_writes")[0]
+        users = sum(1 for _s, r, _c in self.rows() if r == "user")
+        if writes[0] != writes[1] or writes[0] != users:
+            raise AssertionError(f"surface writes {writes} against {users} user rows")
+        devices = self.q("SELECT COUNT(*) FROM devices")[0][0]
+        return (f"{paths['tailnet']} device sessions, all via tailnet, none via LAN; "
+                f"{devices} paired devices; {users} user rows from {writes[0]} unique writes")
 
     def ui_test(self, test: str, link: str, bundle: Path,
                 signal_dir: Path | None = None) -> subprocess.CompletedProcess:
@@ -362,6 +410,9 @@ class Pocket:
             if not self.args.skip_faults:
                 self.check("faults: runtime SIGKILL while the phone holds Stark, then revoke",
                            self.s5_faults)
+            if self.args.tailscale:
+                self.check("tailnet: every device session took the Tailscale route",
+                           self.s6_tailnet_only)
         finally:
             if self.app is not None:
                 self.app.terminate()
@@ -371,7 +422,8 @@ class Pocket:
         return 0 if all(ok for _n, ok, _d in self.results) else 1
 
     def report(self) -> None:
-        lines = ["# Stark Pocket acceptance (iOS simulator)", "",
+        mode = " over Tailscale fallback" if self.args.tailscale else ""
+        lines = [f"# Stark Pocket acceptance (iOS simulator{mode})", "",
                  (f"Run {time.strftime('%Y-%m-%d %H:%M:%S')} on `{self.args.simulator}`. "
                  "This is the iOS simulator on the Mac, not a physical iPhone."), "",
                  "| Check | Result | Evidence |", "|---|---|---|"]
@@ -393,6 +445,8 @@ def main() -> int:
     ap.add_argument("--dir", type=Path, default=Path.home() / ".gameshark" / "demo")
     ap.add_argument("--fake-delay", type=float, default=2.0)
     ap.add_argument("--skip-faults", action="store_true")
+    ap.add_argument("--tailscale", action="store_true",
+                    help="serve the tailnet too and pair with a dead LAN address")
     args = ap.parse_args()
     args.app, args.project, args.ctl = args.app.resolve(), args.project.resolve(), args.ctl.resolve()
     return Pocket(args).run()

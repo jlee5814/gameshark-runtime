@@ -16,6 +16,7 @@ protocol PocketClient: AnyObject {
     func setDraftProvider(_ provider: @escaping @Sendable () -> String?)
     func confirmDraft(_ handoffId: String)
     func clearSentDraft(_ handoffId: String)
+    func setPath(_ path: NetworkPath)
 }
 
 extension GatewayClient: PocketClient {}
@@ -52,15 +53,20 @@ final class PocketModel {
     /// How long unpair waits for Stark to reach home before it keeps the pairing.
     @ObservationIgnored var unpairTimeout: Duration = .seconds(15)
     @ObservationIgnored private var monitor: NWPathMonitor?
-    @ObservationIgnored private var lastPath: NWPath.Status?
+    @ObservationIgnored private let monitorsNetwork: Bool
+    /// The network class the phone is on, as last reported, so a client woken from the
+    /// background learns it before it dials.
+    @ObservationIgnored private var network: NetworkPath?
     @ObservationIgnored private var foreground = true
     @ObservationIgnored private(set) var viewedSeq = -1
 
     init(store: CredentialStore = CredentialStore(),
          environment: [String: String] = ProcessInfo.processInfo.environment,
+         monitorsNetwork: Bool = true,
          makeClient: @escaping MakeClient = { GatewayClient(config: $0, onChange: $1) },
          pairer: @escaping Pairer = { try Pairing.run(link: $0, name: $1, signer: $2) }) {
         self.store = store
+        self.monitorsNetwork = monitorsNetwork
         self.makeClient = makeClient
         self.pairer = pairer
         stage = PocketAtlas.load().map { PocketStage(atlas: $0) }
@@ -116,7 +122,8 @@ final class PocketModel {
         } catch Pairing.Failure.untrusted {
             pairingError = "The Mac's key does not match this link. Pairing stopped."
         } catch Pairing.Failure.unreachable {
-            pairingError = "Could not reach the Mac. Is stark.py run --lan running on this network?"
+            pairingError = "Could not reach the Mac. Is stark.py run --lan running, and is this "
+                + "iPhone on the same network or on Tailscale?"
         } catch {
             pairingError = "Pairing failed: \(error)"
         }
@@ -195,6 +202,7 @@ final class PocketModel {
         let box = draftBox
         c.setDraftProvider { box.get() }        // a jack out carries the unsent composer text
         client = c
+        if let network { c.setPath(network) }
         isPaired = true
         state = ClientState(surface: endpoint.credential.surface)
         viewedSeq = UserDefaults.standard.integer(forKey: "viewedSeq.\(endpoint.credential.agentUUID)") - 1
@@ -284,6 +292,7 @@ final class PocketModel {
         case .active:
             foreground = true
             stage?.setVisible(true)
+            if let network { client?.setPath(network) }
             client?.start()                     // resyncs rows after the last contiguous seq
         case .background:
             foreground = false
@@ -307,20 +316,25 @@ final class PocketModel {
         }
     }
 
+    /// Wi-Fi, cellular, or offline. The client reorders its routes (LAN first at home,
+    /// the Mac's tailnet address away) and redials at once when the class changes, so a
+    /// socket left on a vanished interface never waits out a timeout. Background: the
+    /// client is stopped; the latest class is handed over when the app returns.
+    func networkChanged(_ path: NetworkPath) {
+        network = path
+        guard foreground else { return }
+        client?.setPath(path)
+    }
+
     private func watchNetwork() {
-        guard monitor == nil else { return }
+        guard monitor == nil, monitorsNetwork else { return }
         let m = NWPathMonitor()
         m.pathUpdateHandler = { [weak self] path in
-            Task { @MainActor in
-                guard let self else { return }
-                let status = path.status
-                defer { self.lastPath = status }
-                // Back on a network: retry now instead of waiting out the backoff.
-                if status == .satisfied, self.lastPath != .satisfied, self.foreground,
-                   self.state?.connection.isLive == false {
-                    self.client?.reconnectNow()
-                }
-            }
+            let p = NetworkPath.classify(satisfied: path.status == .satisfied,
+                                         wifi: path.usesInterfaceType(.wifi),
+                                         wired: path.usesInterfaceType(.wiredEthernet),
+                                         cellular: path.usesInterfaceType(.cellular))
+            Task { @MainActor in self?.networkChanged(p) }
         }
         m.start(queue: DispatchQueue(label: "stark.pocket.path"))
         monitor = m

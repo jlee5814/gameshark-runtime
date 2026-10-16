@@ -506,3 +506,181 @@ def test_pair_refuses_an_advertisement_naming_another_runtime(env, other):
         for p in (a, b):
             if p.poll() is None:
                 stop(p)
+
+
+# ---------------------------------------------------------------------- tailscale
+@pytest.fixture
+def ts(env, tmp_path):
+    from tests import tailscale_fixture
+
+    fixture = tmp_path / "tailscale.json"
+    tailscale_fixture.write(fixture)
+    env["env"].update(GAMESHARK_TAILSCALE="tests.tailscale_fixture:make",
+                      GAMESHARK_TAILSCALE_FIXTURE=str(fixture))
+    env["ts"] = fixture
+    return env
+
+
+def query(link: str) -> dict:
+    from urllib.parse import parse_qs, urlsplit
+
+    return {k: v[0] for k, v in parse_qs(urlsplit(link).query).items()}
+
+
+def daemon_log(proc: subprocess.Popen, until: str) -> list[str]:
+    seen = []
+    for line in proc.stdout:
+        seen.append(line)
+        if until in line:
+            return seen
+    raise AssertionError(f"daemon never logged {until!r}: {seen}")
+
+
+def test_tailscale_requires_lan(ts):
+    out = subprocess.run([sys.executable, str(ROOT / "stark.py"), "--db", str(ts["db"]),
+                          "run", "--tailscale"], env=ts["env"], cwd=ROOT,
+                         capture_output=True, text=True, timeout=30, check=False)
+    assert out.returncode == 2
+    assert "--tailscale requires --lan" in out.stderr
+
+
+def test_tailscale_endpoint_is_advertised_paired_and_served(ts):
+    from gameshark.gateway_client import DeviceClient, pair_device
+
+    proc = daemon(ts, 0.1, "--lan", "--lan-port", "0", "--tailscale", "--tailscale-port", "0")
+    try:
+        info = lan(ts)
+        tail = info["tailscale"]
+        assert tail["address"] == "127.0.0.1" and tail["dns"] == "mac.tailtest.ts.net"
+        assert tail["port"] not in (0, info["port"])
+        q = query(json.loads(cli(ts, "pair", "--name", "Test Phone", "--json"))["link"])
+        assert (q["t"], int(q["tp"]), q["tn"]) == ("127.0.0.1", tail["port"],
+                                                   "mac.tailtest.ts.net")
+        assert int(q["p"]) == info["port"]
+        pin = bytes.fromhex(q["fp"])
+        device_id, surface, key = pair_device(q["t"], int(q["tp"]), pin, q["id"], q["s"],
+                                              "Test Phone")
+        with DeviceClient(q["t"], int(q["tp"]), pin, device_id, key) as phone:
+            assert phone.welcome["surface"] == surface
+            assert phone.welcome["identity"]["uuid"] == info["uuid"]
+    finally:
+        assert stop(proc) == 0
+
+
+def test_lan_only_daemon_advertises_no_tailscale_endpoint(ts):
+    proc = daemon(ts, 0.1, "--lan", "--lan-port", "0")
+    try:
+        assert "tailscale" not in lan(ts)
+        q = query(json.loads(cli(ts, "pair", "--name", "Test Phone", "--json"))["link"])
+        assert not {"t", "tp", "tn"} & q.keys()
+    finally:
+        stop(proc)
+
+
+def test_stopped_tailscale_keeps_the_lan_and_advertises_no_tailnet(ts):
+    from tests import tailscale_fixture
+
+    tailscale_fixture.write(ts["ts"], tailscale_fixture.status(state="Stopped"))
+    proc = subprocess.Popen([sys.executable, str(ROOT / "stark.py"), "--db", str(ts["db"]),
+                             "--interval", "0.5", "run", "--lan", "--lan-port", "0",
+                             "--tailscale", "--tailscale-port", "0"],
+                            env=ts["env"], cwd=ROOT, stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT, text=True)
+    try:
+        seen = "".join(daemon_log(proc, "lan gateway on port"))
+        assert "tailscale disabled" in seen and "Stopped" in seen
+        assert "tailscale" not in lan(ts)
+        q = query(json.loads(cli(ts, "pair", "--name", "Test Phone", "--json"))["link"])
+        assert "t" not in q
+    finally:
+        stop(proc)
+
+
+def test_a_serve_forward_to_a_runtime_port_keeps_every_network_listener_off(ts):
+    import socket
+
+    from tests import tailscale_fixture
+
+    port = free_port()
+    tailscale_fixture.write(ts["ts"], serve={"Web": {"mac:443": {"Handlers": {
+        "/": {"Proxy": f"http://127.0.0.1:{port}"}}}}, "AllowFunnel": {"mac:443": True}})
+    proc = subprocess.Popen([sys.executable, str(ROOT / "stark.py"), "--db", str(ts["db"]),
+                             "--interval", "0.5", "run", "--lan", "--lan-port", str(port),
+                             "--tailscale", "--tailscale-port", "0"],
+                            env=ts["env"], cwd=ROOT, stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT, text=True)
+    try:
+        seen = "".join(daemon_log(proc, "gateway listening"))
+        assert "network listeners refused" in seen and str(port) in seen
+        with client(ts) as mac:                             # StarkMac keeps its socket
+            assert mac.call("ping")["pong"]
+        assert not ad_path(ts).exists()
+        with pytest.raises(OSError):
+            socket.create_connection(("127.0.0.1", port), timeout=1).close()
+    finally:
+        stop(proc)
+
+
+def impostor_on(gateway_dir: Path, instance: str) -> int:
+    """A TLS server with the runtime's own key that sends a challenge naming instance."""
+    import socket
+    import ssl
+    import threading
+
+    from gameshark.gateway import encode
+
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    ctx.minimum_version = ssl.TLSVersion.TLSv1_3
+    ctx.load_cert_chain(gateway_dir / "lan.crt", gateway_dir / "lan.key")
+    pin = json.loads(next(gateway_dir.glob("*.lan.json")).read_text())["pin"]
+    srv = socket.create_server(("127.0.0.1", 0))
+
+    def serve() -> None:
+        with srv:
+            conn, _ = srv.accept()
+            with ctx.wrap_socket(conn, server_side=True) as s:
+                s.sendall(encode({"type": "challenge", "proto": [1], "nonce": "00" * 32,
+                                  "server_fp": pin, "transport": "tls",
+                                  "instance": instance}))
+                s.recv(1)
+
+    threading.Thread(target=serve, daemon=True).start()
+    return srv.getsockname()[1]
+
+
+@pytest.mark.parametrize("change,why", [
+    ("stopped", "Tailscale is not running"),
+    ("moved", "Tailscale address changed"),
+    ("exposed", "forwards"),
+    ("dead_port", "does not serve"),
+    ("other_instance", "does not serve"),
+])
+def test_pair_refuses_a_stale_or_ambiguous_tailnet_endpoint(ts, change, why):
+    from tests import tailscale_fixture
+
+    proc = daemon(ts, 0.1, "--lan", "--lan-port", "0", "--tailscale", "--tailscale-port", "0")
+    try:
+        info = lan(ts)
+        if change == "stopped":
+            tailscale_fixture.write(ts["ts"], tailscale_fixture.status(state="Stopped"))
+        elif change == "moved":
+            tailscale_fixture.write(ts["ts"], tailscale_fixture.status("127.0.0.2"))
+        elif change == "exposed":
+            tailscale_fixture.write(ts["ts"], serve={"TCP": {"443": {
+                "TCPForward": f"127.0.0.1:{info['tailscale']['port']}"}}})
+        elif change == "dead_port":
+            ad_path(ts).write_text(json.dumps(
+                {**info, "tailscale": {**info["tailscale"], "port": free_port()}}))
+        else:
+            # Another runtime sharing this gateway directory, and so this key, answers on
+            # the advertised tailnet port: only the instance id in its challenge tells.
+            impostor = impostor_on(ts["sock"].parent, "0" * 32)
+            ad_path(ts).write_text(json.dumps(
+                {**info, "tailscale": {**info["tailscale"], "port": impostor}}))
+        out = pair_cli(ts)
+        assert out.returncode != 0
+        assert "starkpocket://" not in out.stdout
+        assert why in out.stderr, out.stderr
+        assert pairings(ts) == 0
+    finally:
+        stop(proc)

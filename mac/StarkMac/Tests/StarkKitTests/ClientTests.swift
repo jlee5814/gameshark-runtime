@@ -28,6 +28,12 @@ final class FakeRuntime: @unchecked Sendable {
     var activity: [String: Any] = ["working": false]
     /// Every request type received, in order.
     var received: [String] = []
+    /// The pinned key the challenge names; a paired device checks it before its hello.
+    var serverFP: String?
+    /// The surface a device hello is bound to (the runtime's device row).
+    var deviceSurface = "pocket-a1b2c3"
+    /// When set, requests vanish unanswered: a socket whose network is gone.
+    var blackhole = false
     /// Paired device names the snapshot reports.
     var devices: [[String: Any]] = []
     /// The draft awaiting this surface's receipt, as the snapshot and ack_in report it.
@@ -86,7 +92,10 @@ final class FakeRuntime: @unchecked Sendable {
     func connect() -> FakeTransport {
         let t = FakeTransport(runtime: self)
         lock.withLock { connections.append(t) }
-        t.push(["type": "challenge", "proto": [1], "nonce": String(repeating: "aa", count: 32)])
+        var challenge: [String: Any] = ["type": "challenge", "proto": [1],
+                                         "nonce": String(repeating: "aa", count: 32)]
+        if let fp = lock.withLock({ serverFP }) { challenge["server_fp"] = fp }
+        t.push(challenge)
         return t
     }
 
@@ -95,11 +104,13 @@ final class FakeRuntime: @unchecked Sendable {
         let id = msg["id"] as? Int ?? 0
         lock.lock()
         defer { lock.unlock() }
+        if blackhole && type != "hello" { return }
         if type != "hello" { received.append(type) }
         switch type {
         case "hello":
+            let bound = msg["device_id"] != nil ? deviceSurface : "mac"
             t.push(["type": "welcome", "proto": 1, "session": "s",
-                    "surface": msg["surface"] as? String ?? "mac",
+                    "surface": msg["surface"] as? String ?? bound,
                     "identity": ["agent_id": "stark", "uuid": uuid]])
         case "snapshot":
             t.push(["type": "result", "id": id, "data": [
@@ -756,5 +767,138 @@ final class Locked<T: Sendable>: @unchecked Sendable {
     var value: T {
         get { lock.withLock { v } }
         set { lock.withLock { v = newValue } }
+    }
+}
+
+// MARK: network paths (Wi-Fi, cellular, Tailscale)
+
+extension ClientTests {
+    static let pin = Data(repeating: 0xAB, count: 32)
+
+    func device(_ rt: FakeRuntime, routes: [Route], uuid: String = "uuid-1",
+                dialed: Locked<[Route]>, reachable: @escaping @Sendable (Route) -> Bool)
+        throws -> GatewayClient
+    {
+        rt.serverFP = Self.pin.hex
+        let cred = DeviceCredential(deviceID: String(repeating: "d", count: 32),
+                                    surface: "pocket-a1b2c3", name: "Test",
+                                    hosts: routes.filter { $0.via == .lan }.map(\.host),
+                                    port: 47820, pin: Self.pin, agentUUID: uuid, routes: routes)
+        let signer = try SoftwareSigner(rawRepresentation: Data(1...32))
+        let cfg = ClientConfig(device: DeviceEndpoint(credential: cred, signer: signer),
+                               backoff: Backoff(base: 0.01, cap: 0.05, jitter: 0),
+                               clientName: "test")
+        return GatewayClient(config: cfg, makeTransport: { r in
+            dialed.value.append(r)
+            guard reachable(r) else { throw TransportFailure.connect(ETIMEDOUT) }
+            return rt.connect()
+        })
+    }
+
+    static let home = [Route(host: "192.168.1.20", port: 47820, via: .lan),
+                       Route(host: "Jaes-Mac.local", port: 47820, via: .lan),
+                       Route(host: "100.123.57.23", port: 47821, via: .tailnet),
+                       Route(host: "mac.tail7fe60e.ts.net", port: 47821, via: .tailnet)]
+
+    @Test func aDeadLanAddressFallsBackToTheTailnetRouteOnItsOwnPort() throws {
+        let rt = FakeRuntime()
+        let dialed = Locked<[Route]>([])
+        let c = try device(rt, routes: Self.home, dialed: dialed) { $0.via == .tailnet }
+        c.setPath(.wifi)
+        c.start()
+        defer { c.stop() }
+        #expect(eventually { c.state.connection == .live })
+        #expect(Array(dialed.value.prefix(3)) == Array(Self.home.prefix(3)))
+        #expect(c.state.surface == "pocket-a1b2c3")
+    }
+
+    @Test func aReconnectRedialsTheRouteThatLastWorked() throws {
+        let rt = FakeRuntime()
+        let dialed = Locked<[Route]>([])
+        let c = try device(rt, routes: Self.home, dialed: dialed) { $0.via == .tailnet }
+        c.setPath(.wifi)
+        c.start()
+        defer { c.stop() }
+        #expect(eventually { c.state.connection == .live })
+        let before = dialed.value.count
+        rt.lock.withLock { rt.connections.last }?.hangUp()      // runtime restarts
+        #expect(eventually { rt.lock.withLock { rt.connections.count } == 2 })
+        #expect(eventually { c.state.connection == .live })
+        #expect(dialed.value[before] == Self.home[2])           // no detour through the LAN
+        c.setPath(.cellular)                                     // a new network starts over
+        #expect(eventually { rt.lock.withLock { rt.connections.count } == 3 })
+        #expect(dialed.value.last == Self.home[2])
+    }
+
+    @Test func onCellularTheTailnetIsDialedFirst() throws {
+        let rt = FakeRuntime()
+        let dialed = Locked<[Route]>([])
+        let c = try device(rt, routes: Self.home, dialed: dialed) { _ in true }
+        c.setPath(.cellular)
+        c.start()
+        defer { c.stop() }
+        #expect(eventually { c.state.connection == .live })
+        #expect(dialed.value == [Self.home[2]])
+    }
+
+    @Test func routeOrderFollowsTheNetwork() {
+        let lan = Self.home.filter { $0.via == .lan }, tail = Self.home.filter { $0.via == .tailnet }
+        #expect(Route.ordered(Self.home, for: .wifi) == lan + tail)
+        #expect(Route.ordered(Self.home, for: .wired) == lan + tail)
+        #expect(Route.ordered(Self.home, for: .cellular) == tail + lan)
+        #expect(Route.ordered(Self.home, for: .other) == tail + lan)
+        #expect(Route.ordered(Self.home, for: .none) == Self.home)
+    }
+
+    @Test func movingToCellularReconnectsOnceAndResendsUnderTheSameId() throws {
+        let rt = FakeRuntime()
+        let c = try client(rt)
+        c.setPath(.wifi)
+        c.start()
+        defer { c.stop() }
+        #expect(eventually { c.state.connection == .live })
+        rt.lock.withLock { rt.blackhole = true }           // Wi-Fi gone, socket still open
+        let id = c.send("from the platform")
+        Thread.sleep(forTimeInterval: 0.1)
+        #expect(c.state.outbox.first?.status == .pending)
+        rt.lock.withLock { rt.blackhole = false }
+        c.setPath(.cellular)
+        #expect(eventually { c.state.outbox.first?.status == .sent(seq: 1) })
+        rt.lock.withLock {
+            #expect(rt.connections.count == 2)
+            #expect(rt.sends == [id])
+            #expect(rt.rows.filter { $0.role == "user" }.count == 1)
+        }
+    }
+
+    @Test func aPathUpdateOnTheSameNetworkKeepsTheSession() throws {
+        let rt = FakeRuntime()
+        let c = try client(rt)
+        c.setPath(.wifi)
+        c.start()
+        defer { c.stop() }
+        #expect(eventually { c.state.connection == .live })
+        c.setPath(.wifi)
+        c.setPath(.none)                                  // offline: nothing to dial yet
+        Thread.sleep(forTimeInterval: 0.2)
+        #expect(rt.lock.withLock { rt.connections.count } == 1)
+        c.setPath(.wifi)                                  // back on the same network
+        #expect(eventually { rt.lock.withLock { rt.connections.count } == 2 })
+        #expect(eventually { c.state.connection == .live })
+    }
+
+    @Test func aDeviceRefusesAnotherAgentsRuntime() throws {
+        let rt = FakeRuntime()
+        rt.uuid = "uuid-other"
+        rt.rows.append(Row(seq: 1, role: "user", content: "not ours"))
+        let dialed = Locked<[Route]>([])
+        let c = try device(rt, routes: Self.home, dialed: dialed) { _ in true }
+        c.start()
+        defer { c.stop() }
+        #expect(eventually { c.state.lastError?.contains("another agent") == true })
+        Thread.sleep(forTimeInterval: 0.1)
+        #expect(c.state.connection != .live && c.state.rows.isEmpty)
+        #expect(c.state.identity == nil)
+        #expect(rt.lock.withLock { rt.received.isEmpty })  // no snapshot, no sync
     }
 }

@@ -301,7 +301,16 @@ class SurfaceAPI:
         sess.accept(d.surface, d.id, proto, {
             "type": "welcome", "proto": proto, "session": sess.id, "surface": d.surface,
             "device_id": d.id, "identity": self.server.identity})
-        self.log(f"device {d.name} connected as {d.surface} ({sess.id})")
+        self.log(f"device {d.name} connected as {d.surface} via {sess.path} from "
+                 f"{sess.peer} ({sess.id})")
+        # A phone that changed networks proves itself again before its old socket dies.
+        # The newest session wins; it is live first, so losing the old one never counts
+        # as the surface leaving, and presence stays where it is.
+        for old in self.server.live_sessions():
+            if (old is not sess and isinstance(old, TLSSession)
+                    and old.device_id == d.id and not old.closed):
+                old.supersede()
+                self.log(f"closed {old.id}: {d.surface} moved to {sess.path} ({sess.id})")
 
     def _enforce_revocations(self) -> None:
         """Close revoked devices' sessions and take presence back from them."""
