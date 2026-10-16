@@ -57,6 +57,11 @@ final class PocketModel {
     /// The network class the phone is on, as last reported, so a client woken from the
     /// background learns it before it dials.
     @ObservationIgnored private var network: NetworkPath?
+    /// The client is held until NWPathMonitor reports, so its first dial follows the
+    /// network: on cellular, the tailnet before any LAN timeout.
+    @ObservationIgnored private var awaitingPath = false
+    /// How long a client waits for a first path before it dials in the link's order.
+    @ObservationIgnored var firstPathTimeout: Duration = .seconds(1)
     /// What Settings shows for diagnosis: the path class and the routes this pairing dials.
     private(set) var networkLabel = "unknown"
     private(set) var routeSummary: [String] = []
@@ -214,7 +219,26 @@ final class PocketModel {
         state = ClientState(surface: endpoint.credential.surface)
         viewedSeq = UserDefaults.standard.integer(forKey: "viewedSeq.\(endpoint.credential.agentUUID)") - 1
         watchNetwork()
-        if foreground { c.start() }
+        if foreground { startWhenPathKnown() }
+    }
+
+    /// Start the client now if the network class is known; otherwise on the first path, or
+    /// after firstPathTimeout if the monitor never reports, so the phone never stays offline.
+    private func startWhenPathKnown() {
+        guard network == nil else {
+            client?.start()
+            return
+        }
+        guard !awaitingPath else { return }
+        awaitingPath = true
+        let wait = firstPathTimeout
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: wait)
+            guard let self, self.awaitingPath, self.foreground else { return }
+            self.awaitingPath = false
+            NetLog.trace("no network path after \(wait), dialing in the link's order")
+            self.client?.start()
+        }
     }
 
     private func apply(_ s: ClientState) {
@@ -301,10 +325,11 @@ final class PocketModel {
             foreground = true
             stage?.setVisible(true)
             if let network { client?.setPath(network) }
-            client?.start()                     // resyncs rows after the last contiguous seq
+            startWhenPathKnown()                // resyncs rows after the last contiguous seq
         case .background:
             NetLog.trace("scene background")
             foreground = false
+            awaitingPath = false
             stage?.setVisible(false)
             guard let c = client else { return }
             if pendingOutbox.contains(where: { $0.status == .pending }) {
@@ -334,6 +359,10 @@ final class PocketModel {
         networkLabel = path.rawValue
         guard foreground else { return }
         client?.setPath(path)
+        if awaitingPath {
+            awaitingPath = false
+            client?.start()
+        }
     }
 
     private func watchNetwork() {

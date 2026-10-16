@@ -199,12 +199,13 @@ final class PocketModelTests: XCTestCase {
 
     /// A monitor that never reports must not strand the phone offline.
     func testAPathThatNeverArrivesStillStartsTheClient() async throws {
-        _ = try pairedModel()
+        let model = try pairedModel()
         let c = clients[0]
         for _ in 0..<200 where c.started == 0 {
             try? await Task.sleep(for: .milliseconds(10))
         }
         XCTAssertEqual(c.started, 1)
+        withExtendedLifetime(model) {}                    // the model owns the wait
     }
 
     func testInterfacesMapToOneNetworkClass() {
