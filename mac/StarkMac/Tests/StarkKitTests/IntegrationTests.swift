@@ -27,11 +27,13 @@ final class IntegrationTests {
         try? FileManager.default.removeItem(at: dir)
     }
 
-    func startDaemon(_ extra: [String] = []) throws {
+    static let fake = ["--fake-model", "--fake-delay", "0.3"]
+
+    func startDaemon(_ extra: [String] = [], model: [String] = IntegrationTests.fake) throws {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/usr/bin/env")
         p.arguments = ["uv", "run", "python", "stark.py", "--db", dir.appendingPathComponent("runtime.db").path,
-                       "--interval", "1", "run", "--fake-model", "--fake-delay", "0.3"] + extra
+                       "--interval", "1", "run"] + model + extra
         p.currentDirectoryURL = prototype
         var env = ProcessInfo.processInfo.environment
         env["GAMESHARK_TRANSPORT"] = "tests.file_transport:make"
@@ -98,6 +100,26 @@ final class IntegrationTests {
         #expect(eventually(10) { self.rows(c, role: "assistant").count == 2 })
         let seqs = c.state.rows.map(\.seq)
         #expect(seqs == Array(0..<seqs.count))       // contiguous, no duplicate
+        stopDaemon()
+    }
+
+    /// Phase 4.1: a model that never answers leaves no fabricated reply. The runtime says
+    /// it is waiting for the model and why, and the Swift client reads it as such.
+    @Test func anUnreachableModelShowsWaitingAndNoReply() throws {
+        try Data("{}".utf8).write(to: dir.appendingPathComponent("github.json"))
+        try startDaemon(model: ["--inference-url", "http://127.0.0.1:9/v1", "--model", "absent",
+                                "--model-cooldown", "0.5"])
+        let c = client()
+        c.start()
+        defer { c.stop() }
+        #expect(eventually(15) { c.state.connection == .live })
+        #expect(c.state.model == ModelInfo(provider: "local", model: "absent", locality: "local",
+                                           fake: false))
+        c.send("is anyone there?")
+        #expect(eventually(30) { c.state.reply?.state == "waiting" })
+        #expect(c.state.reply?.caption.hasPrefix("Waiting for the model") == true)
+        #expect(rows(c, role: "assistant").isEmpty)
+        #expect(!c.state.canRetryReply)                    // waiting retries by itself
         stopDaemon()
     }
 

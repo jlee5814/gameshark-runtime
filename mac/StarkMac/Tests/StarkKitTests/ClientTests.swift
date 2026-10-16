@@ -61,6 +61,10 @@ final class FakeRuntime: @unchecked Sendable {
     var staleReadyOut = false
     /// The last jack in wire form, kept after it closes so a replay sees its final state.
     var lastJack: [String: Any]?
+    /// The model the snapshot reports, in wire form.
+    var model: [String: Any]?
+    /// Every retry_reply received, as (seq, presence_gen).
+    var retries: [[Int]] = []
 
     /// The open jack resolves (acked by its target, or reverted) and presence moves to
     /// holder; the push tells every connection the jack closed.
@@ -120,6 +124,7 @@ final class FakeRuntime: @unchecked Sendable {
                 "handoff": handoff.map { $0 as Any } ?? NSNull(),
                 "responsibilities": [], "conversation": ["id": Wire.conversation, "head_seq": rows.count - 1],
                 "activity": activity, "devices": devices,
+                "model": model.map { $0 as Any } ?? NSNull(),
                 "draft": draft.map { $0 as Any } ?? NSNull()]])
         case "sync":
             let after = msg["after_seq"] as? Int ?? -1
@@ -146,6 +151,17 @@ final class FakeRuntime: @unchecked Sendable {
                 return
             }
             t.push(["type": "result", "id": id, "data": ["seq": seq, "replayed": false]])
+        case "retry_reply":
+            let seq = msg["seq"] as? Int ?? -1
+            let gen = msg["presence_gen"] as? Int ?? -1
+            retries.append([seq, gen])
+            guard gen == generation, surface == "mac" else {
+                t.push(["type": "error", "id": id, "code": "stale_presence", "message": "stale"])
+                return
+            }
+            t.push(["type": "result", "id": id, "data": [
+                "conversation_id": msg["conversation_id"]!, "seq": seq, "retry": retries.count,
+                "replayed": false]])
         case "draft_ack":
             draftAcks.append(msg["handoff_id"] as? String ?? "")
             if dropNextDraftAck {
@@ -521,6 +537,61 @@ func eventually(_ timeout: TimeInterval = 5, _ cond: () -> Bool) -> Bool {
         #expect(c.state.isThinking && c.state.working)
         push(rt, activity("idle", boot: "b1"), rev: 2)
         #expect(eventually { !c.state.isThinking && !c.state.working })
+    }
+
+    @Test func theSnapshotNamesTheModelAndAFailedReply() throws {
+        let rt = FakeRuntime()
+        rt.model = ["provider": "local", "model": "qwen", "locality": "local", "fake": false]
+        var a = activity("blocked", boot: "b1")
+        a["reply"] = ["seq": 1, "retry": 0, "state": "failed", "error": "AttemptsExhausted"]
+        rt.activity = a
+        let c = try client(rt)
+        c.start()
+        defer { c.stop() }
+        #expect(eventually { c.state.connection == .live })
+        #expect(c.state.model == ModelInfo(provider: "local", model: "qwen", locality: "local",
+                                           fake: false))
+        #expect(c.state.reply?.failed == true && c.state.canRetryReply)
+        var next = activity("thinking", boot: "b1", inference: 1)
+        next["reply"] = ["seq": 1, "retry": 1, "state": "thinking"]
+        push(rt, next, rev: 1)
+        #expect(eventually { c.state.reply?.state == "thinking" })
+        push(rt, activity("idle", boot: "b1"), rev: 2)
+        #expect(eventually { c.state.reply == nil })
+    }
+
+    @Test func retryReplyCarriesTheSeqAndHeldGeneration() throws {
+        let rt = FakeRuntime()
+        let c = try client(rt)
+        c.start()
+        defer { c.stop() }
+        #expect(eventually { c.state.connection == .live })
+        c.retryReply(seq: 4)
+        #expect(eventually { rt.lock.withLock { rt.retries } == [[4, 1]] })
+        #expect(c.state.lastError == nil)
+    }
+
+    @Test func aStaleRetryIsRefusedAndRefreshesPresence() throws {
+        let rt = FakeRuntime()
+        let c = try client(rt)
+        c.start()
+        defer { c.stop() }
+        #expect(eventually { c.state.connection == .live })
+        rt.lock.withLock { rt.generation = 2 }           // jacked elsewhere and back
+        c.retryReply(seq: 4)
+        #expect(eventually { c.state.lastError?.contains("stale_presence") == true })
+        #expect(eventually { c.state.presence?.generation == 2 })
+        c.retryReply(seq: 4)
+        #expect(eventually { rt.lock.withLock { rt.retries } == [[4, 1], [4, 2]] })
+    }
+
+    @Test func retryWhileDisconnectedSendsNothing() throws {
+        let rt = FakeRuntime()
+        let c = try client(rt)
+        c.retryReply(seq: 1)
+        Thread.sleep(forTimeInterval: 0.1)
+        #expect(rt.lock.withLock { rt.retries }.isEmpty)
+        #expect(c.state.lastError == "retry: not connected")
     }
 
     @Test func pushFromAnotherRuntimeInstanceIsDropped() throws {

@@ -146,6 +146,17 @@ import Testing
         #expect(AvatarState.derive(state(rows: reply), listening: false, viewedSeq: 2) == .idle)
         #expect(AvatarState.derive(state(), listening: false, viewedSeq: -1) == .idle)
     }
+
+    @Test func aReplyStillOnItsWayIsWorkAndAFailedOneIsNot() {
+        for st in ["queued", "thinking", "waiting"] {
+            var s = state()
+            s.activity = Activity(reply: ReplyState(seq: 1, state: st))
+            #expect(AvatarState.derive(s, listening: false, viewedSeq: -1) == .working)
+        }
+        var s = state()
+        s.activity = Activity(reply: ReplyState(seq: 1, state: "failed", error: "Timeout"))
+        #expect(AvatarState.derive(s, listening: false, viewedSeq: -1) == .idle)
+    }
 }
 
 /// The same table as prototype/tests/test_stark_paths.py: socket from STARK_SOCKET, else
@@ -239,5 +250,59 @@ extension DraftContinuityTests {
         s.incomingDraft = CarriedDraft(handoffId: "h2", text: "half typed, finished on the phone")
         let back = DraftContinuity.follow(s, composer: "", offered: nil)
         #expect(back.composer == "half typed, finished on the phone" && back.confirm == "h2")
+    }
+}
+
+/// Phase 4.1: the head reply's state and the model behind it, as the runtime reports them.
+@Suite struct ReplyStateTests {
+    func activity(_ json: String) throws -> Activity {
+        try Wire.decode(Activity.self, from: Data(json.utf8))
+    }
+
+    @Test func decodesEachStateAndItsReason() throws {
+        let a = try activity(#"{"working": false, "reply": {"seq": 3, "retry": 1, "state": "waiting", "error": "ModelUnavailable", "retry_at": 1792190000.5}}"#)
+        #expect(a.reply == ReplyState(seq: 3, retry: 1, state: "waiting", error: "ModelUnavailable",
+                                      retryAt: 1792190000.5))
+        #expect(a.reply?.caption == "Waiting for the model: the model server is unreachable")
+        let f = try activity(#"{"working": false, "reply": {"seq": 3, "state": "failed", "error": "AttemptsExhausted"}}"#)
+        #expect(f.reply?.failed == true)
+        #expect(f.reply?.caption == "No reply: the model failed three times")
+    }
+
+    @Test func absentOrNullMeansAnsweredOrAnOlderRuntime() throws {
+        #expect(try activity(#"{"working": false}"#).reply == nil)
+        #expect(try activity(#"{"working": false, "reply": null}"#).reply == nil)
+    }
+
+    @Test func captionsNameEveryStateWithoutInventingAnAnswer() {
+        #expect(ReplyState(seq: 1, state: "queued").caption == "Stark has your message")
+        #expect(ReplyState(seq: 1, state: "thinking").caption == "Stark is thinking…")
+        #expect(ReplyState(seq: 1, state: "failed", error: "Timeout").caption
+                == "No reply: the model took too long")
+        #expect(ReplyState(seq: 1, state: "failed", error: "Strange").caption == "No reply: Strange")
+        #expect(ReplyState(seq: 1, state: "failed").caption == "No reply")
+    }
+
+    @Test func snapshotCarriesTheModel() throws {
+        let json = #"{"provider": "local", "model": "mlx-community/Qwen3-4B-4bit", "locality": "local", "fake": false}"#
+        let m = try Wire.decode(ModelInfo.self, from: Data(json.utf8))
+        #expect(m == ModelInfo(provider: "local", model: "mlx-community/Qwen3-4B-4bit",
+                               locality: "local", fake: false))
+    }
+
+    @Test func onlyTheActiveLiveSurfaceMayRetryAFailedReply() {
+        var s = ClientState(surface: "mac")
+        s.connection = .live
+        s.presence = PresenceInfo(surface: "mac", home: "mac", generation: 1)
+        s.activity = Activity(reply: ReplyState(seq: 1, state: "failed", error: "Timeout"))
+        #expect(s.canRetryReply)
+        s.presence = PresenceInfo(surface: "phone", home: "mac", generation: 2)
+        #expect(!s.canRetryReply)
+        s.presence = PresenceInfo(surface: "mac", home: "mac", generation: 3)
+        s.connection = .disconnected("gone")
+        #expect(!s.canRetryReply)
+        s.connection = .live
+        s.activity = Activity(reply: ReplyState(seq: 1, state: "thinking"))
+        #expect(!s.canRetryReply)
     }
 }
