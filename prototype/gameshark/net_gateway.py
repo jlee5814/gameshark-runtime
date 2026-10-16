@@ -68,6 +68,7 @@ MAX_OUTBOX = 1 << 20          # queued bytes before a slow reader is dropped
 MAX_LAN_SESSIONS = 4          # of the shared cap, so the Unix socket always has room
 FAIL_LIMIT = 5                # failed handshakes per address within FAIL_WINDOW_S ...
 FAIL_WINDOW_S = 60.0          # ... block that address until the window clears
+MAX_REJECT_KEYS = 1024        # path, peer, and stage triples RejectLog remembers at once
 KEEPALIVE_IDLE_S = 20         # a peer gone with its network is noticed in about a minute
 KEEPALIVE_INTERVAL_S = 10
 KEEPALIVE_COUNT = 3
@@ -199,31 +200,47 @@ class RejectLog:
     authenticating), accept, internal. Reasons are errno names, TLS reasons, and this
     code's own messages; never frames, nonces, secrets, signatures, or keys. Repeats of one
     path, peer, and stage within window_s are counted and reported on the next line, so a
-    scanner cannot flood the log."""
+    scanner cannot flood the log.
+
+    Memory is bounded whatever peers do (rotating IPv6 addresses included): one table,
+    ordered by when each key last logged, holds at most cap keys. Expired keys leave from
+    the front on every call, dropping any count their peer never came back to collect. At
+    the cap a new key evicts the oldest; its count is reported once on the next line."""
 
     def __init__(self, log: Callable[[str], None] = lambda _m: None,
-                 window_s: float = FAIL_WINDOW_S, now=time.monotonic) -> None:
+                 window_s: float = FAIL_WINDOW_S, now=time.monotonic,
+                 cap: int = MAX_REJECT_KEYS) -> None:
         self.log = log
         self.window_s = window_s
         self.now = now
-        self._last: dict[tuple[str, str, str], float] = {}
-        self._quiet: dict[tuple[str, str, str], int] = {}
+        self.cap = cap
+        # key -> [logged_at, suppressed since]; oldest logged_at first
+        self._seen: collections.OrderedDict[tuple[str, str, str], list] = (
+            collections.OrderedDict())
+        self._evicted = 0                   # suppressed counts of keys pushed out at the cap
         self._lock = threading.Lock()
 
     def __call__(self, path: str, peer: str, stage: str, reason: str) -> None:
         key = (path, peer, stage)
         with self._lock:
             t = self.now()
-            last = self._last.get(key)
-            if last is not None and t - last < self.window_s:
-                self._quiet[key] = self._quiet.get(key, 0) + 1
+            entry = self._seen.get(key)
+            if entry is not None and t - entry[0] < self.window_s:
+                entry[1] += 1                   # in place: the order stays by logged_at
                 return
-            if len(self._last) > 1024:
-                for k in [k for k, v in self._last.items() if t - v >= self.window_s]:
-                    del self._last[k]
-            self._last[key] = t
-            quiet = self._quiet.pop(key, 0)
-        more = f" ({quiet} suppressed)" if quiet else ""
+            quiet = 0
+            if entry is not None:               # its window passed: report what it held
+                quiet = self._seen.pop(key)[1]
+            while self._seen and t - next(iter(self._seen.values()))[0] >= self.window_s:
+                self._seen.popitem(last=False)
+            while len(self._seen) >= self.cap:
+                self._evicted += self._seen.popitem(last=False)[1][1]
+            self._seen[key] = [t, 0]
+            evicted, self._evicted = self._evicted, 0
+        notes = [f"{quiet} suppressed"] if quiet else []
+        if evicted:
+            notes.append(f"{evicted} suppressed for evicted peers")
+        more = f" ({'; '.join(notes)})" if notes else ""
         self.log(f"rejected {path} {peer} {stage}: {reason}{more}")
 
 

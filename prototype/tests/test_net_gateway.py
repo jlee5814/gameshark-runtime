@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import errno
 import os
+import re
 import socket
 import sqlite3
 import ssl
@@ -868,3 +869,55 @@ def test_a_peer_reset_on_the_dual_stack_listener_reports_no_address(tmp_path):
     finally:
         lan.stop()
         r.close()
+
+
+def rotating_peers(n: int) -> list[str]:
+    """What a LAN scanner with privacy addresses looks like: IPv6 and IPv4, never twice."""
+    return [f"fd00::{i:x}" if i % 2 else f"10.0.{i // 256 % 256}.{i % 256}" for i in range(n)]
+
+
+def test_reject_log_state_stays_bounded_under_rotating_addresses():
+    from gameshark.net_gateway import RejectLog
+
+    lines, t = [], [0.0]
+    log = RejectLog(lines.append, window_s=60, now=lambda: t[0], cap=64)
+    for peer in rotating_peers(5000):
+        for _ in range(2):                                  # logged, then suppressed
+            log("lan", peer, "tls", "WRONG_VERSION_NUMBER")
+            assert len(log._seen) <= 64
+    assert len(lines) == 5000                               # one line per peer, never more
+    evicted = sum(int(m.group(1)) for line in lines
+                  if (m := re.search(r"(\d+) suppressed for evicted peers", line)))
+    assert evicted == 5000 - 64                             # every evicted count reported
+    assert len(log._seen) == 64 and log._evicted == 0
+
+
+def test_reject_log_forgets_expired_peers():
+    from gameshark.net_gateway import RejectLog
+
+    lines, t = [], [0.0]
+    log = RejectLog(lines.append, window_s=60, now=lambda: t[0])
+    for peer in rotating_peers(1000):
+        log("tailnet", peer, "auth", "bad signature")
+        log("tailnet", peer, "auth", "bad signature")
+    assert len(log._seen) == 1000
+    t[0] = 61.0
+    log("tailnet", "fd00::ffff", "auth", "bad signature")
+    assert list(log._seen) == [("tailnet", "fd00::ffff", "auth")]
+    assert log._evicted == 0
+
+
+def test_reject_log_still_suppresses_one_peer_across_others():
+    from gameshark.net_gateway import RejectLog
+
+    lines, t = [], [0.0]
+    log = RejectLog(lines.append, window_s=60, now=lambda: t[0])
+    log("lan", "fd00::1", "tls", "WRONG_VERSION_NUMBER")
+    for i, peer in enumerate(rotating_peers(200)):
+        t[0] = i * 0.1
+        log("lan", "fd00::1", "tls", "WRONG_VERSION_NUMBER")
+        log("lan", peer, "policy", "not a lan peer")
+    assert sum("fd00::1 tls" in line for line in lines) == 1
+    t[0] = 61.0
+    log("lan", "fd00::1", "tls", "WRONG_VERSION_NUMBER")
+    assert lines[-1] == "rejected lan fd00::1 tls: WRONG_VERSION_NUMBER (200 suppressed)"
