@@ -129,6 +129,39 @@ final class IntegrationTests {
         return try #require(PairingLink(printed.link))
     }
 
+    /// A runtime that stops reading (frozen with SIGSTOP, as a peer behind a vanished
+    /// interface looks from the phone) fills the socket buffers. A send must then give up
+    /// within the transport's timeout instead of holding its caller forever.
+    @Test func aSendToARuntimeThatStopsReadingGivesUpWithinItsTimeout() throws {
+        try Data("{}".utf8).write(to: dir.appendingPathComponent("github.json"))
+        try startDaemon(["--lan", "--lan-port", "0"])
+        #expect(eventually(30) { FileManager.default.fileExists(atPath: self.lanInfo.path) })
+        struct Info: Decodable { var port: UInt16; var pin: String; var pid: Int32 }
+        let info = try JSONDecoder().decode(Info.self, from: Data(contentsOf: lanInfo))
+        let pin = try #require(Data(hex: info.pin))
+        let t = try TLSTransport(host: "127.0.0.1", port: info.port, pin: pin, timeout: 2)
+        #expect(kill(info.pid, SIGSTOP) == 0)               // the runtime, not uv
+        defer {
+            t.close()
+            kill(info.pid, SIGCONT)
+        }
+
+        let outcome = Locked<Error?>(nil)
+        let done = DispatchSemaphore(value: 0)
+        let frame = Data(count: 256 * 1024)
+        Thread {
+            do {
+                for _ in 0..<1024 { try t.send(frame) }     // 256 MiB: far past any buffer
+            } catch {
+                outcome.value = error
+            }
+            done.signal()
+        }.start()
+        #expect(done.wait(timeout: .now() + 15) == .success,
+                "send waited past its timeout on a runtime that stopped reading")
+        #expect(outcome.value as? TransportFailure == .io(ETIMEDOUT))
+    }
+
     @Test func pairedPhoneJacksInAndOutOverPinnedTLS() throws {
         try Data("{}".utf8).write(to: dir.appendingPathComponent("github.json"))
         try startDaemon(["--lan", "--lan-port", "0"])
