@@ -208,6 +208,22 @@ final class PocketModelTests: XCTestCase {
         withExtendedLifetime(model) {}                    // the model owns the wait
     }
 
+    /// A wait cut short by the background never starts the client for the next foreground:
+    /// only the newest wait may fall back, at its own deadline.
+    func testAWaitFromAnEarlierForegroundNeverStartsTheClient() async throws {
+        let model = try pairedModel()                     // wait 1 ends at 1.0 s
+        let c = clients[0]
+        try await Task.sleep(for: .milliseconds(500))
+        model.scenePhase(.background)
+        model.scenePhase(.active)                         // wait 2 ends at 1.5 s
+        try await Task.sleep(for: .milliseconds(700))
+        XCTAssertEqual(c.started, 0, "the first wait started the client before the second ended")
+        for _ in 0..<100 where c.started == 0 {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(c.started, 1)
+    }
+
     func testInterfacesMapToOneNetworkClass() {
         XCTAssertEqual(NetworkPath.classify(satisfied: false, wifi: true, wired: false,
                                             cellular: false), NetworkPath.none)
