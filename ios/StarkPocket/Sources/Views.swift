@@ -98,7 +98,15 @@ struct HeaderView: View {
                     .font(.headline)
                     .accessibilityElement(children: .combine)
                     .accessibilityIdentifier("presenceLabel")
-                ConnectionChip(state: model.state)
+                HStack(spacing: 6) {
+                    ConnectionChip(state: model.state)
+                    if let badge = model.modelBadge {
+                        Text(badge).font(.caption2.weight(.semibold))
+                            .padding(.horizontal, 6).padding(.vertical, 2)
+                            .background(.orange.opacity(0.3), in: Capsule())
+                            .accessibilityIdentifier("modelBadge")
+                    }
+                }
                 switch summary?.control ?? .none {
                 case .jackIn:
                     Button("Jack In") { model.jack() }
@@ -175,6 +183,9 @@ struct ConversationList: View {
                             .font(.caption).foregroundStyle(.secondary)
                             .frame(maxWidth: .infinity, alignment: .trailing)
                     }
+                    if let line = model.replyLine {
+                        ReplyLine(model: model, text: line).id("reply")
+                    }
                 }
                 .padding()
             }
@@ -183,6 +194,31 @@ struct ConversationList: View {
                 model.markViewed()
             }
             .onAppear { model.markViewed() }
+        }
+    }
+}
+
+/// The reply's state under the newest message: never text in Stark's voice.
+struct ReplyLine: View {
+    let model: PocketModel
+    let text: String
+
+    var body: some View {
+        let failed = model.state?.reply?.failed == true
+        HStack(spacing: 8) {
+            if failed {
+                Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+            } else {
+                ProgressView()
+            }
+            Text(text).font(.caption).foregroundStyle(.secondary)
+                .accessibilityIdentifier("replyLine")
+            Spacer(minLength: 0)
+            if failed && model.canRetryReply {
+                Button("Retry") { model.retryReply() }
+                    .buttonStyle(.bordered).controlSize(.small)
+                    .accessibilityIdentifier("retryButton")
+            }
         }
     }
 }

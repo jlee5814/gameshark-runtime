@@ -46,7 +46,7 @@ struct ChatCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            StatusView(state: model.state)
+            StatusView(state: model.state, badge: model.modelBadge)
             Divider()
             ScrollViewReader { proxy in
                 ScrollView {
@@ -56,6 +56,11 @@ struct ChatCard: View {
                         }
                         ForEach(model.attention) { m in
                             PendingBubble(message: m)
+                        }
+                        if let line = model.replyLine {
+                            ReplyLine(text: line, failed: model.state.reply?.failed == true,
+                                      canRetry: model.canRetryReply) { model.retryReply() }
+                                .id("reply")
                         }
                     }
                     .padding(.vertical, 2)
@@ -114,6 +119,7 @@ struct ChatCard: View {
 
 struct StatusView: View {
     let state: ClientState
+    var badge: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -124,6 +130,12 @@ struct StatusView: View {
                     Text(String(uuid.prefix(8))).font(.caption.monospaced())
                         .foregroundStyle(.secondary)
                         .help(uuid)
+                }
+                if let badge {
+                    Text(badge).font(.caption2.weight(.semibold))
+                        .padding(.horizontal, 6).padding(.vertical, 1)
+                        .background(.orange.opacity(0.3), in: Capsule())
+                        .help("Replies come from the demo model, not a real one")
                 }
                 Spacer()
                 Text(connectionText).font(.caption).foregroundStyle(.secondary)
@@ -190,6 +202,30 @@ struct Bubble: View {
                 .foregroundStyle(mine ? .white : .primary)
             if !mine { Spacer(minLength: 30) }
         }
+    }
+}
+
+/// The reply's state under the newest message: never text in Stark's voice.
+struct ReplyLine: View {
+    let text: String
+    let failed: Bool
+    let canRetry: Bool
+    let retry: () -> Void
+
+    var body: some View {
+        HStack(spacing: 6) {
+            if failed {
+                Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+            } else {
+                ProgressView().controlSize(.mini)
+            }
+            Text(text).font(.caption).foregroundStyle(.secondary)
+            if failed && canRetry {
+                Button("Retry", action: retry).controlSize(.small)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.leading, 4)
     }
 }
 

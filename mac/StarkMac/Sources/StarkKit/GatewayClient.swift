@@ -79,7 +79,15 @@ public struct ClientState: Equatable, Sendable {
         guard let p = presence, p.surface != surface else { return nil }
         return deviceNames[p.surface] ?? (p.surface == p.home ? "Mac" : p.surface)
     }
+    /// The model behind replies, from the last snapshot.
+    public var model: ModelInfo?
     public var isWorking: Bool { activity?.isWorking ?? false }
+    /// What the runtime is doing with the newest user message; nil once answered.
+    public var reply: ReplyState? { activity?.reply }
+    /// Only the surface holding Stark, live, may ask for a failed reply again.
+    public var canRetryReply: Bool {
+        connection.isLive && isActiveSurface && reply?.failed == true
+    }
     public var isThinking: Bool { activity?.isThinking ?? working }
 
     public init(surface: String) {
@@ -158,7 +166,7 @@ public final class GatewayClient: @unchecked Sendable {
 
     private enum Pending {
         case snapshot, sync, send(String), readyOut(String), ackIn(String), jack(String),
-             draftAck(String)
+             draftAck(String), retryReply(Int)
     }
 
     public enum JackDirection: String, Sendable {
@@ -335,6 +343,20 @@ public final class GatewayClient: @unchecked Sendable {
                                              "presence_gen": gen])
         }
         return hid
+    }
+
+    /// Ask the runtime to answer a failed reply again. The runtime keys the retry by seq,
+    /// so a repeat while the first is pending, or after it lands, starts nothing new.
+    public func retryReply(seq: Int) {
+        queue.async {
+            guard self.st.connection == .live, let gen = self.st.presence?.generation else {
+                self.st.lastError = "retry: not connected"
+                self.publish()
+                return
+            }
+            self.request("retry_reply", .retryReply(seq), ["conversation_id": Wire.conversation,
+                                                           "seq": seq, "presence_gen": gen])
+        }
     }
 
     @discardableResult
@@ -585,6 +607,7 @@ public final class GatewayClient: @unchecked Sendable {
             st.responsibilities = s.responsibilities
             st.working = s.activity.working
             st.activity = s.activity                 // rebuilt wholesale, never merged
+            st.model = s.model
             st.deviceNames = Dictionary((s.devices ?? []).map { ($0.surface, $0.name) },
                                         uniquingKeysWith: { a, _ in a })
             if let d = s.draft {
@@ -634,6 +657,9 @@ public final class GatewayClient: @unchecked Sendable {
             draftAcksOwed.remove(hid)
         case .jack:
             break                                   // the presence push carries the handoff
+        case .retryReply(let seq):
+            let r = try Wire.decode(Result<RetryResult>.self, from: body).data
+            trace("retry seq=\(seq) r\(r.retry) replayed=\(r.replayed)")
         }
         if haveSnapshot && haveSync && st.connection != .live {
             st.connection = .live
@@ -670,6 +696,9 @@ public final class GatewayClient: @unchecked Sendable {
             if code == "stale_presence" || code == "invalid" { draftAcksOwed.remove(hid) }
         case .jack(let hid):
             st.lastError = "jack \(hid): \(code)"
+            if code == "stale_presence" { request("snapshot", .snapshot) }
+        case .retryReply(let seq):
+            st.lastError = "retry \(seq): \(code)"
             if code == "stale_presence" { request("snapshot", .snapshot) }
         case .snapshot, .sync:
             st.lastError = "\(code): \(message ?? "")"
