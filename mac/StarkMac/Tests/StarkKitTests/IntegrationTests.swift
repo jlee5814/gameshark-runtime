@@ -31,7 +31,7 @@ final class IntegrationTests {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/usr/bin/env")
         p.arguments = ["uv", "run", "python", "stark.py", "--db", dir.appendingPathComponent("runtime.db").path,
-                       "--interval", "1", "run", "--fake-delay", "0.3"] + extra
+                       "--interval", "1", "run", "--fake-model", "--fake-delay", "0.3"] + extra
         p.currentDirectoryURL = prototype
         var env = ProcessInfo.processInfo.environment
         env["GAMESHARK_TRANSPORT"] = "tests.file_transport:make"

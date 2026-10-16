@@ -37,6 +37,7 @@ from gameshark.inference import (
     InferenceJournal,
     InvalidRequest,
     Locality,
+    Message,
     OwnershipMismatch,
     Privacy,
     ProviderCancelled,
@@ -685,4 +686,38 @@ def test_effect_citing_an_uncommitted_call_is_refused(tmp_path, clock):
     with pytest.raises(UncommittedOutput):
         adapter.ctx.emit_effect(eff)
     assert sup.effect_status(reply_key(CALL)) is None
+    sup.close()
+
+
+# ---------------------------------------------------------------------- history window
+def _m(role: Role, text: str) -> Message:
+    return Message(role, text)
+
+
+def test_fit_history_keeps_leading_system_rows_and_the_newest_suffix():
+    from gameshark.inference.journal import HISTORY_FIXED, HISTORY_PER_MESSAGE, fit_history
+
+    msgs = (_m(Role.SYSTEM, "s" * 20),) + tuple(
+        _m(Role.USER if i % 2 == 0 else Role.ASSISTANT, f"{i}" * 30) for i in range(10))
+    assert fit_history(msgs, None) == msgs
+    out = fit_history(msgs, 200)
+    assert out[0] == msgs[0] and out[-1] == msgs[-1]
+    assert out[1:] == msgs[len(msgs) - (len(out) - 1):]          # a contiguous suffix
+    assert sum(len(m.content.encode()) + HISTORY_PER_MESSAGE for m in out) + HISTORY_FIXED <= 200
+    bigger = fit_history(msgs, 260)
+    assert len(bigger) > len(out)
+    # The newest row always rides along, even past the budget: the router then refuses it
+    # as ContextTooLong rather than sending a request without the question.
+    assert fit_history(msgs, 1) == (msgs[0], msgs[-1])
+
+
+def test_fit_history_is_deterministic_for_reserve_and_select(tmp_path, clock):
+    sup = boot(tmp_path, clock)
+    j = sup.inference
+    seed_conversation(j)
+    for i in range(6):
+        j.append(CONV, Role.USER, "u" * 50, j.conversation(CONV)["next_seq"])
+    nxt = j.conversation(CONV)["next_seq"]
+    assert j.context(CONV, nxt, 150) == j.context(CONV, nxt, 150)
+    assert len(j.context(CONV, nxt, 150)) < len(j.context(CONV, nxt))
     sup.close()

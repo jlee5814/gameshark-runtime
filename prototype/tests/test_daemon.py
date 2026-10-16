@@ -44,7 +44,7 @@ def stark(env, *args, **kw):
 
 def daemon(env) -> subprocess.Popen:
     return subprocess.Popen([sys.executable, str(ROOT / "stark.py"), "--db", str(env["db"]),
-                             "--interval", "0.1", "run"], env=env["env"], cwd=ROOT,
+                             "--interval", "0.1", "run", "--fake-model"], env=env["env"], cwd=ROOT,
                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
 
 
@@ -129,7 +129,7 @@ def test_second_daemon_refused_and_cli_requests_reach_running_daemon(env):
     d1 = daemon(env)
     try:
         wait_for(lambda: query(env, "SELECT 1 FROM monitor_seen"))
-        second = stark(env, "run")
+        second = stark(env, "run", "--fake-model")
         assert second.returncode == 3 and "already running" in second.stderr
 
         out = stark(env, "watch", "acme/gadget#7")    # daemon holds the lock: queued

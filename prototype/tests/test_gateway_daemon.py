@@ -37,15 +37,17 @@ def env(tmp_path):
     db = sock_dir / "runtime.db"      # the socket path stays short
     e = {**os.environ, "GAMESHARK_TRANSPORT": "tests.file_transport:make",
          "GAMESHARK_FIXTURE": str(fixture), "PYTHONPATH": str(ROOT)}
-    for var in ("GITHUB_TOKEN", "STARK_SOCKET", "STARK_TOKEN"):
+    for var in ("GITHUB_TOKEN", "STARK_SOCKET", "STARK_TOKEN", "GAMESHARK_INFERENCE_URL",
+                "GAMESHARK_INFERENCE_MODEL"):
         e.pop(var, None)
     return {"env": e, "db": db, "sock": sock_dir / "gateway" / "stark.sock",
             "token": sock_dir / "gateway" / "gateway.token"}
 
 
 def daemon(env, delay: float = 0.2, *extra: str) -> subprocess.Popen:
+    model = [] if "--inference-url" in extra else ["--fake-model", "--fake-delay", str(delay)]
     proc = subprocess.Popen([sys.executable, str(ROOT / "stark.py"), "--db", str(env["db"]),
-                             "--interval", "0.5", "run", "--fake-delay", str(delay), *extra],
+                             "--interval", "0.5", "run", *model, *extra],
                             env=env["env"], cwd=ROOT, stdout=subprocess.PIPE,
                             stderr=subprocess.STDOUT, text=True)
     for line in proc.stdout:
@@ -105,6 +107,57 @@ def test_sigkill_restart_keeps_identity_conversation_and_dedup(env):
             assert [r["role"] for r in page["rows"]] == ["system", "user", "assistant"]
     finally:
         assert stop(d2) == 0
+
+
+def test_run_without_a_model_refuses_to_start(env):
+    out = subprocess.run([sys.executable, str(ROOT / "stark.py"), "--db", str(env["db"]),
+                          "run"], env=env["env"], cwd=ROOT, capture_output=True, text=True,
+                         timeout=30)
+    assert out.returncode == 2 and "--inference-url" in out.stderr
+    assert not env["sock"].exists()
+
+
+def test_sigkill_during_http_inference_answers_once_after_restart(env):
+    from tests.openai_fixture import OpenAIFixture, Reply, completion
+
+    fx = OpenAIFixture(model="qwen")
+    fx.routes["/v1/chat/completions"] = Reply(parts=[], stall_after=0)
+    url = ["--inference-url", f"{fx.base}/v1", "--model", "qwen",
+           "--inference-extra", '{"chat_template_kwargs": {"enable_thinking": false}}']
+    try:
+        d1 = daemon(env, 0.2, *url)
+        with client(env) as c:
+            assert c.call("snapshot")["model"]["fake"] is False
+            g = c.call("snapshot")["presence"]["generation"]
+            c.call("send", conversation_id=CONVERSATION, client_msg_id="m1",
+                   text="survive the model", presence_gen=g)
+            assert fx.stalled.wait(15)
+        stop(d1, signal.SIGKILL)
+        fx.release.set()
+        fx.routes["/v1/chat/completions"] = Reply(parts=[completion(["after restart"])])
+        d2 = daemon(env, 0.2, *url)
+        try:
+            wait_for(lambda: [r[1] for r in rows(env)][-1] == "assistant")
+            with client(env) as c:
+                again = c.call("send", conversation_id=CONVERSATION, client_msg_id="m1",
+                               text="survive the model", presence_gen=g)
+                assert again["replayed"] and again["seq"] == 1
+            time.sleep(0.5)
+        finally:
+            assert stop(d2) == 0
+    finally:
+        fx.stop()
+    assert [(r[1], r[2]) for r in rows(env)][1:] == [("user", "survive the model"),
+                                                    ("assistant", "after restart")]
+    conn = sqlite3.connect(env["db"])
+    try:
+        got = conn.execute("SELECT call_id, status, attempts FROM inference_calls").fetchall()
+    finally:
+        conn.close()
+    assert got == [(f"call:{CONVERSATION}:1", "done", 2)]
+    bodies = fx.chats()
+    assert len(bodies) == 2 and all(b["model"] == "qwen" for b in bodies)
+    assert all(b["chat_template_kwargs"] == {"enable_thinking": False} for b in bodies)
 
 
 def test_cli_jack_makes_old_generation_stale_and_reply_still_lands(env):
@@ -226,7 +279,7 @@ def test_busy_lan_port_disables_the_whole_gateway(env):
     stale.write_text(json.dumps({"port": 1, "pin": "00" * 32}))
     busy = socket.create_server(("", 0), family=socket.AF_INET6, dualstack_ipv6=True)
     proc = subprocess.Popen([sys.executable, str(ROOT / "stark.py"), "--db", str(env["db"]),
-                             "--interval", "0.5", "run", "--lan", "--lan-port",
+                             "--interval", "0.5", "run", "--fake-model", "--lan", "--lan-port",
                              str(busy.getsockname()[1])],
                             env=env["env"], cwd=ROOT, stdout=subprocess.PIPE,
                             stderr=subprocess.STDOUT, text=True)
@@ -582,7 +635,7 @@ def test_stopped_tailscale_keeps_the_lan_and_advertises_no_tailnet(ts):
 
     tailscale_fixture.write(ts["ts"], tailscale_fixture.status(state="Stopped"))
     proc = subprocess.Popen([sys.executable, str(ROOT / "stark.py"), "--db", str(ts["db"]),
-                             "--interval", "0.5", "run", "--lan", "--lan-port", "0",
+                             "--interval", "0.5", "run", "--fake-model", "--lan", "--lan-port", "0",
                              "--tailscale", "--tailscale-port", "0"],
                             env=ts["env"], cwd=ROOT, stdout=subprocess.PIPE,
                             stderr=subprocess.STDOUT, text=True)
@@ -605,7 +658,7 @@ def test_a_serve_forward_to_a_runtime_port_keeps_every_network_listener_off(ts):
     tailscale_fixture.write(ts["ts"], serve={"Web": {"mac:443": {"Handlers": {
         "/": {"Proxy": f"http://127.0.0.1:{port}"}}}}, "AllowFunnel": {"mac:443": True}})
     proc = subprocess.Popen([sys.executable, str(ROOT / "stark.py"), "--db", str(ts["db"]),
-                             "--interval", "0.5", "run", "--lan", "--lan-port", str(port),
+                             "--interval", "0.5", "run", "--fake-model", "--lan", "--lan-port", str(port),
                              "--tailscale", "--tailscale-port", "0"],
                             env=ts["env"], cwd=ROOT, stdout=subprocess.PIPE,
                             stderr=subprocess.STDOUT, text=True)
