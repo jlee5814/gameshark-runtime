@@ -81,6 +81,7 @@ final class FakeClient: PocketClient, @unchecked Sendable {
     var draftProvider: (@Sendable () -> String?)?
     var confirmed: [String] = []
     var clearedSent: [String] = []
+    var paths: [NetworkPath] = []
     /// What the runtime does when this surface asks for a jack; nothing by default.
     var onJack: (FakeClient, GatewayClient.JackDirection) -> Void = { _, _ in }
 
@@ -104,6 +105,7 @@ final class FakeClient: PocketClient, @unchecked Sendable {
         return "h"
     }
     func setDraftProvider(_ provider: @escaping @Sendable () -> String?) { draftProvider = provider }
+    func setPath(_ path: NetworkPath) { paths.append(path) }
     func confirmDraft(_ handoffId: String) {
         confirmed.append(handoffId)
         emit { if $0.incomingDraft?.handoffId == handoffId { $0.incomingDraft = nil } }
@@ -132,7 +134,8 @@ final class PocketModelTests: XCTestCase {
     func pairedModel() throws -> PocketModel {
         let (_, item, blob) = try CredentialStore.newSigner()
         try store.saveDevice(credential(), keyItem: item, keyData: blob)
-        let model = PocketModel(store: store, environment: [:], makeClient: { cfg, onChange in
+        let model = PocketModel(store: store, environment: [:], monitorsNetwork: false,
+                                makeClient: { cfg, onChange in
             let c = FakeClient(surface: cfg.surface, onChange: onChange)
             self.clients.append(c)
             return c
@@ -158,6 +161,34 @@ final class PocketModelTests: XCTestCase {
             $0.presence = PresenceInfo(surface: surface, home: "mac", generation: 2)
             $0.handoff = nil
         }
+    }
+
+    // Phase 3.3: Wi-Fi and cellular changes reach the connection, which picks the route.
+    func testNetworkChangesReachTheClientOnlyInTheForeground() throws {
+        let model = try pairedModel()
+        let c = clients[0]
+        model.networkChanged(.wifi)
+        model.networkChanged(.cellular)
+        XCTAssertEqual(c.paths, [.wifi, .cellular])
+        model.scenePhase(.background)
+        model.networkChanged(.wifi)                       // the client is stopped meanwhile
+        XCTAssertEqual(c.paths, [.wifi, .cellular])
+        model.scenePhase(.active)
+        XCTAssertEqual(c.paths.last, .wifi)               // told where it woke up, then started
+        XCTAssertEqual(c.started, 2)
+    }
+
+    func testInterfacesMapToOneNetworkClass() {
+        XCTAssertEqual(NetworkPath.classify(satisfied: false, wifi: true, wired: false,
+                                            cellular: false), NetworkPath.none)
+        XCTAssertEqual(NetworkPath.classify(satisfied: true, wifi: true, wired: false,
+                                            cellular: true), .wifi)
+        XCTAssertEqual(NetworkPath.classify(satisfied: true, wifi: false, wired: true,
+                                            cellular: false), .wired)
+        XCTAssertEqual(NetworkPath.classify(satisfied: true, wifi: false, wired: false,
+                                            cellular: true), .cellular)
+        XCTAssertEqual(NetworkPath.classify(satisfied: true, wifi: false, wired: false,
+                                            cellular: false), .other)
     }
 
     // Finding 5: a Mac initiated Jack In journals the phone's unsent text.
