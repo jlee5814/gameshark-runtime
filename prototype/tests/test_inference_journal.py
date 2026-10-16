@@ -609,7 +609,7 @@ def test_pre_dispatch_refusal_consumes_no_attempt_or_budget(tmp_path, clock):
     p = FakeProvider()
     with pytest.raises(ContextTooLong):
         sup.inference.complete(CALL, CONV, p, CallSpec(max_tokens=5000), CancelToken())
-    assert call_row(sup.conn)["attempts"] == 0
+    assert call_row(sup.conn) is None              # refused in reserve: nothing written
     assert ledger(sup.conn) == [] and p.count() == 0
     sup.inference.complete(CALL, CONV, p, SPEC, CancelToken())
     assert ledger(sup.conn) == [(1, "settled")]
@@ -721,4 +721,24 @@ def test_fit_history_is_deterministic_for_reserve_and_select(tmp_path, clock):
     nxt = j.conversation(CONV)["next_seq"]
     assert j.context(CONV, nxt, 150) == j.context(CONV, nxt, 150)
     assert len(j.context(CONV, nxt, 150)) < len(j.context(CONV, nxt))
+    sup.close()
+
+
+def test_reserve_refuses_a_rebuilt_context_the_window_cannot_hold(tmp_path, clock):
+    """Codex P2: select checked an earlier context; a user row that lands before reserve
+    rebuilds a larger one, and fit_history keeps the newest row even past the budget.
+    Reserve checks the rebuilt prompt against this candidate's window itself."""
+    from gameshark.inference.types import prompt_bytes_bound
+
+    sup = boot(tmp_path, clock)
+    j = sup.inference
+    seed_conversation(j)
+    j.append(CONV, Role.USER, "x" * 8000, j.conversation(CONV)["next_seq"])
+    caps = Capabilities(model="small", locality=Locality.LOCAL, context_window=1024)
+    spec = CallSpec(max_tokens=512, history_budget=256)
+    with pytest.raises(ContextTooLong):
+        j.reserve(CALL, CONV, "small", caps, spec,
+                  prompt_tokens=lambda m: prompt_bytes_bound(m, 8, 16))
+    assert sup.conn.execute("SELECT COUNT(*) FROM inference_calls").fetchone()[0] == 0
+    assert ledger(sup.conn) == []
     sup.close()

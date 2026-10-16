@@ -43,6 +43,7 @@ from gameshark.inference.types import (
     Capabilities,
     Capability,
     ContextConflict,
+    ContextTooLong,
     FinishReason,
     InvalidRequest,
     Message,
@@ -339,6 +340,11 @@ class InferenceJournal:
                 needs=spec.needs,
             )
             prompt = prompt_tokens(messages) if prompt_tokens else estimate_tokens(req)
+            # Select checked the context it saw; a row since then rebuilt this one, so the
+            # window is checked again here, before anything is written or dispatched.
+            if prompt + spec.max_tokens > caps.context_window:
+                raise ContextTooLong(f"{provider} window {caps.context_window} cannot hold "
+                                     f"{conversation_id} plus {spec.max_tokens} output tokens")
             reserved_tokens = prompt + spec.max_tokens
             reserved_micros = cost_micros(caps, prompt, spec.max_tokens)
             if admit is not None:
