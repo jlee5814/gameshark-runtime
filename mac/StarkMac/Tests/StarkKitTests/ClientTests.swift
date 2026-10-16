@@ -812,6 +812,24 @@ extension ClientTests {
         #expect(c.state.surface == "pocket-a1b2c3")
     }
 
+    @Test func aReconnectRedialsTheRouteThatLastWorked() throws {
+        let rt = FakeRuntime()
+        let dialed = Locked<[Route]>([])
+        let c = try device(rt, routes: Self.home, dialed: dialed) { $0.via == .tailnet }
+        c.setPath(.wifi)
+        c.start()
+        defer { c.stop() }
+        #expect(eventually { c.state.connection == .live })
+        let before = dialed.value.count
+        rt.lock.withLock { rt.connections.last }?.hangUp()      // runtime restarts
+        #expect(eventually { rt.lock.withLock { rt.connections.count } == 2 })
+        #expect(eventually { c.state.connection == .live })
+        #expect(dialed.value[before] == Self.home[2])           // no detour through the LAN
+        c.setPath(.cellular)                                     // a new network starts over
+        #expect(eventually { rt.lock.withLock { rt.connections.count } == 3 })
+        #expect(dialed.value.last == Self.home[2])
+    }
+
     @Test func onCellularTheTailnetIsDialedFirst() throws {
         let rt = FakeRuntime()
         let dialed = Locked<[Route]>([])
