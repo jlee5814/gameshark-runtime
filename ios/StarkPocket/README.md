@@ -38,11 +38,15 @@ it is backgrounded; Jack In Here on the Mac takes him back (the silent phone is 
 past after the 3 s prepare deadline). A jack still open when the app leaves reverts.
 A change of network class (Wi-Fi, cellular, offline) redials at once, LAN first at home
 and the Mac's Tailscale address first away; a reconnect retries the route that last
-worked. A revoked device drops to the pairing screen.
+worked. The first dial waits for the phone's first network report (at most 1 s), so a
+launch on cellular tries the tailnet before any LAN address. A send the socket never
+drains gives up after 5 s and redials; it never holds a network change, a reconnect, or
+the app leaving. A revoked device drops to the pairing screen.
 
 ## On a physical iPhone
 
-Not yet run on a device; the simulator acceptance is the only evidence so far. The
+The LAN checklist below has not been run end to end on a device; see the cellular section
+for what the user observed there. The
 checklist below uses its own database, never `~/.gameshark/runtime.db` or the simulator's
 `~/.gameshark/demo`. Run the Mac commands from `prototype/`.
 
@@ -84,7 +88,18 @@ uv run --with qrcode==8.0 python stark.py --db "$DB" pair --name "My iPhone"
 
 ### Over cellular with Tailscale
 
-Not yet run on a device. Needs Tailscale signed in to the same tailnet on the Mac and the
+User observed physical device acceptance, 2026-10-16, on the build before the first path
+and send deadline fixes (manual observation on an iPhone over 5G with Tailscale, not
+automated test results):
+
+- Jack In and Jack Out over 5G plus Tailscale.
+- A message sent over cellular, and its reply.
+- One conversation across StarkMac and Stark Pocket.
+- Wi-Fi to cellular and back without losing presence or an unsent draft.
+- Tailscale down and up without losing presence or an unsent draft.
+- No duplicate messages seen in these tests.
+
+The first path and send deadline fixes have not yet run on a device. Needs Tailscale signed in to the same tailnet on the Mac and the
 iPhone. The checklist below pairs over Wi-Fi first, so the link carries both the LAN and
 the tailnet endpoints.
 

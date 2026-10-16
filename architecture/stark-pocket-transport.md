@@ -118,7 +118,12 @@ iPhone on cellular, Tailscale on            Mac on home Wi-Fi (stark.py run --la
   to its LAN hosts on its LAN port. Wi-Fi or wired dials LAN first, cellular or other
   dials the tailnet first, and a reconnect redials the route that last worked. A change of
   network class redials at once; pending messages resend under their ids, rows resync by
-  seq, open handoffs and drafts reconcile as above.
+  seq, open handoffs and drafts reconcile as above. The first dial waits for
+  NWPathMonitor's first report, at most 1 s, then dials in the link's order.
+- Sends: frames go out on a per connection writer queue, in order, never on the client's
+  state queue. A TLS send the peer never drains fails after the dial timeout (5 s) and
+  cancels the connection. A network change, reconnect, or stop() closes the transport,
+  which frees a stuck send; its late failure names an old connection and is ignored.
 - One Stark: a device proving itself on a new session supersedes its older ones
   (`bye {reason: superseded}`). The new one is live first, so the old one leaving is not
   the surface leaving, and presence stays put: no revert, no new generation, no second
