@@ -85,9 +85,13 @@ def fit_history(messages: tuple[Message, ...], budget: int | None) -> tuple[Mess
     while head < len(messages) - 1 and messages[head].role is Role.SYSTEM:
         head += 1
     keep = len(messages) - 1                # index where the kept suffix starts
-    while keep > head and prompt_bytes_bound(
-            messages[:head] + messages[keep - 1:], HISTORY_PER_MESSAGE,
-            HISTORY_FIXED) <= budget:
+    # prompt_bytes_bound of head plus suffix, kept as a running sum: one pass, not n.
+    size = prompt_bytes_bound(messages[:head] + messages[keep:], HISTORY_PER_MESSAGE,
+                              HISTORY_FIXED)
+    while keep > head:
+        size += len(messages[keep - 1].content.encode()) + HISTORY_PER_MESSAGE
+        if size > budget:
+            break
         keep -= 1
     # Start the window on a user turn: strict chat templates refuse an assistant first.
     while keep < len(messages) - 1 and messages[keep].role is Role.ASSISTANT:
