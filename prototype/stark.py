@@ -237,7 +237,7 @@ def start_gateway(sup, chat, args, log, instance: str):
             listeners = network_listeners(
                 identity, lan_port=args.lan_port, instance=instance,
                 tailnet=tailnet[:2] if tailnet else None,
-                tailnet_allow=tailnet[3] if tailnet else None)
+                tailnet_allow=tailnet[3] if tailnet else None, log=log)
             for listener in listeners:
                 server.attach(listener)
             lan = listeners[0]

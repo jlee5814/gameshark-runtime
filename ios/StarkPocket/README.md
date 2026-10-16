@@ -111,3 +111,10 @@ uv run --with qrcode==8.0 python stark.py --db "$DB" pair --name "My iPhone"
    `uv run python stark.py --db "$DB" drafts` (nothing unconfirmed).
 9. Tailscale off on the Mac (`tailscale down`), then `stark.py pair`: expect a refusal that
    names the stale tailnet endpoint. `tailscale up` and restart the daemon to serve it again.
+
+If step 2 fails, the runtime log says how far the phone got. No `rejected tailnet` line and
+no `via tailnet` line means nothing reached the tailnet listener: check that the pairing
+link printed a Tailscale endpoint (a phone paired before `--tailscale` holds LAN routes
+only; unpair and pair again). `rejected tailnet … dropped`, `setup`, `tls`, or `auth`
+names the stage that refused it. `netstat -Lan -p tcp | grep 4782` should show an empty
+listen queue on both ports.

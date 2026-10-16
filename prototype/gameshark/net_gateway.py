@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import collections
 import datetime
+import errno
 import hashlib
 import ipaddress
 import os
@@ -38,6 +39,7 @@ import stat
 import struct
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -66,9 +68,11 @@ MAX_OUTBOX = 1 << 20          # queued bytes before a slow reader is dropped
 MAX_LAN_SESSIONS = 4          # of the shared cap, so the Unix socket always has room
 FAIL_LIMIT = 5                # failed handshakes per address within FAIL_WINDOW_S ...
 FAIL_WINDOW_S = 60.0          # ... block that address until the window clears
+MAX_REJECT_KEYS = 1024        # path, peer, and stage triples RejectLog remembers at once
 KEEPALIVE_IDLE_S = 20         # a peer gone with its network is noticed in about a minute
 KEEPALIVE_INTERVAL_S = 10
 KEEPALIVE_COUNT = 3
+ACCEPT_RETRY_S = 1.0          # pause after an accept error other than a reset in the queue
 LAN_NETS = tuple(ipaddress.ip_network(n) for n in (
     "127.0.0.0/8", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "169.254.0.0/16",
     "::1/128", "fe80::/10", "fc00::/7"))
@@ -188,6 +192,66 @@ class FailureLimiter:
             return len(q) >= self.limit
 
 
+class RejectLog:
+    """One line per refused connection: `rejected <path> <peer> <stage>: <reason>`.
+
+    Stages: policy (the path does not admit the address), blocked (FailureLimiter), setup
+    (socket options or session start), capacity, tls, auth, dropped (the peer left before
+    authenticating), accept, internal. Reasons are errno names, TLS reasons, and this
+    code's own messages; never frames, nonces, secrets, signatures, or keys. Repeats of one
+    path, peer, and stage within window_s are counted and reported on the next line, so a
+    scanner cannot flood the log.
+
+    Memory is bounded whatever peers do (rotating IPv6 addresses included): one table,
+    ordered by when each key last logged, holds at most cap keys. Expired keys leave from
+    the front on every call, dropping any count their peer never came back to collect. At
+    the cap a new key evicts the oldest; its count is reported once on the next line."""
+
+    def __init__(self, log: Callable[[str], None] = lambda _m: None,
+                 window_s: float = FAIL_WINDOW_S, now=time.monotonic,
+                 cap: int = MAX_REJECT_KEYS) -> None:
+        self.log = log
+        self.window_s = window_s
+        self.now = now
+        self.cap = cap
+        # key -> [logged_at, suppressed since]; oldest logged_at first
+        self._seen: collections.OrderedDict[tuple[str, str, str], list] = (
+            collections.OrderedDict())
+        self._evicted = 0                   # suppressed counts of keys pushed out at the cap
+        self._lock = threading.Lock()
+
+    def __call__(self, path: str, peer: str, stage: str, reason: str) -> None:
+        key = (path, peer, stage)
+        with self._lock:
+            t = self.now()
+            entry = self._seen.get(key)
+            if entry is not None and t - entry[0] < self.window_s:
+                entry[1] += 1                   # in place: the order stays by logged_at
+                return
+            quiet = 0
+            if entry is not None:               # its window passed: report what it held
+                quiet = self._seen.pop(key)[1]
+            while self._seen and t - next(iter(self._seen.values()))[0] >= self.window_s:
+                self._seen.popitem(last=False)
+            while len(self._seen) >= self.cap:
+                self._evicted += self._seen.popitem(last=False)[1][1]
+            self._seen[key] = [t, 0]
+            evicted, self._evicted = self._evicted, 0
+        notes = [f"{quiet} suppressed"] if quiet else []
+        if evicted:
+            notes.append(f"{evicted} suppressed for evicted peers")
+        more = f" ({'; '.join(notes)})" if notes else ""
+        self.log(f"rejected {path} {peer} {stage}: {reason}{more}")
+
+
+def why(e: BaseException) -> str:
+    """An exception as an errno name, or its type and our own message."""
+    code = getattr(e, "errno", None)
+    if isinstance(code, int) and code in errno.errorcode:
+        return errno.errorcode[code]
+    return f"{type(e).__name__}: {e}" if str(e) else type(e).__name__
+
+
 class SessionSlots:
     """Network sessions open at once, across every listener of one runtime."""
 
@@ -206,6 +270,16 @@ class SessionSlots:
     def give_back(self, sess: TLSSession) -> None:
         with self._lock:
             self._open.discard(sess)
+
+
+def prepare(conn: socket.socket) -> None:
+    """Socket options for an accepted connection. On macOS a peer that reset the
+    connection between the TCP handshake and accept() leaves a socket XNU has shut both
+    ways, and every setsockopt on it fails with EINVAL (sosetoptlock); Linux accepts the
+    options and the first read fails instead. Either way only this connection is lost."""
+    conn.settimeout(SEND_TIMEOUT_S)
+    conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+    keepalive(conn)
 
 
 def keepalive(conn: socket.socket) -> None:
@@ -297,6 +371,10 @@ class TLSSession(Session):
         self.send({"type": "bye", "reason": "superseded"})
         self.close()
 
+    def rejected(self, stage: str, reason: str) -> None:
+        """Log why this connection never authenticated (RejectLog)."""
+        self.listener.rejects(self.path, self.peer, stage, reason)
+
     def reject(self, code: str, message: str) -> None:
         self._failed = True
         self.send({"type": "error", "code": code, "message": message})
@@ -308,25 +386,38 @@ class TLSSession(Session):
         try:
             self._serve(server)
         except FrameError as e:
-            self._failed = self._failed or not self.authed
+            if not self.authed:
+                self._failed = True
+                self.rejected("auth", f"bad frame: {e}")
             self.send({"type": "error", "code": "bad_frame", "message": str(e)})
             self.closed = True
             self._try_flush()
-        except ssl.SSLError:
+        except ssl.SSLError as e:
             self._failed = True             # plaintext, TLS 1.2, or a broken handshake
-        except (ConnectionError, OSError):
-            pass
+            self.rejected("tls", e.reason or type(e).__name__)
+        except TimeoutError as e:
+            if not self.authed:
+                self.rejected("auth" if self._failed else "dropped", why(e))
+        except (ConnectionError, OSError) as e:
+            if not self.authed:
+                self.rejected("dropped", why(e))
+        except Exception as e:
+            self.rejected("internal", type(e).__name__)
+            raise
         finally:
             self.closed = True
             if self._failed:
                 self.listener.limiter.failed(self.peer)
-            for s in (self.sock, self._wake_r, self._wake_w):
-                try:
-                    s.close()
-                except OSError:
-                    pass
+            self._discard()
             self.listener.forget(self)
             server.retire(self)
+
+    def _discard(self) -> None:
+        for s in (self.sock, self._wake_r, self._wake_w):
+            try:
+                s.close()
+            except OSError:
+                pass
 
     def _serve(self, server: GatewayServer) -> None:
         deadline = time.monotonic() + AUTH_TIMEOUT_S
@@ -355,6 +446,7 @@ class TLSSession(Session):
                     raise FrameError("wait for the welcome before sending requests")
         if first["type"] not in ("hello", "pair"):
             self._failed = True
+            self.rejected("auth", "expected hello or pair")
             self.reject("auth_failed", "expected hello or pair")
             self._try_flush()
             return
@@ -481,7 +573,8 @@ class LanListener:
     def __init__(self, identity: ServerIdentity, port: int = DEFAULT_PORT, host: str = "",
                  allow=lan_peer, limiter: FailureLimiter | None = None,
                  instance: str | None = None, slots: SessionSlots | None = None,
-                 path: str = "lan") -> None:
+                 path: str = "lan", log: Callable[[str], None] = lambda _m: None,
+                 rejects: RejectLog | None = None) -> None:
         self.identity = identity
         # Names this runtime process in every challenge. Runtimes sharing a gateway
         # directory share its key, so `stark.py pair` checks this against the
@@ -493,6 +586,7 @@ class LanListener:
         self.limiter = limiter or FailureLimiter()
         self.slots = slots or SessionSlots()
         self.path = path
+        self.rejects = rejects or RejectLog(log)
         self.server: GatewayServer
         self._sock: socket.socket | None = None
         self._thread: threading.Thread | None = None
@@ -515,7 +609,8 @@ class LanListener:
             s.settimeout(IO_TIMEOUT_S)
             self._sock = s
             self._alive.set()
-            self._thread = threading.Thread(target=self._accept, name="lan-accept",
+            self._thread = threading.Thread(target=self._accept,
+                                            name=f"{self.path}-accept",
                                             daemon=True)
             self._thread.start()
         except BaseException:
@@ -537,22 +632,61 @@ class LanListener:
                 conn, addr = self._sock.accept()      # type: ignore[union-attr]
             except TimeoutError:
                 continue
-            except OSError:
-                return
-            ip = addr[0]
-            if not self.allow(ip) or self.limiter.blocked(ip):
-                conn.close()
+            except OSError as e:
+                if not self._alive.is_set():
+                    return                          # stop() closed the socket
+                # A connection reset while queued costs nothing; anything else (out of
+                # descriptors) waits a moment rather than spin.
+                self.rejects(self.path, "-", "accept", why(e))
+                if e.errno != errno.ECONNABORTED:
+                    time.sleep(ACCEPT_RETRY_S)
                 continue
-            conn.settimeout(SEND_TIMEOUT_S)
-            conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-            keepalive(conn)
-            sess = TLSSession(self.server.next_id(), conn, ip, self._ctx, self)
-            full = not self.slots.take(sess)
-            if full or not self.server.admit(sess):
+            self._admit(conn, addr)
+
+    def _admit(self, conn: socket.socket, addr) -> None:
+        """Hand one connection to its own thread, or close it. Nothing one connection does
+        ends the accept loop. Setup failures do not count against the address: a reset
+        is not an authentication attempt.
+
+        A peer that reset before accept() returned shows up two ways on macOS: an AF_INET6
+        socket (the dual stack LAN listener) reports no address at all, and an AF_INET one
+        reports the address but refuses every socket option with EINVAL (prepare)."""
+        sess: TLSSession | None = None
+        ip = addr[0] if isinstance(addr, tuple) and addr else "-"
+        stage, reason = "", ""
+        try:
+            if ip == "-":
+                stage, reason = "setup", "no peer address (peer reset)"
+            elif not self.allow(ip):
+                stage, reason = "policy", f"not a {self.path} peer"
+            elif self.limiter.blocked(ip):
+                stage, reason = "blocked", "too many recent failures"
+            else:
+                try:
+                    prepare(conn)
+                except OSError as e:
+                    reset = e.errno in (errno.EINVAL, errno.ECONNRESET)
+                    stage, reason = "setup", why(e) + (" (peer reset)" if reset else "")
+                else:
+                    sess = TLSSession(self.server.next_id(), conn, ip, self._ctx, self)
+                    if not self.slots.take(sess):
+                        stage, reason = "capacity", f"{self.slots.cap} network sessions open"
+                    elif not self.server.admit(sess):
+                        self.forget(sess)
+                        stage, reason = "capacity", "gateway full"
+                    else:
+                        threading.Thread(target=sess.run, name=f"{self.path}-{sess.id}",
+                                         daemon=True).start()
+                        return
+        except Exception as e:
+            if sess is not None:
                 self.forget(sess)
-                conn.close()
-                continue
-            threading.Thread(target=sess.run, name=f"lan-{sess.id}", daemon=True).start()
+                self.server.retire(sess)
+            stage, reason = "setup", why(e)
+        if sess is not None:
+            sess._discard()
+        conn.close()
+        self.rejects(self.path, ip, stage, reason)
 
     def forget(self, sess: TLSSession) -> None:
         self.slots.give_back(sess)
@@ -561,18 +695,19 @@ class LanListener:
 def network_listeners(identity: ServerIdentity, *, lan_port: int = DEFAULT_PORT,
                       lan_host: str = "", tailnet: tuple[str, int] | None = None,
                       tailnet_allow=tailscale.tailnet_peer, instance: str | None = None,
-                      allow=lan_peer, limiter: FailureLimiter | None = None
-                      ) -> list[LanListener]:
+                      allow=lan_peer, limiter: FailureLimiter | None = None,
+                      log: Callable[[str], None] = lambda _m: None) -> list[LanListener]:
     """The LAN listener, plus with tailnet=(address, port) one bound to that address alone.
-    They share the key, instance id, session cap, and failure limiter, so a second path
-    adds no second budget and no second identity."""
+    They share the key, instance id, session cap, failure limiter, and rejection log, so a
+    second path adds no second budget and no second identity."""
     limiter = limiter or FailureLimiter()
     slots = SessionSlots()
+    rejects = RejectLog(log)
     out = [LanListener(identity, port=lan_port, host=lan_host, allow=allow, limiter=limiter,
-                       instance=instance, slots=slots, path="lan")]
+                       instance=instance, slots=slots, path="lan", rejects=rejects)]
     if tailnet is not None:
         host, port = tailnet
         out.append(LanListener(identity, port=port, host=host, allow=tailnet_allow,
                                limiter=limiter, instance=instance, slots=slots,
-                               path="tailnet"))
+                               path="tailnet", rejects=rejects))
     return out

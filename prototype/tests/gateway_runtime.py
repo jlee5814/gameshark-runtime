@@ -102,7 +102,7 @@ class Runtime:
             if self.identity is not None:
                 if self.tailnet_allow is None:
                     self.lan = LanListener(self.identity, port=self._port, host="127.0.0.1",
-                                           **self._lan_kw)
+                                           log=self.logs.append, **self._lan_kw)
                     server.attach(self.lan)
                 else:
                     from gameshark.net_gateway import network_listeners
@@ -110,7 +110,7 @@ class Runtime:
                     self.lan, self.tailnet = network_listeners(
                         self.identity, lan_port=self._port, lan_host="127.0.0.1",
                         tailnet=("127.0.0.1", 0), tailnet_allow=self.tailnet_allow,
-                        **self._lan_kw)
+                        log=self.logs.append, **self._lan_kw)
                     server.attach(self.lan)
                     server.attach(self.tailnet)
                 devices = DeviceRegistry(sup.conn, AGENT, sup.lease, sup.generation, sup.clock)
