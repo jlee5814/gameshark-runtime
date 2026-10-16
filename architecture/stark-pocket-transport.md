@@ -69,8 +69,10 @@ transaction stores it in the handoff row with `draft_state = pending`. Delivery 
   restart, or a SIGKILLed runtime between `ack_in` and `draft_ack` loses nothing. The client
   resends an unanswered `draft_ack` after reconnecting and drops it on `stale_presence`.
 - The source clears its composer only on the runtime's receipt: `ready_out` answers
-  `draft_carried`, true only when the committed handoff row holds exactly the text sent.
-  Sending is not enough. A request lost on the way, refused, or beaten by the prepare
+  `draft_carried`, true only when the handoff row holds exactly the text sent and the jack
+  is committed or acked, never reverted (a reverted row keeps its draft only for
+  recovery). The source takes the receipt only from an acked answer; on a committed one it
+  asks again once the jack closes. Sending is not enough. A request lost on the way, refused, or beaten by the prepare
   deadline (which commits without a draft) answers false or nothing, and the text stays.
   A lost reply is reconciled after reconnecting by replaying the same `ready_out`, which the
   runtime answers from the durable row, across restarts and SIGKILL, without changing it.

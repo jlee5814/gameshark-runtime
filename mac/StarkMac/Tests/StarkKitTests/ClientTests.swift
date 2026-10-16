@@ -53,6 +53,24 @@ final class FakeRuntime: @unchecked Sendable {
     var dropReadyOutReply = false
     /// When set, ready_out is refused as stale.
     var staleReadyOut = false
+    /// The last jack in wire form, kept after it closes so a replay sees its final state.
+    var lastJack: [String: Any]?
+
+    /// The open jack resolves (acked by its target, or reverted) and presence moves to
+    /// holder; the push tells every connection the jack closed.
+    func closeJack(_ state: String, holder: String) {
+        guard var h = handoff ?? lastJack else { return }
+        h["state"] = state
+        lastJack = h
+        handoff = nil
+        if state == "reverted" { generation += 1 }
+        surface = holder
+        for t in connections {
+            t.push(["type": "event", "kind": "presence", "rev": 9, "data": [
+                "presence": ["surface": surface, "home": "mac", "generation": generation],
+                "handoff": NSNull()]])
+        }
+    }
 
     /// The trusted deadline path: commit the open preparing jack without a draft.
     func expirePrepare() {
@@ -80,7 +98,8 @@ final class FakeRuntime: @unchecked Sendable {
         if type != "hello" { received.append(type) }
         switch type {
         case "hello":
-            t.push(["type": "welcome", "proto": 1, "session": "s", "surface": "mac",
+            t.push(["type": "welcome", "proto": 1, "session": "s",
+                    "surface": msg["surface"] as? String ?? "mac",
                     "identity": ["agent_id": "stark", "uuid": uuid]])
         case "snapshot":
             t.push(["type": "result", "id": id, "data": [
@@ -147,7 +166,9 @@ final class FakeRuntime: @unchecked Sendable {
                 t.push(["type": "error", "id": id, "code": "stale_presence", "message": "stale"])
                 return
             }
-            guard var h = handoff else {
+            let open = handoff
+            guard var h = open ?? lastJack.flatMap({ $0["id"] as? String == msg["handoff_id"] as? String ? $0 : nil })
+            else {
                 t.push(["type": "error", "id": id, "code": "invalid", "message": "no handoff"])
                 return
             }
@@ -164,14 +185,16 @@ final class FakeRuntime: @unchecked Sendable {
                 } else {
                     h["state"] = "acked"
                 }
-                handoff = h
+                if open != nil { handoff = h }
+                lastJack = h
             }
             if type == "ready_out" && dropReadyOutReply {
                 dropReadyOutReply = false
                 t.hangUp()
                 return
             }
-            let carried = committedDraft != nil && committedDraft == sentText
+            let landed = ["committed", "acked"].contains(h["state"] as? String ?? "")
+            let carried = landed && committedDraft != nil && committedDraft == sentText
             t.push(["type": "result", "id": id, "data": [
                 "handoff_id": h["id"]!, "state": h["state"]!, "to_gen": h["to_gen"] ?? NSNull(),
                 "draft": type == "ack_in" ? (draft?["text"] ?? NSNull()) : NSNull(),
@@ -630,6 +653,10 @@ extension ClientTests {
         c.start()
         defer { c.stop() }
         #expect(eventually { rt.lock.withLock { rt.readyOutDrafts == ["half typed"] } })
+        #expect(eventually { rt.lock.withLock { rt.handoff?["state"] as? String == "committed" } })
+        Thread.sleep(forTimeInterval: 0.1)
+        #expect(c.state.sentDraft == nil)        // committed is not yet arrived
+        rt.lock.withLock { rt.closeJack("acked", holder: "phone") }
         #expect(eventually { c.state.sentDraft == CarriedDraft(handoffId: "h1", text: "half typed") })
         c.clearSentDraft("h1")
         #expect(eventually { c.state.sentDraft == nil })
@@ -693,10 +720,32 @@ extension ClientTests {
         defer { c.stop() }
         #expect(eventually { rt.lock.withLock { rt.connections.count == 2 } })
         text.value = "typed after the jack"     // newer edits never replace the receipt
+        rt.lock.withLock { rt.closeJack("acked", holder: "phone") }
         #expect(eventually { c.state.sentDraft == CarriedDraft(handoffId: "h1", text: "half typed") })
-        rt.lock.withLock { #expect(rt.readyOutDrafts == ["half typed", "half typed"]) }
+        rt.lock.withLock { #expect(rt.readyOutDrafts.allSatisfy { $0 == "half typed" }) }
+    }
+
+    @Test func aJackThatRevertsElsewhereKeepsTheSourceComposer() throws {
+        // The phone carries its draft to a pad; the pad never acks and Stark reverts home,
+        // away from the phone. The text arrived nowhere, so the phone keeps it.
+        let rt = FakeRuntime()
+        rt.surface = "phone"
+        rt.handoff = ["id": "h1", "from": "phone", "to": "pad", "state": "preparing",
+                      "from_gen": 1]
+        let cfg = ClientConfig(socketPath: "/fake", tokenURL: try tokenFile(), surface: "phone",
+                               backoff: Backoff(base: 0.01, cap: 0.05, jitter: 0))
+        let c = GatewayClient(config: cfg, makeTransport: { _ in rt.connect() })
+        c.setDraftProvider { "only copy" }
+        c.start()
+        defer { c.stop() }
+        #expect(eventually { rt.lock.withLock { rt.handoff?["state"] as? String == "committed" } })
         Thread.sleep(forTimeInterval: 0.1)
-        rt.lock.withLock { #expect(rt.handoffCalls == ["ready_out", "ready_out"]) }
+        rt.lock.withLock { rt.closeJack("reverted", holder: "mac") }
+        #expect(eventually { c.state.presence?.surface == "mac" && c.state.handoff == nil })
+        Thread.sleep(forTimeInterval: 0.2)
+        #expect(c.state.sentDraft == nil)
+        let steps = DraftContinuity.follow(c.state, composer: "only copy", offered: nil)
+        #expect(steps.composer == nil && steps.clearSent == nil)
     }
 }
 

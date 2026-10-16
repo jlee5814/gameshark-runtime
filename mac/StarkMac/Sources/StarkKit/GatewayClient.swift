@@ -67,9 +67,9 @@ public struct ClientState: Equatable, Sendable {
 
     /// A draft a jack carried here that this surface has not confirmed (confirmDraft).
     public var incomingDraft: CarriedDraft?
-    /// The draft the runtime confirmed this surface's ready_out committed (draft_carried),
-    /// until clearSentDraft. Sending it is not enough: only this receipt lets a source
-    /// clear its composer.
+    /// The draft the runtime confirmed reached the jack's target: draft_carried on an
+    /// acked jack. Until clearSentDraft. Sending it, or a commit the target never acked,
+    /// is not enough: only this receipt lets a source clear its composer.
     public var sentDraft: CarriedDraft?
 
     public var isActiveSurface: Bool { presence?.surface == surface }
@@ -203,6 +203,9 @@ public final class GatewayClient: @unchecked Sendable {
     private struct DraftAttempt {
         var draft: CarriedDraft
         var presenceGen: Int
+        /// The runtime committed the jack with this text; its target has not acked yet,
+        /// and a revert would leave the text nowhere. Asked again once the jack closes.
+        var committed = false
     }
 
     /// Each connection dials the next host in turn; a paired phone keeps an address and a
@@ -528,11 +531,19 @@ public final class GatewayClient: @unchecked Sendable {
         case .readyOut(let hid):
             settle(hid + "preparing")
             let r = try Wire.decode(Result<ReadyOutResult>.self, from: body).data
-            if let a = draftAttempt, a.draft.handoffId == hid {
-                draftAttempt = nil
-                // Committed with exactly this text: the target holds it. Anything else
-                // (a deadline commit, an older runtime) leaves the composer alone.
-                if r.draftCarried == true { st.sentDraft = a.draft }
+            if var a = draftAttempt, a.draft.handoffId == hid {
+                // Acked with exactly this text: the target holds it. Committed: ask again
+                // when the jack closes. Anything else (a deadline commit, a revert, an
+                // older runtime) leaves the composer alone.
+                if r.draftCarried == true && r.state == "acked" {
+                    draftAttempt = nil
+                    st.sentDraft = a.draft
+                } else if r.draftCarried == true && r.state == "committed" {
+                    a.committed = true
+                    draftAttempt = a
+                } else {
+                    draftAttempt = nil
+                }
             }
         case .ackIn(let hid):
             settle(hid + "committed")
@@ -650,15 +661,18 @@ public final class GatewayClient: @unchecked Sendable {
         }
     }
 
-    /// A ready_out that carried a draft lost its answer, and its jack has moved past
-    /// preparing: ask again with the same text and generation. The runtime answers a replay
-    /// from the committed row without changing it.
+    /// A ready_out that carried a draft lost its answer and its jack moved past preparing,
+    /// or its jack committed and has since closed: ask again with the same text and
+    /// generation. The runtime answers a replay from the handoff row without changing it.
     private func reconcileDraft() {
         guard let a = draftAttempt, haveSnapshot else { return }
         let hid = a.draft.handoffId
         let key = hid + "preparing"
         guard !handoffSent.contains(key) else { return }
-        if let h = st.handoff, h.id == hid, h.state == "preparing" { return }  // normal path
+        if let h = st.handoff, h.id == hid {
+            if h.state == "preparing" { return }            // the normal path sends it
+            if a.committed { return }                       // still open: wait for the close
+        }
         handoffSent.insert(key)
         request("ready_out", .readyOut(hid), ["handoff_id": hid, "presence_gen": a.presenceGen,
                                               "draft": a.draft.text])
