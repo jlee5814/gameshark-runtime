@@ -29,6 +29,9 @@ ios/scripts/pocket-demo.sh --skip-faults
 `pocket-demo.sh` uses `~/.gameshark/demo` (fresh each run) and writes
 `pocket-acceptance.md`, StarkMac snapshots, and simulator screenshots there.
 
+These are the automated tests, and they run in the simulator. The physical iPhone results
+under On a physical iPhone are the user's own observations by hand, not automated runs.
+
 ## Lifecycle
 
 Foreground: connect, authenticate, resync rows after the last contiguous seq, resend any
@@ -45,9 +48,9 @@ the app leaving. A revoked device drops to the pairing screen.
 
 ## On a physical iPhone
 
-The LAN checklist below has not been run end to end on a device; see the cellular section
-for what the user observed there. The
-checklist below uses its own database, never `~/.gameshark/runtime.db` or the simulator's
+A physical iPhone has passed the Phase 3.3 cellular acceptance by hand; see Over cellular
+with Tailscale. The LAN checklist below has still not run end to end on a device. The
+checklist uses its own database, never `~/.gameshark/runtime.db` or the simulator's
 `~/.gameshark/demo`. Run the Mac commands from `prototype/`.
 
 ```sh
@@ -88,9 +91,54 @@ uv run --with qrcode==8.0 python stark.py --db "$DB" pair --name "My iPhone"
 
 ### Over cellular with Tailscale
 
-User observed physical device acceptance, 2026-10-16, on the build before the first path
-and send deadline fixes (manual observation on an iPhone over 5G with Tailscale, not
-automated test results):
+#### Phase 3.3 acceptance: PR #32 build, 2026-10-16
+
+User observed on a physical iPhone, by hand; not automated test results. Environment:
+
+- iPhone running the Stark Pocket build from PR #32 (first path wait, 5 s send deadline).
+- Runtime from `main` at 31c7926: `uv run python stark.py --db "$DB" run --lan --tailscale`.
+- Mac tailnet endpoint 100.123.57.23:47821; iPhone tailnet address 100.123.82.32.
+- The existing device check database; one Stark identity throughout.
+
+Observed:
+
+1. The iPhone made an authenticated Tailscale connection on cellular.
+2. Jack In and Jack Out worked over cellular.
+3. A message sent over cellular got its reply.
+4. Switching Wi-Fi to cellular and cellular to Wi-Fi kept the session working.
+5. A message sent during a network switch arrived with one observed reply and no observed
+   duplicate.
+6. Stark's active presence stayed consistent across every network change.
+7. Turning Tailscale off made the runtime unreachable for a while.
+8. Turning Tailscale back on restored communication.
+9. An unsent draft held in memory survived the disconnect and reconnect.
+10. The recovered message arrived without an observed duplicate, and Jack Out then
+    succeeded.
+
+Runtime log:
+
+| Time | Event |
+|---|---|
+| 15:04:59 | authenticated via tailnet, session s2 |
+| 15:09:47 | moved to LAN: s5 superseded tailnet session s4 |
+| 15:10:38 | moved to tailnet: s6 superseded LAN session s5 |
+| 15:12:04 | tailnet restored: s7 superseded s6 |
+
+Phase 3.3 is accepted for these demonstrated scenarios. One run by hand is not a claim of
+production reliability or of exactly once delivery in general.
+
+Not yet proven on physical hardware:
+
+- Cold launch timing on the tailnet first path, and the route order of the first dial.
+- A deliberately stalled TCP send reaching the 5 s timeout.
+- A quick background and foreground during the first 1 s network path wait.
+- Every fault and revocation case (LAN checklist steps 5 to 9 above, cellular step 9).
+- Unsent composer text surviving app termination (only the in memory draft was shown).
+
+#### Earlier diagnostic build 176cb4dd0ea3, 2026-10-16
+
+Kept as history. User observed by hand on an iPhone over 5G with Tailscale, on the build
+before the first path and send deadline fixes:
 
 - Jack In and Jack Out over 5G plus Tailscale.
 - A message sent over cellular, and its reply.
@@ -99,7 +147,9 @@ automated test results):
 - Tailscale down and up without losing presence or an unsent draft.
 - No duplicate messages seen in these tests.
 
-The first path and send deadline fixes have not yet run on a device. Needs Tailscale signed in to the same tailnet on the Mac and the
+#### Checklist
+
+Needs Tailscale signed in to the same tailnet on the Mac and the
 iPhone. The checklist below pairs over Wi-Fi first, so the link carries both the LAN and
 the tailnet endpoints.
 
