@@ -544,3 +544,18 @@ def test_the_draft_receipt_survives_a_runtime_restart(tmp_path):
             assert out["draft_carried"] is True
     finally:
         b.close()
+
+
+def test_a_reverted_jack_never_issues_a_draft_receipt(rt):
+    """The commit carried the text, its reply was lost, and the target never acked: the
+    jack reverted. The row keeps the draft for recovery, but a replay must not tell the
+    source its text arrived anywhere."""
+    with rt.client() as mac, rt.client(surface="pad") as pad:
+        g = gen(pad)
+        pad.call("jack", handoff_id="r4", to="self", presence_gen=g)
+        out = mac.call("ready_out", handoff_id="r4", presence_gen=g, draft="only copy")
+        assert (out["state"], out["draft_carried"]) == ("committed", True)
+        wait_for(lambda: mac.call("snapshot")["presence"]["surface"] == "mac", 10)
+        again = mac.call("ready_out", handoff_id="r4", presence_gen=g, draft="only copy")
+        assert again["state"] == "reverted"
+        assert again["draft_carried"] is False
