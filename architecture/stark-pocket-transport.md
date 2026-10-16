@@ -85,6 +85,47 @@ transaction stores it in the handoff row with `draft_state = pending`. Delivery 
 `draft_ack` is the one command this adds to the closed table; `draft_carried` is a result
 field, not a command.
 
+## Tailscale (Phase 3.3)
+
+Away from home the phone reaches the same runtime through Tailscale. Nothing about trust
+changes; only the path does.
+
+```
+iPhone on cellular, Tailscale on            Mac on home Wi-Fi (stark.py run --lan --tailscale)
+  NWConnection to 100.x:47821  ──WireGuard──▶  tailnet LanListener, bound to 100.x only
+                                                 same pin, instance, cap, failure limiter
+                                                 └─▶ GatewayServer.requests (unchanged)
+```
+
+- Opt in: `--tailscale` requires `--lan`. At boot the runtime reads `tailscale status
+  --json` (backend Running, this node's IPv4 in 100.64.0.0/10) and `tailscale serve status
+  --json`, then binds a second listener to that address alone on `--tailscale-port` (47821).
+  It never runs `up`, `serve`, or `funnel`. Tailscale stopped or unreadable: the LAN serves
+  alone and the log says why. Any serve or Funnel handler forwarding a runtime port: no
+  network listener starts at all (the Unix socket still serves StarkMac).
+- Admission: the tailnet listener admits only Tailscale node addresses (100.64.0.0/10
+  except 100.100.100.100, and fd7a:115c:a1e0::/48). The LAN listener now refuses
+  fd7a:115c:a1e0::/48, which sits inside the fc00::/7 it admits, so LAN mode never served a
+  tailnet peer unasked. One `SessionSlots` (4) and one `FailureLimiter` cover both.
+- Advertisement: `<socket>.lan.json` gains `tailscale {address, port, dns}` only while that
+  listener serves. `pair` proves it current before naming it: Tailscale still Running with
+  the same address, no serve forward to a runtime port, and a pinned probe on
+  `address:port` meeting this runtime's instance id. Any mismatch refuses the link (stale or
+  ambiguous), never silently drops the tailnet.
+- Link: `&t=<tailnet ip>&tp=<port>&tn=<MagicDNS name>`, still `v=1`; an older app ignores
+  the keys. The phone refuses a `t` outside the tailnet ranges and a `tp` without a `t`.
+- Routes: the credential keeps `routes [{host, port, via}]`; one stored before 3.3 decodes
+  to its LAN hosts on its LAN port. Wi-Fi or wired dials LAN first, cellular or other
+  dials the tailnet first, and a reconnect redials the route that last worked. A change of
+  network class redials at once; pending messages resend under their ids, rows resync by
+  seq, open handoffs and drafts reconcile as above.
+- One Stark: a device proving itself on a new session supersedes its older ones
+  (`bye {reason: superseded}`). The new one is live first, so the old one leaving is not
+  the surface leaving, and presence stays put: no revert, no new generation, no second
+  device row. A welcome naming another agent uuid than the pairing's is refused before
+  anything is mirrored. Accepted sockets use TCP keepalive (about a minute to notice a
+  vanished peer).
+
 ## Threat model
 
 | Adversary | Can | Cannot, because |
@@ -96,6 +137,10 @@ field, not a command.
 | Holder of a used or expired pairing link | try it | pair: single use, 5 minute expiry, checked in the consuming transaction |
 | Unpaired host on the LAN | connect and guess | get past the handshake: no device key; 5 failures in 60 s block the address |
 | Internet host | reach the port only if the operator forwards it | be admitted: peers outside loopback, RFC 1918, link local, and ULA are dropped at accept |
+| Internet host via Funnel or `tailscale serve` | reach a loopback forward the operator set up | reach Stark: the runtime starts no network listener while any serve handler forwards a runtime port, and `pair` refuses then too |
+| Other node in the tailnet | connect to the tailnet port | get past the handshake: same pin, device proof, and failure limiter as the LAN; Tailscale ACLs can narrow who reaches it |
+| Tailnet peer on the LAN port | send from its 100.x or fd7a address | be admitted: the LAN listener refuses both tailnet ranges |
+| Stale tailnet address in a link | point the phone at a reassigned 100.x | be trusted: the pin decides; `pair` refuses an address Tailscale no longer reports |
 | Stolen or lost phone | act as Stark's body until revoked | outlast `stark.py devices revoke`, which takes effect at the next pump |
 | Revoked device | keep a socket open briefly | send or receive after the next pump; reconnect fails authentication |
 | Stale surface (Mac or phone) | send under an old generation | write: `stale_presence` from the same fenced transaction as before |
@@ -118,7 +163,9 @@ database and the token), the operator, and the phone's OS.
   presents the same instance id in its challenge. Runtimes sharing a directory share its
   TLS key, so the pin alone cannot tell them apart. A legacy `gateway/lan.json` from an
   older runtime is ignored and left in place.
-- Same LAN or a link local path. No relay, no cloud, no port forwarding, no UPnP.
+- Same LAN or a link local path, or Tailscale with `--tailscale` (WireGuard, peer to peer
+  or through Tailscale's DERP relays, which see only ciphertext). No port forwarding, no
+  UPnP, no Funnel.
 - macOS may ask once to allow incoming connections for Python.
 - iOS asks for local network permission on first connect (`NSLocalNetworkUsageDescription`).
 - Addresses in the link are hints; trust rests on the pin, so a new DHCP address costs a
@@ -141,6 +188,12 @@ database and the token), the operator, and the phone's OS.
 - Hardware without a Secure Enclave falls back to a software key in the Keychain. The iOS 27
   simulator on this Apple silicon Mac reports an enclave and uses it.
 - Bonjour discovery is not built; the link carries a host name and address.
+- Tailscale: the tailnet listener serves IPv4 only. The address and serve config are read at
+  boot and at `pair`, not watched while running; a changed address costs the phone a
+  fallback, and the daemon needs a restart to serve the new one. Path classes come from
+  NWPath; with a VPN up, iOS may report a class change late or not at all, in which case a
+  dead LAN socket is caught by TCP keepalive instead of an immediate redial. Physical
+  cellular use is unverified (checklist in ios/StarkPocket/README.md).
 
 ## Measured (loopback, M series Mac, in process runtime)
 

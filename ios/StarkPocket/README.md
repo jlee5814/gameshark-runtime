@@ -36,8 +36,9 @@ unsent message under its original id. Background: give a pending send up to 3 s,
 close cleanly; no background modes, no daemon, no overlay. Stark stays on the phone while
 it is backgrounded; Jack In Here on the Mac takes him back (the silent phone is committed
 past after the 3 s prepare deadline). A jack still open when the app leaves reverts.
-Network changes trigger an immediate reconnect. A revoked device drops to the pairing
-screen.
+A change of network class (Wi-Fi, cellular, offline) redials at once, LAN first at home
+and the Mac's Tailscale address first away; a reconnect retries the route that last
+worked. A revoked device drops to the pairing screen.
 
 ## On a physical iPhone
 
@@ -80,3 +81,33 @@ uv run --with qrcode==8.0 python stark.py --db "$DB" pair --name "My iPhone"
    Stark and the phone to return to pairing, never Stark back on the phone.
 9. Stale endpoint: stop the daemon with `kill -9`, then run `stark.py pair` again. Expect a
    refusal, no link.
+
+### Over cellular with Tailscale
+
+Not yet run on a device. Needs Tailscale signed in to the same tailnet on the Mac and the
+iPhone. The checklist below pairs over Wi-Fi first, so the link carries both the LAN and
+the tailnet endpoints.
+
+```sh
+uv run python stark.py --db "$DB" run --lan --tailscale   # terminal 1; expect "tailnet gateway on 100.x:47821"
+tailscale serve status                                    # expect no handlers: the runtime refuses to serve otherwise
+uv run --with qrcode==8.0 python stark.py --db "$DB" pair --name "My iPhone"
+```
+
+1. Pair on home Wi-Fi, as above. The link prints a line naming the Tailscale endpoint.
+2. iPhone to cellular: Settings, Wi-Fi off; Tailscale app connected. Expect Stark Pocket to
+   reconnect within seconds; the runtime log shows `device … via tailnet from 100.…`.
+3. Jack In over cellular; StarkMac dims.
+4. Send a message, see the reply on the phone.
+5. Jack Out; StarkMac active, same conversation.
+6. Switch mid session: Jack In, type a draft without sending, then turn Wi-Fi on. Expect a
+   `via lan` connection and a `closed …: moved to lan` line, Stark still on the phone, the
+   draft still in the composer. Turn Wi-Fi off again and expect `via tailnet`.
+7. Send while switching: tap Send and turn Wi-Fi off at once. Expect the message once.
+8. Recovery evidence, after all of the above:
+   `sqlite3 "$DB" "SELECT COUNT(*), COUNT(DISTINCT seq) FROM surface_writes"` (equal),
+   `sqlite3 "$DB" "SELECT COUNT(*) FROM devices WHERE revoked_at IS NULL"` (1),
+   `sqlite3 "$DB" "SELECT id, state FROM handoffs"` (only the jacks you made), and
+   `uv run python stark.py --db "$DB" drafts` (nothing unconfirmed).
+9. Tailscale off on the Mac (`tailscale down`), then `stark.py pair`: expect a refusal that
+   names the stale tailnet endpoint. `tailscale up` and restart the daemon to serve it again.
