@@ -40,10 +40,21 @@ targets:
         CFBundleURLTypes:
           - CFBundleURLName: dev.gameshark.starkpocket.pair
             CFBundleURLSchemes: [starkpocket]
+    # Settings shows the commit this build came from, so a device report names its code.
+    postBuildScripts:
+      - name: Stamp build commit
+        basedOnDependencyAnalysis: false
+        script: |
+          sha=$(git -C "$SRCROOT" rev-parse --short=12 HEAD 2>/dev/null || echo unknown)
+          git -C "$SRCROOT" diff --quiet HEAD 2>/dev/null || sha="$sha-dirty"
+          plist="$TARGET_BUILD_DIR/$INFOPLIST_PATH"
+          /usr/libexec/PlistBuddy -c "Set :StarkBuildSHA $sha" "$plist" 2>/dev/null ||
+            /usr/libexec/PlistBuddy -c "Add :StarkBuildSHA string $sha" "$plist"
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: dev.gameshark.starkpocket
         TARGETED_DEVICE_FAMILY: "1"
+        ENABLE_USER_SCRIPT_SANDBOXING: NO
   StarkPocketTests:
     type: bundle.unit-test
     platform: iOS

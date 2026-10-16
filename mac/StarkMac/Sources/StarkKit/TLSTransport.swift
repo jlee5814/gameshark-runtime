@@ -13,8 +13,20 @@ public final class TLSTransport: Transport, @unchecked Sendable {
     private let lock = NSLock()
     private var isClosed = false
     private let pinRejected = Box(false)
+    private let trace: Trace?
+    private let label: String
+    /// A send the peer never drains (frozen runtime, interface gone) fails after this.
+    private let sendTimeout: TimeInterval
 
-    public init(host: String, port: UInt16, pin: Data, timeout: TimeInterval = 5) throws {
+    /// `trace` sees every connection state with its elapsed time, so a device log tells a
+    /// dial that never left (waiting), a TCP failure, a TLS failure, and a timeout apart.
+    public init(host: String, port: UInt16, pin: Data, timeout: TimeInterval = 5,
+                trace: Trace? = nil) throws {
+        self.trace = trace
+        self.label = "\(host):\(port)"
+        self.sendTimeout = timeout
+        let started = DispatchTime.now()
+        @Sendable func ms() -> Int { Int((DispatchTime.now().uptimeNanoseconds - started.uptimeNanoseconds) / 1_000_000) }
         let tls = NWProtocolTLS.Options()
         let sec = tls.securityProtocolOptions
         sec_protocol_options_set_min_tls_protocol_version(sec, .TLSv13)
@@ -35,7 +47,9 @@ public final class TLSTransport: Transport, @unchecked Sendable {
 
         let ready = DispatchSemaphore(value: 0)
         let outcome = Box<Error?>(nil)
+        let label = self.label
         conn.stateUpdateHandler = { state in
+            trace?("tls \(label) +\(ms())ms \(TLSTransport.describe(state))")
             switch state {
             case .ready:
                 ready.signal()
@@ -53,8 +67,42 @@ public final class TLSTransport: Transport, @unchecked Sendable {
         conn.stateUpdateHandler = nil
         if timedOut || outcome.value != nil || conn.state != .ready {
             conn.cancel()
+            trace?("tls \(label) +\(ms())ms gave up: "
+                   + (pinMismatch ? "pin mismatch" : timedOut ? "timeout" : "not ready"))
             if pinMismatch { throw TransportFailure.pinMismatch }
             throw TransportFailure.connect(timedOut ? ETIMEDOUT : ECONNREFUSED)
+        }
+        if let trace {
+            // After ready: what happens to a live session when its interface goes away.
+            conn.stateUpdateHandler = { trace("tls \(label) live \(TLSTransport.describe($0))") }
+            conn.viabilityUpdateHandler = { trace("tls \(label) viable=\($0)") }
+            conn.betterPathUpdateHandler = { trace("tls \(label) betterPath=\($0)") }
+            let p = conn.currentPath
+            trace("tls \(label) ready +\(ms())ms via "
+                  + (p?.availableInterfaces.map { "\($0.name)/\($0.type)" }.joined(separator: ",")
+                     ?? "?"))
+        }
+    }
+
+    /// A state with its error domain: posix is TCP (refused, unreachable, timed out), tls is
+    /// the handshake, dns is name resolution.
+    static func describe(_ state: NWConnection.State) -> String {
+        func err(_ e: NWError) -> String {
+            switch e {
+            case .posix(let c): "posix \(c.rawValue) \(c)"
+            case .tls(let s): "tls \(s)"
+            case .dns(let d): "dns \(d)"
+            default: "\(e)"
+            }
+        }
+        switch state {
+        case .setup: return "setup"
+        case .preparing: return "preparing"
+        case .ready: return "ready"
+        case .cancelled: return "cancelled"
+        case .waiting(let e): return "waiting(\(err(e)))"
+        case .failed(let e): return "failed(\(err(e)))"
+        @unknown default: return "unknown"
         }
     }
 
@@ -79,7 +127,13 @@ public final class TLSTransport: Transport, @unchecked Sendable {
             failure.value = e
             done.signal()
         })
-        done.wait()
+        if done.wait(timeout: .now() + sendTimeout) == .timedOut {
+            // Cancel releases the pending completion; the connection is unusable after it.
+            trace?("tls \(label) send of \(frame.count) bytes timed out after \(sendTimeout)s")
+            close()
+            throw TransportFailure.io(ETIMEDOUT)
+        }
+        if let e = failure.value { trace?("tls \(label) send failed: \(e)") }
         if failure.value != nil { throw TransportFailure.io(EIO) }
     }
 
@@ -94,6 +148,7 @@ public final class TLSTransport: Transport, @unchecked Sendable {
         done.wait()
         let (data, complete, e) = result.value
         if let data, !data.isEmpty { return data }
+        trace?("tls \(label) receive ended: complete=\(complete) error=\(e.map { "\($0)" } ?? "none")")
         if complete { return Data() }
         if closed { throw TransportFailure.closed }
         if e != nil { throw TransportFailure.io(EIO) }

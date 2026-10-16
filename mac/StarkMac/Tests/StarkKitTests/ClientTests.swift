@@ -280,6 +280,51 @@ final class FakeTransport: Transport, @unchecked Sendable {
     func close() { hangUp() }
 }
 
+/// A socket whose interface vanished under it: once stalled, a write never completes
+/// and never reaches the runtime, until the connection is closed (NWConnection's cancel
+/// releases a pending send with an error) or the test releases it.
+final class StallingTransport: Transport, @unchecked Sendable {
+    private let inner: FakeTransport
+    private let cond = NSCondition()
+    private var stalled = false
+    private var closed = false
+    private var waiting = false
+
+    init(_ inner: FakeTransport) { self.inner = inner }
+
+    func stall() { cond.withLock { stalled = true } }
+
+    /// A send is blocked right now.
+    var stuck: Bool { cond.withLock { waiting } }
+
+    func release() {
+        cond.withLock {
+            closed = true
+            cond.broadcast()
+        }
+    }
+
+    func send(_ frame: Data) throws {
+        cond.lock()
+        if stalled {
+            waiting = true
+            while !closed { cond.wait() }
+            waiting = false
+            cond.unlock()
+            throw TransportFailure.io(EIO)
+        }
+        cond.unlock()
+        try inner.send(frame)
+    }
+
+    func receive() throws -> Data { try inner.receive() }
+
+    func close() {
+        release()
+        inner.close()
+    }
+}
+
 func tokenFile() throws -> URL {
     let url = FileManager.default.temporaryDirectory.appendingPathComponent("tok-\(UUID().uuidString)")
     try Data(String(repeating: "00", count: 32).utf8).write(to: url)
@@ -839,6 +884,51 @@ extension ClientTests {
         defer { c.stop() }
         #expect(eventually { c.state.connection == .live })
         #expect(dialed.value == [Self.home[2]])
+    }
+
+    @Test func aSendStuckOnADeadInterfaceDoesNotHoldTheReconnect() throws {
+        let rt = FakeRuntime()
+        rt.serverFP = Self.pin.hex
+        let dialed = Locked<[Route]>([])
+        let lan = Locked<[StallingTransport]>([])
+        let cred = DeviceCredential(deviceID: String(repeating: "d", count: 32),
+                                    surface: "pocket-a1b2c3", name: "Test",
+                                    hosts: ["192.168.1.20", "Jaes-Mac.local"], port: 47820,
+                                    pin: Self.pin, agentUUID: "uuid-1", routes: Self.home)
+        let signer = try SoftwareSigner(rawRepresentation: Data(1...32))
+        // Read what the client publishes, never c.state: that waits on the queue under test.
+        let seen = Locked<ClientState?>(nil)
+        let c = GatewayClient(config: ClientConfig(
+            device: DeviceEndpoint(credential: cred, signer: signer),
+            backoff: Backoff(base: 0.01, cap: 0.05, jitter: 0), clientName: "test"),
+            makeTransport: { r in
+                dialed.value.append(r)
+                let t = StallingTransport(rt.connect())
+                if r.via == .lan { lan.value.append(t) }
+                return t
+            }, onChange: { seen.value = $0 })
+        c.setPath(.wifi)
+        c.start()
+        // stop() waits on the client's queue: free a stuck send first, or teardown hangs.
+        defer {
+            lan.value.forEach { $0.release() }
+            c.stop()
+        }
+        #expect(eventually { seen.value?.connection == .live })
+        #expect(dialed.value == [Self.home[0]])
+
+        lan.value.forEach { $0.stall() }                    // Wi-Fi gone under a live socket
+        let id = c.send("sent as the phone left Wi-Fi")
+        #expect(eventually(1) { lan.value.contains { $0.stuck } })
+        c.setPath(.cellular)
+
+        #expect(eventually(3) { dialed.value.contains(Self.home[2]) },
+                "the move to cellular never dialed the tailnet: the stuck send holds the queue")
+        #expect(eventually(3) { seen.value?.outbox.first { $0.id == id }?.status == .sent(seq: 1) })
+        rt.lock.withLock {
+            #expect(rt.landed[id] == 1)
+            #expect(rt.rows.filter { $0.role == "user" }.count == 1)
+        }
     }
 
     @Test func routeOrderFollowsTheNetwork() {

@@ -82,6 +82,8 @@ final class FakeClient: PocketClient, @unchecked Sendable {
     var confirmed: [String] = []
     var clearedSent: [String] = []
     var paths: [NetworkPath] = []
+    /// start and setPath in the order the model called them.
+    var calls: [String] = []
     /// What the runtime does when this surface asks for a jack; nothing by default.
     var onJack: (FakeClient, GatewayClient.JackDirection) -> Void = { _, _ in }
 
@@ -95,7 +97,10 @@ final class FakeClient: PocketClient, @unchecked Sendable {
         onChange(state)
     }
 
-    func start() { started += 1 }
+    func start() {
+        started += 1
+        calls.append("start")
+    }
     func stop() { stopped = true }
     func reconnectNow() {}
     func send(_ text: String, presenceGen: Int?) -> String { "m" }
@@ -105,7 +110,10 @@ final class FakeClient: PocketClient, @unchecked Sendable {
         return "h"
     }
     func setDraftProvider(_ provider: @escaping @Sendable () -> String?) { draftProvider = provider }
-    func setPath(_ path: NetworkPath) { paths.append(path) }
+    func setPath(_ path: NetworkPath) {
+        paths.append(path)
+        calls.append("path \(path.rawValue)")
+    }
     func confirmDraft(_ handoffId: String) {
         confirmed.append(handoffId)
         emit { if $0.incomingDraft?.handoffId == handoffId { $0.incomingDraft = nil } }
@@ -176,6 +184,44 @@ final class PocketModelTests: XCTestCase {
         model.scenePhase(.active)
         XCTAssertEqual(c.paths.last, .wifi)               // told where it woke up, then started
         XCTAssertEqual(c.started, 2)
+    }
+
+    /// Codex P2: NWPathMonitor reports its first path asynchronously. A client started
+    /// before it dials in the pairing link's order, LAN first, and on cellular spends the
+    /// LAN timeouts before it tries the tailnet.
+    func testTheClientWaitsForTheFirstNetworkPathBeforeDialing() throws {
+        let model = try pairedModel()
+        let c = clients[0]
+        XCTAssertEqual(c.started, 0, "the client dialed before the phone knew its network")
+        model.networkChanged(.cellular)
+        XCTAssertEqual(c.calls, ["path cellular", "start"])
+    }
+
+    /// A monitor that never reports must not strand the phone offline.
+    func testAPathThatNeverArrivesStillStartsTheClient() async throws {
+        let model = try pairedModel()
+        let c = clients[0]
+        for _ in 0..<200 where c.started == 0 {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(c.started, 1)
+        withExtendedLifetime(model) {}                    // the model owns the wait
+    }
+
+    /// A wait cut short by the background never starts the client for the next foreground:
+    /// only the newest wait may fall back, at its own deadline.
+    func testAWaitFromAnEarlierForegroundNeverStartsTheClient() async throws {
+        let model = try pairedModel()                     // wait 1 ends at 1.0 s
+        let c = clients[0]
+        try await Task.sleep(for: .milliseconds(500))
+        model.scenePhase(.background)
+        model.scenePhase(.active)                         // wait 2 ends at 1.5 s
+        try await Task.sleep(for: .milliseconds(700))
+        XCTAssertEqual(c.started, 0, "the first wait started the client before the second ended")
+        for _ in 0..<100 where c.started == 0 {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(c.started, 1)
     }
 
     func testInterfacesMapToOneNetworkClass() {
