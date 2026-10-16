@@ -16,6 +16,7 @@ MAX_FRAME bytes; anything oversized or malformed ends the session.
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import hmac
 import itertools
@@ -29,6 +30,7 @@ import stat
 import struct
 import sys
 import threading
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -284,16 +286,24 @@ class GatewayServer:
                 conn, _ = listener.accept()
             except TimeoutError:
                 continue
-            except OSError:
-                return
+            except OSError as e:
+                if not self._alive.is_set():
+                    return                          # close() shut the socket
+                if e.errno != errno.ECONNABORTED:   # out of descriptors: wait, never spin
+                    time.sleep(IO_TIMEOUT_S)
+                continue
             conn.settimeout(IO_TIMEOUT_S)
             sess = Session(self.next_id(), conn)
             if not self.admit(sess):
                 sess.send({"type": "error", "code": "busy", "message": "too many sessions"})
                 sess.close()
                 continue
-            threading.Thread(target=self._serve, args=(sess,), name=f"gateway-{sess.id}",
-                             daemon=True).start()
+            try:
+                threading.Thread(target=self._serve, args=(sess,), name=f"gateway-{sess.id}",
+                                 daemon=True).start()
+            except RuntimeError:                    # no thread to serve it: give the slot back
+                sess.close()
+                self.retire(sess)
 
     def _serve(self, sess: Session) -> None:
         try:

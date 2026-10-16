@@ -273,6 +273,7 @@ class SurfaceAPI:
         f = req.frame
         proto = f.get("proto")
         if not isinstance(proto, int) or isinstance(proto, bool) or proto not in PROTO_VERSIONS:
+            sess.rejected("auth", "unsupported protocol version")
             sess.reject("unsupported_version", f"server speaks {list(PROTO_VERSIONS)}")
             return
         try:
@@ -292,7 +293,7 @@ class SurfaceAPI:
             d = self.devices.authenticate(_id(f, "device_id"), req.nonce, proto,
                                           req.server_fp, _hex(f, "sig"))
         except (AuthRejected, Invalid) as e:
-            self.log(f"device auth refused from {sess.peer}: {e}")
+            sess.rejected("auth", str(e))       # ids and reasons; never the secret or proof
             sess.reject("auth_failed", "authentication failed")
             return
         except FencedError:
