@@ -68,6 +68,11 @@ struct ChatCard: View {
                 .onChange(of: model.state.rows.last?.seq) { _, seq in
                     if let seq { withAnimation { proxy.scrollTo(seq, anchor: .bottom) } }
                 }
+                // The reply line sits below the newest row and changes without a new row;
+                // keep it, and its Retry button, in view.
+                .onChange(of: model.replyLine) { _, line in
+                    if line != nil { withAnimation { proxy.scrollTo("reply", anchor: .bottom) } }
+                }
                 .onAppear {
                     if let seq = model.visibleRows.last?.seq { proxy.scrollTo(seq, anchor: .bottom) }
                 }

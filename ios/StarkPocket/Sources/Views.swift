@@ -193,6 +193,11 @@ struct ConversationList: View {
                 if let seq { withAnimation { proxy.scrollTo(seq, anchor: .bottom) } }
                 model.markViewed()
             }
+            // The reply line sits below the newest row and changes without a new row; keep
+            // it, and its Retry button, in view.
+            .onChange(of: model.replyLine) { _, line in
+                if line != nil { withAnimation { proxy.scrollTo("reply", anchor: .bottom) } }
+            }
             .onAppear { model.markViewed() }
         }
     }
