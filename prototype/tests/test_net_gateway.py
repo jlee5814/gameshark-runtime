@@ -5,6 +5,8 @@ speaks the same frames StarkKit's TLS transport does."""
 
 from __future__ import annotations
 
+import errno
+import os
 import socket
 import sqlite3
 import ssl
@@ -632,3 +634,237 @@ def test_another_device_does_not_supersede(both):
     b_id, _b_surface, b_key = paired(both, "Phone B")
     with both.device(a_id, a_key) as a, both.device(b_id, b_key, via="tailnet") as b:
         assert a.call("ping")["pong"] and b.call("ping")["pong"]
+
+
+# ---------------------------------------------------------------------- accept loop
+def rejected(rt: Runtime, line: str) -> bool:
+    return any(entry.startswith(line) for entry in list(rt.logs))
+
+
+def fail_first_setup(monkeypatch, err: int = errno.EINVAL) -> None:
+    """The first accepted socket fails setup as a reset one does on macOS."""
+    from gameshark import net_gateway
+
+    real, calls = net_gateway.prepare, []
+
+    def flaky(conn: socket.socket) -> None:
+        calls.append(conn)
+        if len(calls) == 1:
+            raise OSError(err, os.strerror(err))
+        real(conn)
+
+    monkeypatch.setattr(net_gateway, "prepare", flaky)
+
+
+def tls_sessions(rt: Runtime) -> list:
+    from gameshark.net_gateway import TLSSession
+
+    return [s for s in rt.server.sessions.values() if isinstance(s, TLSSession)]
+
+
+@pytest.mark.parametrize("via", ["lan", "tailnet"])
+def test_a_socket_that_fails_setup_does_not_stop_its_listener(both, monkeypatch, via):
+    fail_first_setup(monkeypatch)
+    listener = both.tailnet if via == "tailnet" else both.lan
+    s = socket.create_connection(("127.0.0.1", listener.port), timeout=5)
+    assert ended(s) is None                                  # closed without a frame
+    s.close()
+    wait_for(lambda: rejected(both, f"rejected {via} 127.0.0.1 setup: EINVAL (peer reset)"))
+    assert not listener.slots._open and not tls_sessions(both)
+    assert not listener.limiter.blocked("127.0.0.1") and not listener.limiter._fails
+    device_id, _surface, key = paired(both)
+    both.device(device_id, key, via=via).close()             # the same listener still serves
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="XNU refuses options on a reset socket")
+def test_a_peer_reset_before_setup_is_the_macos_einval(tmp_path):
+    """The field crash: the peer resets after the TCP handshake, before setsockopt. The
+    accept loop is held at its policy check until the reset has landed."""
+    reset = threading.Event()
+
+    def allow_after_reset(ip: str) -> bool:
+        if not reset.is_set():
+            assert reset.wait(5)
+            time.sleep(0.2)                     # loopback delivers the RST well within this
+        return lan_peer(ip)
+
+    r = Runtime(tmp_path / "runtime.db", short_dir(), lan=True, allow=allow_after_reset).start()
+    try:
+        c = socket.create_connection(("127.0.0.1", r.port), timeout=5)
+        c.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+        c.close()                                            # RST, not FIN
+        reset.set()
+        wait_for(lambda: rejected(r, "rejected lan 127.0.0.1 setup: EINVAL (peer reset)"))
+        device_id, _surface, key = paired(r)
+        r.device(device_id, key).close()
+    finally:
+        r.close()
+
+
+class AbortOnce:
+    """A listening socket whose next accept fails as a connection reset in the queue."""
+
+    def __init__(self, sock: socket.socket) -> None:
+        self.sock, self.raised = sock, threading.Event()
+
+    def accept(self):
+        if not self.raised.is_set():
+            self.raised.set()
+            raise ConnectionAbortedError(errno.ECONNABORTED, "Software caused connection abort")
+        return self.sock.accept()
+
+    def __getattr__(self, name):
+        return getattr(self.sock, name)
+
+
+def test_an_aborted_accept_does_not_stop_the_listener(rt):
+    rt.lan._sock = AbortOnce(rt.lan._sock)
+    assert rt.lan._sock.raised.wait(5)
+    device_id, _surface, key = paired(rt)
+    rt.device(device_id, key).close()
+    assert rt.lan._thread.is_alive()
+
+
+def test_an_aborted_accept_does_not_stop_the_unix_gateway(rt):
+    rt.server._listener = AbortOnce(rt.server._listener)
+    assert rt.server._listener.raised.wait(5)
+    with rt.client() as mac:
+        assert mac.call("ping") is not None
+
+
+def test_a_session_thread_that_cannot_start_gives_its_slot_back(rt, monkeypatch):
+    real, failed = threading.Thread.start, []
+
+    def start(self):
+        if self.name.startswith("lan-s") and not failed:
+            failed.append(self.name)
+            raise RuntimeError("can't start new thread")
+        return real(self)
+
+    monkeypatch.setattr(threading.Thread, "start", start)
+    s = socket.create_connection(("127.0.0.1", rt.port), timeout=5)
+    assert ended(s) is None
+    s.close()
+    wait_for(lambda: rejected(rt, "rejected lan 127.0.0.1 setup: RuntimeError"))
+    assert failed and not rt.lan.slots._open and not tls_sessions(rt)
+    device_id, _surface, key = paired(rt)
+    rt.device(device_id, key).close()
+
+
+# ---------------------------------------------------------------------- rejection log
+def test_rejections_name_their_stage_and_path(tmp_path):
+    r = Runtime(tmp_path / "runtime.db", short_dir(), lan=True, tailnet_allow=loopback_only,
+                limiter=FailureLimiter(limit=3, window_s=60)).start()
+    try:
+        s = socket.create_connection(("127.0.0.1", r.port), timeout=5)
+        s.sendall(encode({"type": "hello", "proto": 1, "surface": "mac"}))   # plaintext
+        ended(s)
+        s.close()
+        wait_for(lambda: rejected(r, "rejected lan 127.0.0.1 tls: "))
+        pid, secret = operator_pair(r)
+        with pytest.raises(GatewayError):
+            pair_device("127.0.0.1", r.tailnet.port, r.identity.pin, pid, "x" + secret, "p")
+        wait_for(lambda: rejected(r, "rejected tailnet 127.0.0.1 auth: "))
+        with pytest.raises(GatewayError):
+            pair_device("127.0.0.1", r.port, r.identity.pin, pid, "y" + secret, "p")
+        wait_for(lambda: rejected(r, "rejected lan 127.0.0.1 auth: "))
+        with pytest.raises((GatewayError, ssl.SSLError, ConnectionError, OSError)):
+            tls_connect("127.0.0.1", r.port, r.identity.pin)    # tls, tailnet auth, lan auth: blocked
+        wait_for(lambda: rejected(r, "rejected lan 127.0.0.1 blocked: "))
+        assert secret not in "\n".join(r.logs)
+    finally:
+        r.close()
+
+
+def test_a_policy_refusal_is_logged(tmp_path):
+    r = Runtime(tmp_path / "runtime.db", short_dir(), lan=True, allow=lambda _ip: False).start()
+    try:
+        with pytest.raises((ssl.SSLError, ConnectionError, OSError)):
+            tls_connect("127.0.0.1", r.port, r.identity.pin)
+        wait_for(lambda: rejected(r, "rejected lan 127.0.0.1 policy: "))
+    finally:
+        r.close()
+
+
+def test_repeated_rejections_collapse_within_the_window():
+    from gameshark.net_gateway import RejectLog
+
+    lines, t = [], [0.0]
+    log = RejectLog(lines.append, window_s=60, now=lambda: t[0])
+    for _ in range(4):
+        log("lan", "10.0.0.9", "tls", "WRONG_VERSION_NUMBER")
+    log("lan", "10.0.0.9", "auth", "bad signature")
+    log("tailnet", "10.0.0.9", "tls", "WRONG_VERSION_NUMBER")
+    t[0] = 61.0
+    log("lan", "10.0.0.9", "tls", "WRONG_VERSION_NUMBER")
+    assert lines == [
+        "rejected lan 10.0.0.9 tls: WRONG_VERSION_NUMBER",
+        "rejected lan 10.0.0.9 auth: bad signature",
+        "rejected tailnet 10.0.0.9 tls: WRONG_VERSION_NUMBER",
+        "rejected lan 10.0.0.9 tls: WRONG_VERSION_NUMBER (3 suppressed)",
+    ]
+
+
+class NoAddressOnce(AbortOnce):
+    """The next accept returns what macOS's AF_INET6 accept does for a peer that reset
+    first: a socket and no address."""
+
+    def __init__(self, sock: socket.socket) -> None:
+        super().__init__(sock)
+        self.entered = threading.Event()
+
+    def accept(self):
+        self.entered.set()
+        conn, addr = self.sock.accept()
+        if not self.raised.is_set():
+            self.raised.set()
+            return conn, None
+        return conn, addr
+
+
+def test_a_connection_with_no_peer_address_does_not_stop_the_listener(rt):
+    rt.lan._sock = NoAddressOnce(rt.lan._sock)
+    assert rt.lan._sock.entered.wait(5)                     # the loop now uses the wrapper
+    s = socket.create_connection(("127.0.0.1", rt.port), timeout=5)
+    assert ended(s) is None
+    s.close()
+    wait_for(lambda: rejected(rt, "rejected lan - setup: no peer address (peer reset)"))
+    device_id, _surface, key = paired(rt)
+    rt.device(device_id, key).close()
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="XNU reports no address for a reset")
+def test_a_peer_reset_on_the_dual_stack_listener_reports_no_address(tmp_path):
+    """The LAN listener in production: AF_INET6, dual stack, bound to every address."""
+    from gameshark.net_gateway import LanListener
+
+    reset = threading.Event()
+
+    entered = threading.Event()
+
+    class Held(AbortOnce):
+        def accept(self):
+            entered.set()
+            if not reset.is_set():
+                assert reset.wait(5)
+                time.sleep(0.2)                 # loopback delivers the RST well within this
+            return self.sock.accept()
+
+    r = Runtime(tmp_path / "runtime.db", short_dir(), lan=True).start()
+    lan = LanListener(r.identity, port=0, host="", log=r.logs.append)
+    try:
+        lan.start(r.server)
+        assert lan._sock.family == socket.AF_INET6
+        lan._sock = Held(lan._sock)
+        assert entered.wait(5)                              # the loop now uses the wrapper
+        c = socket.create_connection(("127.0.0.1", lan.port), timeout=5)
+        c.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+        c.close()
+        reset.set()
+        wait_for(lambda: rejected(r, "rejected lan - setup: no peer address (peer reset)"))
+        s = tls_connect("127.0.0.1", lan.port, r.identity.pin)    # still accepting
+        assert read_frame(s, _alive())["type"] == "challenge"
+        s.close()
+    finally:
+        lan.stop()
+        r.close()
