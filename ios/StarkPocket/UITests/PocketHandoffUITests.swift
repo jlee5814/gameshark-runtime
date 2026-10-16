@@ -63,8 +63,18 @@ final class PocketHandoffUITests: XCTestCase {
             field.tap()
             field.typeText("Hello from my pocket")
         }
+        let rows = app.staticTexts.matching(NSPredicate(format: "identifier BEGINSWITH 'row-'"))
+        let before = rows.count
         app.buttons["sendButton"].tap()
-        waitForText("You said: Hello from my pocket", timeout: 45)
+        if ProcessInfo.processInfo.environment["STARK_LIVE_MODEL"] == "1" {
+            // A real model's words are unknown: expect the question and one answer bubble.
+            let answered = XCTNSPredicateExpectation(
+                predicate: NSPredicate(format: "count >= %d", before + 2), object: rows)
+            XCTAssertEqual(XCTWaiter().wait(for: [answered], timeout: 90), .completed,
+                           "no answer bubble; \(rows.count) rows, \(before) before sending")
+        } else {
+            waitForText("You said: Hello from my pocket", timeout: 45)
+        }
         shot("3-reply-on-phone")
         // 9: Jack Out to the Mac.
         app.buttons["jackButton"].tap()

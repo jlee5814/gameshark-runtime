@@ -144,6 +144,8 @@ class Pocket:
     def ui_test(self, test: str, link: str, bundle: Path,
                 signal_dir: Path | None = None) -> subprocess.CompletedProcess:
         env = {**os.environ, "TEST_RUNNER_STARK_PAIR_LINK": link}
+        if self.args.inference_url:
+            env["TEST_RUNNER_STARK_LIVE_MODEL"] = "1"   # the UI test cannot know the words
         if signal_dir is not None:
             env["TEST_RUNNER_STARK_SIGNAL_DIR"] = str(signal_dir)
         shutil.rmtree(bundle, ignore_errors=True)

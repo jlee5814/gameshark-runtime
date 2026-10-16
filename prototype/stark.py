@@ -21,21 +21,21 @@ token comes from GITHUB_TOKEN, else `gh auth token`. Every GitHub call is a GET.
 
 `run` also serves the surface gateway (StarkMac) on a Unix socket in a private directory
 beside the database, gateway/stark.sock, authenticated by gateway.token beside it. Replies
-come from the OpenAI compatible server --inference-url names (GAMESHARK_INFERENCE_URL), such
-as SGLang or mlx_lm.server; `run` refuses to start without one unless --fake-model asks
-for the deterministic demo model by name, whose every reply says [fake model]. For Qwen3:
+come from the OpenAI compatible server --inference-url names, such as SGLang or
+mlx_lm.server (or GAMESHARK_INFERENCE_URL, with GAMESHARK_INFERENCE_MODEL and
+GAMESHARK_INFERENCE_EXTRA). `run` refuses to start without one unless --fake-model asks for
+the deterministic demo model by name, whose every reply says [fake model]. For Qwen3:
 
     uv run python stark.py run --inference-url http://127.0.0.1:30000/v1 \
         --model mlx-community/Qwen3-4B-4bit \
         --inference-extra '{"chat_template_kwargs": {"enable_thinking": false}}'
 
-With --lan it
-also serves paired devices over pinned TLS 1.3 on the local network (net_gateway.py); the
-listener is off by default and refuses addresses outside private ranges. Its endpoint is
-advertised for `pair` beside the socket (gateway/stark.sock.lan.json), one file per socket.
---tailscale adds a listener bound to this Mac's Tailscale IPv4 alone (tailscale.py), for a
-phone on cellular; it never enables Funnel and refuses to serve while `tailscale serve`
-forwards a runtime port.
+With --lan it also serves paired devices over pinned TLS 1.3 on the local network
+(net_gateway.py); the listener is off by default and refuses addresses outside private
+ranges. Its endpoint is advertised for `pair` beside the socket
+(gateway/stark.sock.lan.json), one file per socket. --tailscale adds a listener bound to
+this Mac's Tailscale IPv4 alone (tailscale.py), for a phone on cellular; it never enables
+Funnel and refuses to serve while `tailscale serve` forwards a runtime port.
 """
 
 from __future__ import annotations
@@ -658,7 +658,8 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--inference-url", default=os.environ.get("GAMESHARK_INFERENCE_URL"),
                    help="OpenAI compatible base URL, for example http://127.0.0.1:30000/v1")
     r.add_argument("--model", default=os.environ.get("GAMESHARK_INFERENCE_MODEL", "default"))
-    r.add_argument("--inference-extra", type=json_object, default=None,
+    r.add_argument("--inference-extra", type=json_object,
+                   default=os.environ.get("GAMESHARK_INFERENCE_EXTRA"),
                    help="JSON object merged into each request, for example "
                         '{"chat_template_kwargs": {"enable_thinking": false}}')
     r.add_argument("--context-window", type=int, default=32768,

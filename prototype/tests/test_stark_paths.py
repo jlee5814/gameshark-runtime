@@ -83,3 +83,12 @@ def test_the_fake_model_says_it_is_fake():
     req = ProviderRequest("c", 1, (Message(Role.USER, "hello"),), 16, deadline=1e18)
     text = "".join(CompanionFakeProvider(0.0).default_text(req))
     assert text.startswith("[fake model] ") and "hello" in text
+
+
+def test_the_model_can_come_from_the_environment(monkeypatch):
+    monkeypatch.setenv("GAMESHARK_INFERENCE_URL", "http://127.0.0.1:30000/v1")
+    monkeypatch.setenv("GAMESHARK_INFERENCE_MODEL", "qwen")
+    monkeypatch.setenv("GAMESHARK_INFERENCE_EXTRA", '{"top_p": 0.9}')
+    args = stark.build_parser().parse_args(["run"])
+    assert (args.inference_url, args.model, args.inference_extra) == (
+        "http://127.0.0.1:30000/v1", "qwen", {"top_p": 0.9})
