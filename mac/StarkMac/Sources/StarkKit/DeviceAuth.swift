@@ -72,12 +72,17 @@ public enum DeviceAuth {
     }
 }
 
-/// `starkpocket://pair?v=1&h=<host>&a=<address>&p=<port>&fp=<pin>&id=<pairing>&s=<secret>`,
-/// printed by `stark.py pair`. Single use and short lived; the secret is the only credential.
+/// `starkpocket://pair?v=1&h=<host>&a=<address>&p=<port>[&t=<tailnet ip>&tp=<port>&tn=<name>]
+/// &fp=<pin>&id=<pairing>&s=<secret>`, printed by `stark.py pair`. Single use and short
+/// lived; the secret is the only credential. The t keys appear when the runtime also serves
+/// its Tailscale address (`run --lan --tailscale`); older links simply lack them.
 public struct PairingLink: Equatable, Sendable {
     public var host: String
     public var address: String?
     public var port: UInt16
+    public var tailnetAddress: String?
+    public var tailnetPort: UInt16?
+    public var tailnetName: String?
     public var pin: Data
     public var pairingID: String
     public var secret: String
@@ -93,6 +98,16 @@ public struct PairingLink: Equatable, Sendable {
               let pin = q["fp"].flatMap({ Data(hex: $0) }), pin.count == 32,
               let id = q["id"], !id.isEmpty, let secret = q["s"], !secret.isEmpty
         else { return nil }
+        // A tailnet endpoint comes whole (a Tailscale address and its port) or not at all.
+        let t = q["t"].flatMap { $0.isEmpty ? nil : $0 }
+        let tp = q["tp"].flatMap { $0.isEmpty ? nil : $0 }
+        if t != nil || tp != nil {
+            guard let t, Route.isTailnetAddress(t), let tp = tp.flatMap(UInt16.init), tp > 0
+            else { return nil }
+            self.tailnetAddress = t
+            self.tailnetPort = tp
+            self.tailnetName = q["tn"].flatMap { $0.isEmpty ? nil : $0 }
+        }
         self.host = host
         self.address = q["a"].flatMap { $0.isEmpty ? nil : $0 }
         self.port = port
@@ -101,8 +116,19 @@ public struct PairingLink: Equatable, Sendable {
         self.secret = secret
     }
 
-    /// Where to dial, best first: the numeric address, then the Bonjour host name.
+    /// LAN hosts, best first: the numeric address, then the Bonjour host name.
     public var candidates: [String] { [address, host].compactMap { $0 } }
+
+    /// Every way in: the LAN hosts on the LAN port, then the tailnet address and its
+    /// MagicDNS name on the tailnet port.
+    public var routes: [Route] {
+        var out = candidates.map { Route(host: $0, port: port, via: .lan) }
+        if let tailnetPort {
+            out += [tailnetAddress, tailnetName].compactMap { $0 }
+                .map { Route(host: $0, port: tailnetPort, via: .tailnet) }
+        }
+        return out
+    }
 }
 
 /// What a phone keeps after pairing (in its Keychain). The pin decides trust; addresses are
@@ -115,9 +141,12 @@ public struct DeviceCredential: Codable, Equatable, Sendable {
     public var port: UInt16
     public var pin: Data
     public var agentUUID: String
+    /// Where to dial. A pairing stored before Tailscale support has none saved, and gets
+    /// its LAN hosts on its LAN port.
+    public var routes: [Route]
 
     public init(deviceID: String, surface: String, name: String, hosts: [String], port: UInt16,
-                pin: Data, agentUUID: String) {
+                pin: Data, agentUUID: String, routes: [Route]? = nil) {
         self.deviceID = deviceID
         self.surface = surface
         self.name = name
@@ -125,5 +154,22 @@ public struct DeviceCredential: Codable, Equatable, Sendable {
         self.port = port
         self.pin = pin
         self.agentUUID = agentUUID
+        self.routes = routes ?? hosts.map { Route(host: $0, port: port, via: .lan) }
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case deviceID, surface, name, hosts, port, pin, agentUUID, routes
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(deviceID: try c.decode(String.self, forKey: .deviceID),
+                  surface: try c.decode(String.self, forKey: .surface),
+                  name: try c.decode(String.self, forKey: .name),
+                  hosts: try c.decode([String].self, forKey: .hosts),
+                  port: try c.decode(UInt16.self, forKey: .port),
+                  pin: try c.decode(Data.self, forKey: .pin),
+                  agentUUID: try c.decode(String.self, forKey: .agentUUID),
+                  routes: try c.decodeIfPresent([Route].self, forKey: .routes))
     }
 }
