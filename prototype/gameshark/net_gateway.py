@@ -291,8 +291,11 @@ class TLSSession(Session):
                 self._read_tls()
         nonce = secrets.token_bytes(32)
         fp = self.listener.identity.pin
-        self.send({"type": "challenge", "proto": list(PROTO_VERSIONS), "nonce": nonce.hex(),
-                   "server_fp": fp.hex(), "transport": "tls"})
+        challenge = {"type": "challenge", "proto": list(PROTO_VERSIONS), "nonce": nonce.hex(),
+                     "server_fp": fp.hex(), "transport": "tls"}
+        if self.listener.instance is not None:
+            challenge["instance"] = self.listener.instance
+        self.send(challenge)
         first = None
         while first is None:
             self._expect(deadline)
@@ -427,8 +430,13 @@ class LanListener:
     """Accepts devices on TCP. Attach to a GatewayServer before it starts."""
 
     def __init__(self, identity: ServerIdentity, port: int = DEFAULT_PORT, host: str = "",
-                 allow=lan_peer, limiter: FailureLimiter | None = None) -> None:
+                 allow=lan_peer, limiter: FailureLimiter | None = None,
+                 instance: str | None = None) -> None:
         self.identity = identity
+        # Names this runtime process in every challenge. Runtimes sharing a gateway
+        # directory share its key, so `stark.py pair` checks this against the
+        # advertisement to know which live runtime answers.
+        self.instance = instance
         self.host = host
         self.requested_port = port
         self.allow = allow

@@ -67,7 +67,9 @@ public struct ClientState: Equatable, Sendable {
 
     /// A draft a jack carried here that this surface has not confirmed (confirmDraft).
     public var incomingDraft: CarriedDraft?
-    /// The draft this surface sent with its last ready_out, until clearSentDraft.
+    /// The draft the runtime confirmed this surface's ready_out committed (draft_carried),
+    /// until clearSentDraft. Sending it is not enough: only this receipt lets a source
+    /// clear its composer.
     public var sentDraft: CarriedDraft?
 
     public var isActiveSurface: Bool { presence?.surface == surface }
@@ -193,6 +195,15 @@ public final class GatewayClient: @unchecked Sendable {
     private var draftAcksOwed: Set<String> = []
     /// draft_ack requests sent on this connection and awaiting a result.
     private var draftAcksSent: Set<String> = []
+    /// The draft the last ready_out carried, until the runtime answers whether the
+    /// committed jack holds it. Kept across reconnects: a lost reply is reconciled by
+    /// replaying the same ready_out, which the runtime answers from the durable row.
+    private var draftAttempt: DraftAttempt?
+
+    private struct DraftAttempt {
+        var draft: CarriedDraft
+        var presenceGen: Int
+    }
 
     /// Each connection dials the next host in turn; a paired phone keeps an address and a
     /// Bonjour name, and either may be the one that works on this network.
@@ -516,6 +527,13 @@ public final class GatewayClient: @unchecked Sendable {
             setStatus(msgId, .sent(seq: r.seq))
         case .readyOut(let hid):
             settle(hid + "preparing")
+            let r = try Wire.decode(Result<ReadyOutResult>.self, from: body).data
+            if let a = draftAttempt, a.draft.handoffId == hid {
+                draftAttempt = nil
+                // Committed with exactly this text: the target holds it. Anything else
+                // (a deadline commit, an older runtime) leaves the composer alone.
+                if r.draftCarried == true { st.sentDraft = a.draft }
+            }
         case .ackIn(let hid):
             settle(hid + "committed")
             let r = try Wire.decode(Result<AckInResult>.self, from: body).data
@@ -548,6 +566,7 @@ public final class GatewayClient: @unchecked Sendable {
             // A fenced refusal is final; anything else may succeed on the next attempt.
             if code == "stale_presence" || code == "handoff_conflict" {
                 settle(key)
+                if draftAttempt?.draft.handoffId == hid { draftAttempt = nil }   // keep it
             } else {
                 handoffSent.remove(key)
             }
@@ -612,6 +631,7 @@ public final class GatewayClient: @unchecked Sendable {
     }
 
     private func followHandoff() {
+        reconcileDraft()
         guard let h = st.handoff, let p = st.presence else { return }
         let key = h.id + h.state
         guard !handoffSent.contains(key), !handoffDone.contains(key) else { return }
@@ -620,13 +640,28 @@ public final class GatewayClient: @unchecked Sendable {
             var fields: [String: Any] = ["handoff_id": h.id, "presence_gen": p.generation]
             if let d = draft(), !d.isEmpty {
                 fields["draft"] = d
-                st.sentDraft = CarriedDraft(handoffId: h.id, text: d)
+                draftAttempt = DraftAttempt(draft: CarriedDraft(handoffId: h.id, text: d),
+                                            presenceGen: p.generation)
             }
             request("ready_out", .readyOut(h.id), fields)
         } else if h.state == "committed" && h.to == config.surface && p.surface == config.surface {
             handoffSent.insert(key)
             request("ack_in", .ackIn(h.id), ["handoff_id": h.id, "presence_gen": p.generation])
         }
+    }
+
+    /// A ready_out that carried a draft lost its answer, and its jack has moved past
+    /// preparing: ask again with the same text and generation. The runtime answers a replay
+    /// from the committed row without changing it.
+    private func reconcileDraft() {
+        guard let a = draftAttempt, haveSnapshot else { return }
+        let hid = a.draft.handoffId
+        let key = hid + "preparing"
+        guard !handoffSent.contains(key) else { return }
+        if let h = st.handoff, h.id == hid, h.state == "preparing" { return }  // normal path
+        handoffSent.insert(key)
+        request("ready_out", .readyOut(hid), ["handoff_id": hid, "presence_gen": a.presenceGen,
+                                              "draft": a.draft.text])
     }
 
     private func offer(_ d: CarriedDraft) {

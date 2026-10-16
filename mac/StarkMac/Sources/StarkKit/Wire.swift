@@ -171,6 +171,14 @@ public struct Snapshot: Decodable, Equatable, Sendable {
     public var draft: CarriedDraft?
 }
 
+struct ReadyOutResult: Decodable {
+    var handoffId: String
+    var state: String
+    /// Whether the committed jack holds exactly the draft this ready_out sent. Absent from
+    /// a runtime older than the receipt, which counts as not carried.
+    var draftCarried: Bool?
+}
+
 struct AckInResult: Decodable {
     var handoffId: String
     var state: String

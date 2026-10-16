@@ -498,3 +498,49 @@ def test_a_jack_without_a_draft_offers_nothing(rt):
     with rt.client() as mac, rt.client(surface="pad") as pad:
         pad_jacks_in(mac, pad, None)
         assert pad.call("snapshot")["draft"] is None
+
+
+# ---------------------------------------------------------------------- draft receipt
+def test_ready_out_reports_whether_the_commit_carried_this_exact_draft(rt):
+    """The source may clear its composer only on this receipt; a replay answers the same."""
+    with rt.client() as mac, rt.client(surface="pad") as pad:
+        g = gen(pad)
+        pad.call("jack", handoff_id="r1", to="self", presence_gen=g)
+        out = mac.call("ready_out", handoff_id="r1", presence_gen=g, draft="half typed")
+        assert (out["state"], out["draft_carried"]) == ("committed", True)
+        again = mac.call("ready_out", handoff_id="r1", presence_gen=g, draft="half typed")
+        assert again["draft_carried"] is True                          # reconciliation replay
+        other = mac.call("ready_out", handoff_id="r1", presence_gen=g, draft="edited later")
+        assert other["draft_carried"] is False                         # not this text
+        empty = mac.call("ready_out", handoff_id="r1", presence_gen=g, draft=None)
+        assert empty["draft_carried"] is False
+
+
+def test_a_ready_out_that_loses_to_the_prepare_deadline_carried_nothing(rt):
+    """The request never arrived in time: the deadline committed without a draft, so the
+    late (or reconciling) ready_out must say the text did not travel."""
+    with rt.client() as mac, rt.client(surface="pad") as pad:
+        g = gen(pad)
+        pad.call("jack", handoff_id="r2", to="self", presence_gen=g)
+        wait_for(lambda: mac.call("snapshot")["presence"]["surface"] == "pad", 10)
+        out = mac.call("ready_out", handoff_id="r2", presence_gen=g, draft="only copy")
+        assert out["state"] in ("committed", "acked")
+        assert out["draft_carried"] is False
+        assert pad.call("snapshot")["draft"] is None
+
+
+def test_the_draft_receipt_survives_a_runtime_restart(tmp_path):
+    """The reply to ready_out is lost with the runtime; the next runtime answers the replay
+    from the durable handoff row."""
+    sock_dir = short_dir()
+    a = Runtime(tmp_path / "runtime.db", sock_dir).start()
+    with a.client() as mac, a.client(surface="pad") as pad:
+        g = pad_jacks_in(mac, pad, "half typed", hid="r3")
+    a.close()
+    b = Runtime(tmp_path / "runtime.db", sock_dir).start()
+    try:
+        with b.client() as mac:
+            out = mac.call("ready_out", handoff_id="r3", presence_gen=g - 1, draft="half typed")
+            assert out["draft_carried"] is True
+    finally:
+        b.close()
