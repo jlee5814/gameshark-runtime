@@ -197,8 +197,13 @@ database and the token), the operator, and the phone's OS.
   boot and at `pair`, not watched while running; a changed address costs the phone a
   fallback, and the daemon needs a restart to serve the new one. Path classes come from
   NWPath; with a VPN up, iOS may report a class change late or not at all, in which case a
-  dead LAN socket is caught by TCP keepalive instead of an immediate redial. Physical
-  cellular use is unverified (checklist in ios/StarkPocket/README.md).
+  dead LAN socket is caught by TCP keepalive instead of an immediate redial.
+- Physical device evidence is one run by hand (ios/StarkPocket/README.md): an iPhone on
+  the PR #32 build passed cellular Jack In, Jack Out, and reply, Wi-Fi and cellular
+  switches, and Tailscale off and on with the draft kept and no observed duplicate. Not yet
+  proven on hardware: cold launch route order, a stalled send reaching the 5 s deadline, a
+  background during the first 1 s path wait, every fault and revocation case, and composer
+  text surviving app termination.
 
 ## Measured (loopback, M series Mac, in process runtime)
 

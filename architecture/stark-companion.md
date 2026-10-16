@@ -176,8 +176,10 @@ conversation, connection and presence state, pairing from a `starkpocket://pair`
 Jack In / Jack Out through the `jack` command. It stores only its pairing (Keychain) and
 presentation facts. StarkMac names the device holding Stark and offers Jack In Here.
 `ios/scripts/pocket-demo.sh` runs the full Mac → simulator → Mac handoff with faults; see
-[ios/StarkPocket/README.md](../ios/StarkPocket/README.md).
+[ios/StarkPocket/README.md](../ios/StarkPocket/README.md). A physical iPhone passed the
+Phase 3.3 cellular and Tailscale acceptance by hand; that README records what was shown
+and what remains unproven on hardware.
 
 ## Not yet built
 
-Bonjour, voice, system notifications, a run on a physical iPhone.
+Bonjour, voice, system notifications.
