@@ -808,6 +808,31 @@ neither.
 - Cloud: untested live. Auth redaction, egress, and budget gating are CI tested only.
 - Latencies are single run observations on a warm machine, not benchmarks.
 
+## Persistent memory (Phase 4.2)
+
+Design: `../architecture/stark-memory.md`. Facts the user explicitly saves live in
+`memories` beside the conversation, owned by Stark's identity, and reach every reply in a
+block with its own byte budget (`--memory-budget`, default 1024), whatever the model.
+
+```
+/remember My parking spot is B12      (composer, StarkMac or Stark Pocket)
+uv run python stark.py memory         (list, with ids and provenance)
+uv run python stark.py memory forget mem-...
+```
+
+- Typed surface commands only: `memory_list`, `memory_remember`, `memory_correct`,
+  `memory_forget`. Remember and correct are fenced by presence like a chat send; forget
+  only by the lease. Each write is idempotent by its op id.
+- Model output, retrieved text, files, and application data never write memory. Chat
+  text is never scanned for facts.
+- Correct keeps the id and bumps the revision; forget empties the row. A reply built on a
+  memory that was forgotten or corrected before it committed is discarded and rerun.
+- Forget is not erasure of the conversation: chat rows that quote the fact stay and can
+  reach the model while they sit in the history window. The forget result counts them,
+  and both surfaces say so.
+- Durable grants `memory.write` and `memory.inject` (adapter `memory`) switch saving and
+  injection off without deleting anything.
+
 ## Actual test results
 
 ```
