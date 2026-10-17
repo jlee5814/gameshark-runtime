@@ -21,6 +21,13 @@ A CallSpec with history_budget sends a window, not the whole conversation: the l
 system rows plus the newest rows whose byte bound fits (fit_history). The window is a pure
 function of the rows before base_seq, so select, reserve, and every replay agree on it.
 
+A CallSpec with memory_budget also carries saved memories (memory.py), in one system block
+right after the leading system rows, sized by its own budget so history and memory never
+compete for bytes. The reservation records the (memory id, revision) pairs it carried, in
+the request JSON as ids only. Commit refuses (ContextConflict, retryable) when any of them
+was forgotten or corrected since, so no answer built on a fact the user withdrew lands;
+the owner replays the call and the new attempt is built without it.
+
 Execution is at least once; commit is at most once. Recovery only settles abandoned
 reservations. It never dispatches: the owner replays and reissues the same call_id.
 Nothing here claims exactly once provider execution or billing.
@@ -46,6 +53,7 @@ from gameshark.inference.types import (
     ContextTooLong,
     FinishReason,
     InvalidRequest,
+    Locality,
     Message,
     OwnershipMismatch,
     Privacy,
@@ -108,6 +116,8 @@ class CallSpec:
     timeout_s: float = 60.0
     # Upper bound, in prompt_bytes_bound units, on the context sent; None sends every row.
     history_budget: int | None = None
+    # Upper bound, in the same units, on the saved memory block; None injects no memory.
+    memory_budget: int | None = None
 
 
 @dataclass(frozen=True)
@@ -121,6 +131,7 @@ class Reservation:
     request: ProviderRequest
     reserved_tokens: int
     reserved_micros: int
+    memories: tuple[tuple[str, int], ...] = ()  # (memory id, revision) the request carried
 
 
 @dataclass(frozen=True)
@@ -152,8 +163,12 @@ class InferenceJournal:
         clock: Clock,
         crash: Callable[[str], None] | None = None,
         monotonic: Callable[[], float] = time.monotonic,
+        memory: object = None,
     ) -> None:
         self.conn = conn
+        # MemoryStore, read only from here: block() builds the memory message and current()
+        # fences the commit. Nothing in inference writes memory.
+        self.memory = memory
         self.agent_id = agent_id
         self.lease = lease
         self.generation = generation
@@ -268,6 +283,24 @@ class InferenceJournal:
         ).fetchall()
         return fit_history(tuple(Message(Role(r["role"]), r["content"]) for r in rows), budget)
 
+    def request_messages(self, conversation_id: str, before_seq: int, spec: CallSpec,
+                         locality: Locality) -> tuple[tuple[Message, ...],
+                                                      tuple[tuple[str, int], ...]]:
+        """The prompt for a call: the history window plus, when the spec has a memory
+        budget, one block of saved memories after the leading system rows. Also return the
+        (memory id, revision) pairs the block carries."""
+        history = self.context(conversation_id, before_seq, spec.history_budget)
+        if self.memory is None or spec.memory_budget is None or not history:
+            return history, ()
+        query = next((m.content for m in reversed(history) if m.role is Role.USER), "")
+        text, pairs = self.memory.block(query, spec.memory_budget, locality)
+        if text is None:
+            return history, ()
+        head = 0
+        while head < len(history) - 1 and history[head].role is Role.SYSTEM:
+            head += 1
+        return history[:head] + (Message(Role.SYSTEM, text),) + history[head:], pairs
+
     # ------------------------------------------------------------------ calls
     def lookup(self, call_id: str) -> Committed | None:
         """Return the committed message for a done call, or None while it is pending.
@@ -330,7 +363,8 @@ class InferenceJournal:
                     return None
             base_seq = conv["next_seq"]
             attempt = (row["attempts"] if row is not None else 0) + 1
-            messages = self.context(conversation_id, base_seq, spec.history_budget)
+            messages, memories = self.request_messages(conversation_id, base_seq, spec,
+                                                       caps.locality)
             if not messages:
                 raise InvalidRequest(f"conversation {conversation_id} has no context")
             req = ProviderRequest(
@@ -349,9 +383,11 @@ class InferenceJournal:
             reserved_micros = cost_micros(caps, prompt, spec.max_tokens)
             if admit is not None:
                 admit(conn, reserved_tokens, reserved_micros, now)
-            request_json = json.dumps({"max_tokens": spec.max_tokens,
-                                       "temperature": spec.temperature,
-                                       "needs": sorted(spec.needs)})
+            request = {"max_tokens": spec.max_tokens, "temperature": spec.temperature,
+                       "needs": sorted(spec.needs)}
+            if memories:
+                request["memories"] = [list(p) for p in memories]   # ids, never content
+            request_json = json.dumps(request)
             if row is None:
                 conn.execute(
                     "INSERT INTO inference_calls(call_id, agent_id, conversation_id, base_seq, "
@@ -374,7 +410,7 @@ class InferenceJournal:
                  reserved_micros, RESERVED),
             )
             return Reservation(call_id, conversation_id, attempt, base_seq, self.generation,
-                               provider, req, reserved_tokens, reserved_micros)
+                               provider, req, reserved_tokens, reserved_micros, memories)
 
         out = self._fenced(body)
         if exhausted:
@@ -515,6 +551,11 @@ class InferenceJournal:
                 refusal = StaleAttempt(
                     f"attempt {res.attempt} of {res.call_id} was superseded "
                     f"(current {row['attempts']}, ledger {ledger and ledger['status']})")
+                return None
+            if res.memories and self.memory is not None and not self.memory.current(
+                    res.memories):
+                refusal = ContextConflict(
+                    f"a memory in the context of {res.call_id} was forgotten or corrected")
                 return None
             conv = self._conversation(res.conversation_id)
             if row["base_seq"] != res.base_seq or conv["next_seq"] != res.base_seq:

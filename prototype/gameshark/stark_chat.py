@@ -54,7 +54,9 @@ CONVERSATION = "stark:main"
 RESPONSIBILITY = "chat:stark:main"
 SYSTEM = ("You are Stark, a calm desktop companion. Answer in one or two short plain "
           "sentences.")
-SPEC = CallSpec(max_tokens=256, timeout_s=120.0)
+# Bytes of saved memory each reply may carry, apart from the history window.
+MEMORY_BUDGET = 1024
+SPEC = CallSpec(max_tokens=256, timeout_s=120.0, memory_budget=MEMORY_BUDGET)
 
 
 QUEUED, THINKING, WAITING, FAILED = "queued", "thinking", "waiting", "failed"
@@ -166,9 +168,20 @@ class StarkChatAdapter:
 
     # ------------------------------------------------------------------ controls
     def apply_control(self, action: str, payload: dict) -> str:
-        """Operator controls. jack moves presence toward another surface (demo and tests)."""
+        """Operator controls. jack moves presence toward another surface (demo and tests);
+        forget_memory forgets one saved memory for `stark.py memory forget`."""
         ctx = self.ctx
         assert ctx is not None
+        if action == "forget_memory":
+            if ctx.memory is None:
+                raise ValueError("memory is not enabled")
+            mid = str(payload.get("memory_id", ""))
+            op = str(payload.get("op_id") or f"cli-{uuidlib.uuid4().hex}")
+            try:
+                m = ctx.memory.forget("operator-cli", op, mid)
+            except LookupError as e:
+                raise ValueError(str(e)) from None
+            return f"{m.id}:{m.state}:history_mentions={m.history_mentions}"
         if action != "jack":
             raise ValueError(f"unknown action {action}")
         if ctx.presence is None:

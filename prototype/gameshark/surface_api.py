@@ -22,6 +22,12 @@ activity (queued, thinking, waiting, failed) and the model behind it in the snap
 Pushes are at least once: a session that has synced receives rows after the last seq it
 was sent, plus presence, responsibility, and activity changes. The surface merges by seq,
 so a repeat is harmless and a gap triggers a sync.
+
+Memory (Phase 4.2) is four typed commands: memory_list reads, memory_remember and
+memory_correct are fenced by presence like send, and memory_forget only by the lease, so
+any authenticated surface may always delete. Each write carries a client chosen op_id; a
+resend returns the first result. Saved text never becomes a conversation row. A change
+pushes the whole list (at most 256 rows) as a memories event.
 """
 
 from __future__ import annotations
@@ -35,6 +41,9 @@ from gameshark.errors import Cancelled, Draining, FencedError, HandoffConflict, 
 from gameshark.gateway import HELLO, LOST, PROTO_VERSIONS, GatewayServer, Session
 from gameshark.inference.fake import FakeProvider
 from gameshark.inference.types import InvalidRequest, OwnershipMismatch
+from gameshark.memory import ID_RE as MEMORY_ID_RE
+from gameshark.memory import MAX_TEXT as MEMORY_TEXT
+from gameshark.memory import MemoryConflict, MemoryLimit
 from gameshark.net_gateway import AuthRequest, TLSSession
 from gameshark.presence import ACKED, COMMITTED
 from gameshark.stark_chat import CONVERSATION, StarkChatAdapter
@@ -46,6 +55,7 @@ MAX_TEXT = 8 * 1024
 PAGE = 500
 SERVER = "gameshark-runtime/0.4"
 CONVERSATIONS = frozenset({CONVERSATION})   # the only conversations a surface may touch
+FEATURES = ("memory",)                      # optional commands this runtime serves
 
 
 class Invalid(Exception):
@@ -85,6 +95,24 @@ def _hex(msg: dict, key: str, max_bytes: int = 128) -> bytes:
         raise Invalid(f"{key} must be hex") from None
 
 
+def _memory_text(msg: dict) -> str:
+    v = msg.get("text")
+    if not isinstance(v, str) or not v.strip() or len(v.encode()) > 4 * MEMORY_TEXT:
+        raise Invalid(f"text must be non empty text of at most {MEMORY_TEXT} bytes")
+    return v                                  # MemoryStore normalizes and bounds it exactly
+
+
+def _memory_id(msg: dict) -> str:
+    v = msg.get("memory_id")
+    if not isinstance(v, str) or not MEMORY_ID_RE.match(v):
+        raise Invalid(f"memory_id must match {MEMORY_ID_RE.pattern}")
+    return v
+
+
+def _device(sess: Session) -> str | None:
+    return getattr(sess, "device_id", None)
+
+
 def _conversation(msg: dict) -> str:
     cid = _id(msg, "conversation_id")
     if cid not in CONVERSATIONS:
@@ -117,6 +145,10 @@ class SurfaceAPI:
             "ack_in": self._ack_in,
             "jack": self._jack,
             "draft_ack": self._draft_ack,
+            "memory_list": self._memory_list,
+            "memory_remember": self._memory_remember,
+            "memory_correct": self._memory_correct,
+            "memory_forget": self._memory_forget,
         }
 
     # ------------------------------------------------------------------ loop hooks
@@ -169,6 +201,12 @@ class SurfaceAPI:
             self._error(sess, rid, "invalid", e)
         except StalePresence as e:
             self._error(sess, rid, "stale_presence", e)
+        except MemoryConflict as e:
+            self._error(sess, rid, "conflict", e)
+        except MemoryLimit as e:
+            self._error(sess, rid, "memory_limit", e)
+        except PermissionError as e:
+            self._error(sess, rid, "forbidden", e)
         except HandoffConflict as e:
             self._error(sess, rid, "handoff_conflict", e)
         except Draining as e:
@@ -210,6 +248,9 @@ class SurfaceAPI:
             # Display names of paired devices, so a surface can say where Stark is.
             "devices": [{"surface": k, "name": v} for k, v in
                         sorted((self.devices.names() if self.devices else {}).items())],
+            "features": list(FEATURES),
+            # Counts only; the list itself comes from memory_list and memories pushes.
+            "memory": self._memory_summary(),
         }
 
     def _sync(self, sess: Session, msg: dict) -> dict:
@@ -287,6 +328,49 @@ class SurfaceAPI:
         h = self.sup.presence.request_jack_by(hid, sess.surface, gen, to)
         return {"handoff_id": h.id, "state": h.state, "from": h.from_surface,
                 "to": h.to_surface}
+
+    # ------------------------------------------------------------------ memory
+    def _memory_list(self, sess: Session, msg: dict) -> dict:
+        return self._memories()
+
+    def _memory_remember(self, sess: Session, msg: dict) -> dict:
+        op = _id(msg, "op_id")
+        text = _memory_text(msg)
+        gen = _int(msg, "presence_gen", 0)
+        m = self._store().remember(sess.surface, gen, op, text, device_id=_device(sess))
+        return {"memory": m.view(), "replayed": m.replayed}
+
+    def _memory_correct(self, sess: Session, msg: dict) -> dict:
+        op = _id(msg, "op_id")
+        mid = _memory_id(msg)
+        rev = _int(msg, "revision", 1)
+        text = _memory_text(msg)
+        gen = _int(msg, "presence_gen", 0)
+        m = self._store().correct(sess.surface, gen, op, mid, rev, text,
+                                  device_id=_device(sess))
+        return {"memory": m.view(), "replayed": m.replayed}
+
+    def _memory_forget(self, sess: Session, msg: dict) -> dict:
+        op = _id(msg, "op_id")
+        mid = _memory_id(msg)
+        m = self._store().forget(sess.surface, op, mid, device_id=_device(sess))
+        # Saved memory is gone; conversation rows that quote it are not. Say how many.
+        return {"memory_id": m.id, "state": m.state, "replayed": m.replayed,
+                "history_mentions": m.history_mentions}
+
+    def _store(self):
+        if self.sup.memory is None:
+            raise Invalid("memory is not enabled")
+        return self.sup.memory
+
+    def _memories(self) -> dict:
+        store = self._store()
+        return {"memories": [m.view() for m in store.list()],
+                "inject": store.inject_enabled()}
+
+    def _memory_summary(self) -> dict:
+        store = self._store()
+        return {"count": store.count(), "inject": store.inject_enabled()}
 
     # ------------------------------------------------------------------ devices
     def _authenticate(self, sess: Session, req: AuthRequest) -> None:
@@ -454,6 +538,8 @@ class SurfaceAPI:
             s.send({"type": "event", "kind": "messages", "rev": self.rev,
                     "data": {"conversation_id": CONVERSATION,
                              "rows": [self._row(r) for r in rows]}})
+        if self.sup.memory is not None and self._changed("memories", self.sup.memory.version):
+            self._push(sessions, "memories", self._memories())
         # After rows, so a surface never shows Stark idle before his reply has arrived.
         self._push_activity(sessions)
 

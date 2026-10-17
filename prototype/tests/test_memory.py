@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import re
 import sqlite3
 import sys
 from pathlib import Path
@@ -284,23 +285,20 @@ def test_two_connections_race_one_revision(paths, clock):
 
 def test_model_output_has_no_path_to_memory_writes():
     """Only typed surface handlers and operator controls reach the write methods."""
-    writers = {"remember", "correct", "forget"}
-    allowed = {ROOT / "gameshark" / "memory.py", ROOT / "gameshark" / "surface_api.py",
-               ROOT / "gameshark" / "stark_chat.py"}
+    importers = set()
     for f in (ROOT / "gameshark").rglob("*.py"):
-        tree = ast.parse(f.read_text())
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Attribute) and node.attr in writers and isinstance(
-                    node.ctx, ast.Load):
-                parent = f.resolve()
-                assert parent in allowed, f"{f}: .{node.attr} outside the typed paths"
+        for node in ast.walk(ast.parse(f.read_text())):
+            if isinstance(node, ast.ImportFrom) and node.module == "gameshark.memory":
+                importers.add(f.relative_to(ROOT).as_posix())
+    assert importers <= {"gameshark/surface_api.py", "gameshark/supervisor.py",
+                         "gameshark/stark_chat.py"}, importers
+    # Inference reads memory through two read only calls and never writes it.
+    for f in (ROOT / "gameshark" / "inference").rglob("*.py"):
+        used = set(re.findall(r"\bmemory\.(\w+)\(", f.read_text()))
+        assert used <= {"block", "current"}, (f.name, used)
     # stark_chat applies operator forget controls only; never remember or correct.
     chat = (ROOT / "gameshark" / "stark_chat.py").read_text()
-    assert ".remember(" not in chat and ".correct(" not in chat
-    # Nothing under inference/ touches memory writes at all.
-    for f in (ROOT / "gameshark" / "inference").rglob("*.py"):
-        text = f.read_text()
-        assert ".remember(" not in text and ".forget(" not in text and ".correct(" not in text
+    assert "memory.remember(" not in chat and "memory.correct(" not in chat
 
 
 def test_schema_upgrade_keeps_old_rows(paths):

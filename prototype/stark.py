@@ -15,6 +15,7 @@ One prompt assigns a responsibility; the daemon keeps it across restarts.
     uv run python stark.py pair --name "My iPhone"   # one time pairing link for Stark Pocket
     uv run python stark.py devices                   # paired devices; `devices revoke <id>`
     uv run python stark.py drafts                    # carried drafts no surface confirmed
+    uv run python stark.py memory                    # saved memories; `memory forget <id>`
 
 State lives in ~/.gameshark/runtime.db (override with --db or GAMESHARK_DB). The GitHub
 token comes from GITHUB_TOKEN, else `gh auth token`. Every GitHub call is a GET.
@@ -174,11 +175,14 @@ def model_label(provider) -> str:
 
 
 def chat_spec(args):
-    """Stark's reply call: max_tokens out, and a history window that leaves room for it."""
+    """Stark's reply call: max_tokens out, a memory block, and a history window that leaves
+    room for both. History and memory never compete for the same bytes."""
     from gameshark.stark_chat import SPEC
 
-    budget = max(1, args.context_window - args.max_tokens - HISTORY_MARGIN)
-    return dataclasses.replace(SPEC, max_tokens=args.max_tokens, history_budget=budget)
+    memory = args.memory_budget
+    budget = max(1, args.context_window - args.max_tokens - HISTORY_MARGIN - memory)
+    return dataclasses.replace(SPEC, max_tokens=args.max_tokens, history_budget=budget,
+                               memory_budget=memory or None)
 
 
 def json_object(text: str) -> dict:
@@ -325,21 +329,7 @@ def cmd_control(args, action: str) -> int:
     conn = connect(args.db)
     rid = enqueue_control(conn, AGENT, adapter, action, payload)
     conn.close()
-    try:
-        with InstanceLock(args.db):
-            sup = build_supervisor(args.db, args.interval)
-            sup.start()
-            try:
-                for line in apply_controls(sup):
-                    print(f"applied {line}")
-            finally:
-                sup.stop()
-                sup.close()
-    except AlreadyRunning:
-        print(f"queued request {rid}; the running daemon applies it on its next tick")
-    except LeaseDenied as e:
-        print(f"queued request {rid}; another host owns Stark ({e})")
-    return 0
+    return _apply_now(args, rid)
 
 
 def cmd_run(args) -> int:
@@ -551,6 +541,57 @@ def cmd_devices(args) -> int:
     return 0
 
 
+def cmd_memory(args) -> int:
+    """List saved memories, or forget one. Forget goes through the control queue, so a
+    running daemon applies it under its lease; this CLI never competes for ownership."""
+    from gameshark.memory import ID_RE, MemoryStore
+
+    if args.action == "forget":
+        if not args.memory or not ID_RE.match(args.memory):
+            print("memory forget needs a memory id (mem-...)", file=sys.stderr)
+            return 2
+        conn = connect(args.db)
+        rid = enqueue_control(conn, AGENT, "stark", "forget_memory",
+                              {"memory_id": args.memory, "op_id": f"cli-{secrets.token_hex(16)}"})
+        conn.close()
+        if InstanceLock(args.db).held_elsewhere():
+            _poke_daemon(args)
+            print(f"queued forget {rid}; the running daemon applies it now")
+            return 0
+        return _apply_now(args, rid)
+    conn = connect(args.db)
+    try:
+        store = MemoryStore(conn, AGENT, None, 0, None, None, None)
+        rows = store.list()
+        inject = store.inject_enabled()
+    finally:
+        conn.close()
+    for m in rows:
+        when = time.strftime("%Y-%m-%d %H:%M", time.localtime(m.updated))
+        print(f"{m.id}  r{m.revision}  {when}  {m.source_surface}")
+        print(f"    {m.content}")
+    print(f"{len(rows)} saved memories; injection {'on' if inject else 'off (revoked)'}")
+    return 0
+
+
+def _apply_now(args, rid: int) -> int:
+    try:
+        with InstanceLock(args.db):
+            sup = build_supervisor(args.db, args.interval)
+            sup.start()
+            try:
+                for line in apply_controls(sup):
+                    print(f"applied {line}")
+            finally:
+                sup.stop()
+                sup.close()
+    except AlreadyRunning:
+        print(f"queued request {rid}; the running daemon applies it on its next tick")
+    except LeaseDenied as e:
+        print(f"queued request {rid}; another host owns Stark ({e})")
+    return 0
+
+
 def cmd_drafts(args) -> int:
     """Read only recovery: unsent text a jack carried that no target confirmed (it
     reverted, or the target moved on or never came back). Copy it out by hand."""
@@ -671,6 +712,9 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--context-window", type=int, default=32768,
                    help="the model's window in tokens; the history sent leaves max tokens free")
     r.add_argument("--max-tokens", type=int, default=512, help="reply length bound")
+    r.add_argument("--memory-budget", type=int, default=1024,
+                   help="bytes of saved memory each reply may carry, apart from history; "
+                        "0 injects none")
     r.add_argument("--model-cooldown", type=float, default=10.0,
                    help="seconds an unreachable model stays out of routing before a new probe")
     r.add_argument("--fake-model", action="store_true",
@@ -693,6 +737,9 @@ def build_parser() -> argparse.ArgumentParser:
     dv.add_argument("action", nargs="?", choices=["list", "revoke"], default="list")
     dv.add_argument("device", nargs="?")
     sub.add_parser("drafts", help="list carried drafts no surface has confirmed")
+    mem = sub.add_parser("memory", help="list saved memories, or forget one")
+    mem.add_argument("action", nargs="?", choices=["list", "forget"], default="list")
+    mem.add_argument("memory", nargs="?")
     j = sub.add_parser("jack", help="move Stark's presence to another surface")
     j.add_argument("surface")
     sub.add_parser("status")
@@ -718,11 +765,14 @@ def main(argv: list[str] | None = None) -> int:
                      "or --fake-model for the demo model")
         if args.max_tokens < 1 or args.context_window <= args.max_tokens:
             ap.error("--context-window must exceed --max-tokens")
+        if not 0 <= args.memory_budget < args.context_window - args.max_tokens:
+            ap.error("--memory-budget must be at least 0 and leave room for history")
     args.db.parent.mkdir(parents=True, exist_ok=True)
     if args.cmd in ("watch", "unwatch", "resume", "jack"):
         return cmd_control(args, args.cmd)
     return {"run": cmd_run, "status": cmd_status, "feed": cmd_feed, "ack": cmd_ack,
-            "pair": cmd_pair, "devices": cmd_devices, "drafts": cmd_drafts}[args.cmd](args)
+            "pair": cmd_pair, "devices": cmd_devices, "drafts": cmd_drafts,
+            "memory": cmd_memory}[args.cmd](args)
 
 
 if __name__ == "__main__":

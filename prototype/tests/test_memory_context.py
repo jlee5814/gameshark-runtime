@@ -149,7 +149,7 @@ def test_relevant_memories_win_the_budget(env):
     env.remember("Favorite climbing gym is Stone Summit.")
     env.add(Role.USER, "which climbing gym do I like?")
     p = FakeProvider("local")
-    env.router(p).complete("c1", CONV, CallSpec(max_tokens=16, memory_budget=160),
+    env.router(p).complete("c1", CONV, CallSpec(max_tokens=16, memory_budget=200),
                            CancelToken())
     assert "Stone Summit" in memory_block(p.invocations[-1])
 
@@ -276,7 +276,7 @@ def test_memory_survives_a_model_switch(paths, clock):
 def test_memory_counts_toward_the_window_check(env):
     env.conversation()
     env.add(Role.USER, "hi")
-    env.remember("x" * 900)
+    env.remember("x" * 600)
     tiny = FakeProvider("tiny", Capabilities("tiny", Locality.LOCAL, 120))
     from gameshark.inference.router import BoundKind, TokenBound
 

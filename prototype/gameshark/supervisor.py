@@ -12,6 +12,10 @@ same call_id; ownership loss drops the task without any write.
 
 With enable_presence, start() also builds the generation bound PresenceManager and
 SurfaceConversation, so a surface gateway can fence its writes by presence generation.
+
+start() always builds the MemoryStore on the same connection and lease: saved memories
+reach inference through the journal, and their writes come only from typed surface
+commands and operator controls (memory.py).
 """
 
 from __future__ import annotations
@@ -47,6 +51,7 @@ from gameshark.inference.tracker import ModelTracker, TrackerPolicy
 from gameshark.inference.types import ProviderCancelled, ProviderError
 from gameshark.lease import LeaseManager
 from gameshark.lifecycle import Lifecycle, Phase
+from gameshark.memory import MemoryStore
 from gameshark.presence import PresenceManager
 from gameshark.responsibilities import ResponsibilityStore
 from gameshark.store import connect, write_txn
@@ -93,6 +98,7 @@ class AgentSupervisor:
         self._presence_timeouts: dict[str, float] = {}
         self.presence: PresenceManager | None = None
         self.surface: SurfaceConversation | None = None
+        self.memory: MemoryStore | None = None
         # What runs right now, for surfaces. In memory and read only: never durable state.
         self.activity = ActivityTracker()
 
@@ -186,6 +192,7 @@ class AgentSupervisor:
             inference=self.inference,
             presence=self.presence,
             activity=self.activity,
+            memory=self.memory,
         )
 
     def _fenced(self, fn):
@@ -221,6 +228,11 @@ class AgentSupervisor:
             self.surface = SurfaceConversation(self.conn, self.agent_id, self.lease,
                                                self.generation, self.presence, self.clock,
                                                crash=self._maybe_crash)
+        self.memory = MemoryStore(self.conn, self.agent_id, self.lease, self.generation,
+                                  self.presence, self.grants, self.clock,
+                                  crash=self._maybe_crash)
+        self.memory.ensure_grants()
+        self.inference.memory = self.memory
         if self._inference_cfg is not None:
             self._start_inference()
         self.router = EventRouter(

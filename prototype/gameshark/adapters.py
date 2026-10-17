@@ -35,6 +35,7 @@ class AdapterContext:
     inference: object = None                   # InferenceJournal for durable model calls
     presence: object = None                    # PresenceManager when presence is enabled
     activity: object = None                    # ActivityTracker: mark execution, read only
+    memory: object = None                      # MemoryStore: operator forget controls only
 
 
 class Adapter(Protocol):
