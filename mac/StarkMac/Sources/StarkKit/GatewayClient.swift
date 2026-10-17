@@ -639,8 +639,11 @@ public final class GatewayClient: @unchecked Sendable {
                 // Another runtime database: nothing cached belongs to it.
                 mirror.reset()
                 st.rows = []
+                // Memories belong to an identity: a write queued for the old runtime is
+                // never sent to this one, pending or not.
                 st.memories = []
-                st.memoryOps.removeAll { $0.status != .pending }
+                st.memoryOps = []
+                memorySent = []
                 st.outbox.removeAll { if case .pending = $0.status { false } else { true } }
             }
             st.identity = w.identity

@@ -149,6 +149,23 @@ import Testing
         #expect(c.state.memoryNotice == nil)
     }
 
+    @Test func anotherRuntimeNeverReceivesPendingMemoryWrites() throws {
+        let rt = FakeRuntime()                         // serves no memory yet: ops wait
+        let c = try live(rt)
+        defer { c.stop() }
+        c.remember("a private fact for uuid-1")
+        #expect(eventually { c.state.memoryOps.count == 1 })
+        rt.lock.withLock {
+            rt.uuid = "uuid-other"                    // another database answers next
+            rt.memoryFeature = true
+        }
+        c.reconnectNow()
+        #expect(eventually { c.state.identity?.uuid == "uuid-other" && c.state.connection == .live })
+        Thread.sleep(forTimeInterval: 0.1)
+        #expect(c.state.memoryOps.isEmpty)
+        #expect(rt.lock.withLock { rt.memoryRequests.isEmpty })
+    }
+
     @Test func aPushReplacesTheList() throws {
         let rt = FakeRuntime()
         rt.memoryFeature = true
