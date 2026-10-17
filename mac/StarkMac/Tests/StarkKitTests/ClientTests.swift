@@ -76,6 +76,8 @@ final class FakeRuntime: @unchecked Sendable {
     /// When set, the next memory write lands but its reply is lost and the connection drops.
     var dropNextMemoryReply = false
     var nextMemory = 1
+    /// When set, the next memory write is refused with this code and nothing is written.
+    var memoryErrorOnce: String?
 
     /// The open jack resolves (acked by its target, or reverted) and presence moves to
     /// holder; the push tells every connection the jack closed.
@@ -278,6 +280,11 @@ final class FakeRuntime: @unchecked Sendable {
     private func memoryWrite(_ type: String, _ msg: [String: Any], id: Int, on t: FakeTransport) {
         let op = msg["op_id"] as! String
         memoryRequests.append(op)
+        if let code = memoryErrorOnce {
+            memoryErrorOnce = nil
+            t.push(["type": "error", "id": id, "code": code, "message": code])
+            return
+        }
         if let first = memoryAnswers[op] {
             var again = first
             again["replayed"] = true

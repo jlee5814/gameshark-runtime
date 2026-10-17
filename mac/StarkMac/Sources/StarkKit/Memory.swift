@@ -102,6 +102,7 @@ public enum MemoryText {
         case "conflict": "Not saved: this memory changed elsewhere. Review it and try again."
         case "forbidden": "Not saved: memory writes are turned off on the Mac."
         case "memory_limit": "Not saved: Stark already keeps 256 memories. Forget one first."
+        case "duplicate": "Not saved: another memory already says exactly this."
         case "invalid": "Not saved: the text is empty or too long (1 KB at most)."
         default: "Not saved: \(code)"
         }

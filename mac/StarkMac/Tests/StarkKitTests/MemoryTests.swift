@@ -166,6 +166,40 @@ import Testing
         #expect(rt.lock.withLock { rt.memoryRequests.isEmpty })
     }
 
+    @Test func aFencedOrDrainingRefusalStaysPendingAndResendsUnderTheSameOp() throws {
+        for code in ["fenced", "draining"] {
+            let rt = FakeRuntime()
+            rt.memoryFeature = true
+            rt.memoryErrorOnce = code
+            let c = try live(rt)
+            let op = c.remember("survives an ownership change (\(code))")
+            #expect(eventually { rt.lock.withLock { rt.memoryRequests.count } == 1 })
+            Thread.sleep(forTimeInterval: 0.05)
+            #expect(c.state.memoryOps.first?.status == .pending)
+            #expect(c.state.memoryNotice == nil)
+            c.reconnectNow()                            // the next owner takes the resend
+            #expect(eventually { c.state.memories.count == 1 && c.state.memoryOps.isEmpty })
+            #expect(rt.lock.withLock { rt.memoryRequests } == [op, op])
+            c.stop()
+        }
+    }
+
+    @Test func supersededSettlesQuietlyAndDuplicateExplains() throws {
+        let rt = FakeRuntime()
+        rt.memoryFeature = true
+        let c = try live(rt)
+        defer { c.stop() }
+        rt.lock.withLock { rt.memoryErrorOnce = "superseded" }
+        c.remember("landed earlier")
+        #expect(eventually { c.state.memoryOps.isEmpty })
+        #expect(c.state.memoryNotice == nil)
+        #expect(eventually { rt.lock.withLock { rt.received.filter { $0 == "memory_list" }.count } >= 2 })
+        rt.lock.withLock { rt.memoryErrorOnce = "duplicate" }
+        c.correctMemory(id: "mem-1", revision: 1, text: "same as another")
+        #expect(eventually { c.state.memoryOps.first?.status == .rejected(code: "duplicate") })
+        #expect(c.state.memoryNotice == MemoryText.refused("duplicate"))
+    }
+
     @Test func aPushReplacesTheList() throws {
         let rt = FakeRuntime()
         rt.memoryFeature = true

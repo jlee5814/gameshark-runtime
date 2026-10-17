@@ -826,7 +826,16 @@ public final class GatewayClient: @unchecked Sendable {
                 st.memories.removeAll { $0.id == mid }
                 break
             }
-            // Every refusal is final for this op; the user decides whether to try again.
+            // The runtime lost or is handing over ownership and wrote nothing: the op stays
+            // pending and goes again, under the same op id, once a session is live.
+            if code == "fenced" || code == "draining" { break }
+            if code == "superseded" {
+                // It landed on an earlier attempt and the memory changed since: settled.
+                st.memoryOps.remove(at: i)
+                request("memory_list", .memoryList)
+                break
+            }
+            // Any other refusal is final for this op; the user decides whether to try again.
             st.memoryOps[i].status = .rejected(code: code)
             st.memoryNotice = MemoryText.refused(code)
             if code == "stale_presence" { request("snapshot", .snapshot) }
