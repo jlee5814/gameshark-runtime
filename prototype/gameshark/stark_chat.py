@@ -49,6 +49,8 @@ from gameshark.inference import (
 )
 from gameshark.inference.executor import EXECUTE, InferenceTask
 from gameshark.lifecycle import CancelToken
+from gameshark.memory import HEADER as MEMORY_HEADER
+from gameshark.memory import ITEM as MEMORY_ITEM
 
 CONVERSATION = "stark:main"
 RESPONSIBILITY = "chat:stark:main"
@@ -299,7 +301,15 @@ class CompanionFakeProvider(FakeProvider):
     def default_text(self, req: ProviderRequest) -> tuple[str, ...]:
         last = next((m.content for m in reversed(req.messages) if m.role is Role.USER), "")
         users = sum(1 for m in req.messages if m.role is Role.USER)
-        words = f"[fake model] Got it. You said: {_clip(last)} (message {users})".split()
+        text = f"[fake model] Got it. You said: {_clip(last)} (message {users})"
+        # Recall made visible: the demo model names the saved memories its request carried,
+        # so a surface can show that a fact reached the model and that a forgotten one did not.
+        block = next((m.content for m in req.messages
+                      if m.role is Role.SYSTEM and m.content.startswith(MEMORY_HEADER)), "")
+        facts = block.split(MEMORY_ITEM)[1:]
+        if facts:
+            text += " Saved memories: " + "; ".join(_clip(f, 8) for f in facts[:3])
+        words = text.split()
         return tuple(w + " " for w in words[:-1]) + (words[-1],)
 
     def generate(self, req: ProviderRequest, cancel: CancelToken) -> FakeCall:

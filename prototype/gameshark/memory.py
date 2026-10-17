@@ -146,6 +146,8 @@ class MemoryStore:
         # Bumped by every write this process makes, so a surface pushes the list only when
         # it changed. Never durable: a restart pushes a fresh list on first sync anyway.
         self.version = 0
+        # Word sets for ranking, by (id, revision): text never changes under one revision.
+        self._words: dict[tuple[str, int], set[str]] = {}
 
     # ------------------------------------------------------------------ grants
     def ensure_grants(self) -> None:
@@ -331,7 +333,14 @@ class MemoryStore:
             return ()
         q = _words(query)
         order = {m.id: i for i, m in enumerate(rows)}
-        ranked = sorted(rows, key=lambda m: (-len(q & _words(m.content)), -m.updated, m.id))
+        live = {(m.id, m.revision) for m in rows}
+        for key in self._words.keys() - live:
+            del self._words[key]
+        for m in rows:
+            if (m.id, m.revision) not in self._words:
+                self._words[(m.id, m.revision)] = _words(m.content)
+        ranked = sorted(rows, key=lambda m: (-len(q & self._words[(m.id, m.revision)]),
+                                             -m.updated, m.id))
         chosen: list[Memory] = []
         size = block_cost(())
         for m in ranked:

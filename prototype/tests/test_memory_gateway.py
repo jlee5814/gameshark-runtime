@@ -19,7 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from gameshark import devices as dv
 from gameshark.gateway_client import GatewayClient, GatewayError, pair_device
 from gameshark.inference import ProviderConfig
-from gameshark.memory import GRANT_ADAPTER, WRITE
+from gameshark.memory import GRANT_ADAPTER, HEADER, WRITE
 from gameshark.stark_chat import CONVERSATION, CompanionFakeProvider
 from gameshark.store import connect
 from tests.file_transport import write
@@ -75,6 +75,10 @@ def wait_for(pred, timeout: float = 15.0):
             pass
         time.sleep(0.02)
     raise AssertionError("condition never held")
+
+
+def memory_block(req) -> str:
+    return next((m.content for m in req.messages if m.content.startswith(HEADER)), "")
 
 
 def assistant_count(db: Path) -> int:
@@ -256,13 +260,17 @@ def test_the_model_sees_saved_memory_and_not_forgotten_memory(rt, rec):
         mac.call("send", conversation_id=CONVERSATION, client_msg_id="m1",
                  text="what is my favorite color", presence_gen=gen(mac))
         wait_for(lambda: assistant_count(rt.db) == 1)
-        assert any("teal" in x.content for x in rec.fake.invocations[-1].messages)
+        assert "teal" in memory_block(rec.fake.invocations[-1])
         gone = mac.call("memory_forget", op_id="op2", memory_id=m["id"])
-        assert gone["history_mentions"] == 0
+        # The demo model's reply quoted the saved fact, so history still holds it once.
+        assert gone["history_mentions"] == 1
         mac.call("send", conversation_id=CONVERSATION, client_msg_id="m2",
                  text="and now?", presence_gen=gen(mac))
         wait_for(lambda: assistant_count(rt.db) == 2)
-        assert all("teal" not in x.content for x in rec.fake.invocations[-1].messages)
+        last = rec.fake.invocations[-1]
+        assert memory_block(last) == ""                   # retrieval no longer carries it
+        # Ordinary history still does: forgetting is not erasure of the conversation.
+        assert any("teal" in x.content for x in last.messages if x.role.value == "assistant")
 
 
 def test_forget_reports_a_fact_still_in_chat_history(rt):
