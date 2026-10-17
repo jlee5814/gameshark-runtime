@@ -75,10 +75,16 @@ struct MainView: View {
             .navigationTitle("Stark")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
+                if model.memoryAvailable {
+                    Button { model.showMemories = true } label: { Image(systemName: "brain") }
+                        .accessibilityLabel("Saved memories")
+                        .accessibilityIdentifier("memoriesButton")
+                }
                 Button { settings = true } label: { Image(systemName: "gearshape") }
                     .accessibilityIdentifier("settingsButton")
             }
             .sheet(isPresented: $settings) { SettingsView(model: model) }
+            .sheet(isPresented: $model.showMemories) { MemoriesView(model: model) }
             .onChange(of: focused) { _, f in model.inputFocused = f }
         }
     }
@@ -270,7 +276,7 @@ struct Composer: View {
                 .padding(.horizontal)
             }
             HStack {
-                TextField(canSend ? "Message Stark" : "Jack In to talk to Stark here",
+                TextField(canSend ? "Message Stark, or /remember a fact" : "Jack In to talk to Stark here",
                           text: $model.draft, axis: .vertical)
                     .textFieldStyle(.roundedBorder)
                     .focused(focused)
@@ -281,6 +287,102 @@ struct Composer: View {
                     .accessibilityIdentifier("sendButton")
             }
             .padding()
+        }
+    }
+}
+
+/// Saved memories: the runtime's list, an Add field, swipe to forget, tap to correct.
+/// Every change is a typed command to the Mac; the phone keeps no copy of its own.
+struct MemoriesView: View {
+    @Bindable var model: PocketModel
+    @Environment(\.dismiss) private var dismiss
+    @State private var adding = ""
+    @State private var editing: MemoryItem?
+    @State private var editText = ""
+
+    var body: some View {
+        NavigationStack {
+            List {
+                if !model.memoryInject {
+                    Text("Memory is off on the Mac: saved facts do not reach the model.")
+                        .font(.callout).foregroundStyle(.orange)
+                }
+                Section {
+                    if model.memories.isEmpty && model.memoryOps.isEmpty {
+                        Text("Nothing saved yet.").foregroundStyle(.secondary)
+                    }
+                    ForEach(model.memories) { m in
+                        Button {
+                            guard model.canWriteMemory else { return }
+                            editText = m.content
+                            editing = m
+                        } label: {
+                            Text(m.content).foregroundStyle(.primary)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        .accessibilityIdentifier("memory-\(m.content)")
+                        .swipeActions {
+                            Button("Forget", role: .destructive) { model.forgetMemory(m.id) }
+                                .disabled(!model.canForgetMemory)
+                                .accessibilityIdentifier("forgetButton")
+                        }
+                    }
+                    ForEach(model.memoryOps) { op in
+                        if let text = op.text {
+                            HStack {
+                                Text(text).foregroundStyle(.secondary)
+                                Spacer()
+                                if op.status == .pending {
+                                    ProgressView()
+                                } else {
+                                    Button("Dismiss") { model.dismissMemoryOp(op.id) }
+                                }
+                            }
+                        }
+                    }
+                } footer: {
+                    Text("Forgetting removes a fact from saved memory. Earlier chat that "
+                         + "mentions it stays in the conversation.")
+                }
+                if let notice = model.memoryNotice {
+                    Text(notice).font(.callout)
+                        .accessibilityIdentifier("memoryNotice")
+                }
+                Section(model.canWriteMemory ? "Add" : "Jack In to add or correct") {
+                    TextField("A fact for Stark to keep", text: $adding, axis: .vertical)
+                        .disabled(!model.canWriteMemory)
+                        .accessibilityIdentifier("memoryField")
+                    Button("Save") {
+                        model.addMemory(adding)
+                        adding = ""
+                    }
+                    .disabled(!model.canWriteMemory || adding.isEmpty)
+                    .accessibilityIdentifier("saveMemoryButton")
+                }
+            }
+            .navigationTitle("Memories")
+            .toolbar { Button("Done") { dismiss() } }
+            .sheet(item: $editing) { m in
+                NavigationStack {
+                    Form {
+                        TextField("Memory", text: $editText, axis: .vertical)
+                            .accessibilityIdentifier("editMemoryField")
+                    }
+                    .navigationTitle("Correct Memory")
+                    .toolbar {
+                        ToolbarItem(placement: .cancellationAction) {
+                            Button("Cancel") { editing = nil }
+                        }
+                        ToolbarItem(placement: .confirmationAction) {
+                            Button("Save") {
+                                model.correctMemory(m, text: editText)
+                                editing = nil
+                            }
+                            .accessibilityIdentifier("saveCorrectionButton")
+                        }
+                    }
+                }
+            }
         }
     }
 }

@@ -46,35 +46,48 @@ struct ChatCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            StatusView(state: model.state, badge: model.modelBadge)
-            Divider()
-            ScrollViewReader { proxy in
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 6) {
-                        ForEach(model.visibleRows) { row in
-                            Bubble(row: row).id(row.seq)
-                        }
-                        ForEach(model.attention) { m in
-                            PendingBubble(message: m)
-                        }
-                        if let line = model.replyLine {
-                            ReplyLine(text: line, failed: model.state.reply?.failed == true,
-                                      canRetry: model.canRetryReply) { model.retryReply() }
-                                .id("reply")
-                        }
+            HStack(alignment: .top) {
+                StatusView(state: model.state, badge: model.modelBadge)
+                if model.state.memoryAvailable {
+                    Button { model.showMemories.toggle() } label: {
+                        Image(systemName: "brain")
                     }
-                    .padding(.vertical, 2)
+                    .buttonStyle(.borderless)
+                    .help("Saved memories (\(model.state.memories.count))")
                 }
-                .onChange(of: model.state.rows.last?.seq) { _, seq in
-                    if let seq { withAnimation { proxy.scrollTo(seq, anchor: .bottom) } }
-                }
-                // The reply line sits below the newest row and changes without a new row;
-                // keep it, and its Retry button, in view.
-                .onChange(of: model.replyLine) { _, line in
-                    if line != nil { withAnimation { proxy.scrollTo("reply", anchor: .bottom) } }
-                }
-                .onAppear {
-                    if let seq = model.visibleRows.last?.seq { proxy.scrollTo(seq, anchor: .bottom) }
+            }
+            Divider()
+            if model.showMemories {
+                MemoryPanel(model: model)
+            } else {
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        LazyVStack(alignment: .leading, spacing: 6) {
+                            ForEach(model.visibleRows) { row in
+                                Bubble(row: row).id(row.seq)
+                            }
+                            ForEach(model.attention) { m in
+                                PendingBubble(message: m)
+                            }
+                            if let line = model.replyLine {
+                                ReplyLine(text: line, failed: model.state.reply?.failed == true,
+                                          canRetry: model.canRetryReply) { model.retryReply() }
+                                    .id("reply")
+                            }
+                        }
+                        .padding(.vertical, 2)
+                    }
+                    .onChange(of: model.state.rows.last?.seq) { _, seq in
+                        if let seq { withAnimation { proxy.scrollTo(seq, anchor: .bottom) } }
+                    }
+                    // The reply line sits below the newest row and changes without a new row;
+                    // keep it, and its Retry button, in view.
+                    .onChange(of: model.replyLine) { _, line in
+                        if line != nil { withAnimation { proxy.scrollTo("reply", anchor: .bottom) } }
+                    }
+                    .onAppear {
+                        if let seq = model.visibleRows.last?.seq { proxy.scrollTo(seq, anchor: .bottom) }
+                    }
                 }
             }
             if !model.state.isActiveSurface && model.state.connection.isLive {
@@ -104,7 +117,7 @@ struct ChatCard: View {
                 .background(.quaternary, in: RoundedRectangle(cornerRadius: 8))
             }
             HStack {
-                TextField("Message Stark", text: $model.draft)
+                TextField("Message Stark, or /remember a fact", text: $model.draft)
                     .textFieldStyle(.roundedBorder)
                     .focused($focused)
                     .onSubmit { model.send() }
