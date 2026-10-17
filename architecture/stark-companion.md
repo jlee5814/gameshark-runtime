@@ -84,6 +84,7 @@ machinery. Surfaces reach only `stark:main`.
 | `snapshot` | read | identity, presence, open handoff, responsibilities, head seq, activity projection |
 | `sync {conversation_id, after_seq}` | read | rows after seq, 500 per page |
 | `send {client_msg_id, conversation_id, text, presence_gen}` | write | `SurfaceConversation.submit`, then the reply event |
+| `retry_reply {conversation_id, seq, presence_gen}` | write | answer a failed reply again (Phase 4.1) |
 | `ready_out {handoff_id, draft, presence_gen}` | write | source confirms its exit |
 | `ack_in {handoff_id, presence_gen}` | write | target confirms its arrival |
 | `jack {handoff_id, to: self\|home, presence_gen}` | write | Jack In to the caller, or Jack Out home from the holder |
@@ -110,6 +111,50 @@ Paired phones reach the same queue and table over pinned TLS on the LAN (`stark.
 --lan`); pairing, device proofs, revocation, and the threat model are in
 [stark-pocket-transport.md](stark-pocket-transport.md). A Unix surface may not name a
 `pocket-` surface, and a device's surface always comes from its device row.
+
+## Live replies (Phase 4.1, `gameshark/stark_chat.py`)
+
+Stark's replies come from the OpenAI compatible server `stark.py run --inference-url`
+names, through the v0.3 router, tracker, executor, and journal; nothing here is a second
+inference path. `run` refuses to start without an endpoint unless `--fake-model` asks for
+the demo model by name, and every fake reply begins `[fake model]`. The snapshot's `model`
+field (`{provider, model, locality, fake}`) is runtime configuration: changing it changes
+no identity, conversation, or duty. `--inference-extra` adds server fields such as
+`chat_template_kwargs` (Qwen3 needs `enable_thinking: false`, or its thinking spends the
+reply budget); it joins the provider's config fingerprint and cannot replace a field the
+provider sets.
+
+Context. The reply call sends a window, not the whole conversation: the leading system rows
+plus the newest rows whose byte bound fits `--context-window` minus `--max-tokens` minus a
+256 byte margin, starting on a user turn (`journal.fit_history`). The bound assumes a byte
+level tokenizer, so it trims early rather than late. Selection, reservation, and every
+replay compute the same window from the same rows.
+
+Reply state, in `activity.reply` (absent once answered):
+
+| State | Source | Meaning |
+|---|---|---|
+| `queued` | the head row is unanswered, no call is streaming | accepted |
+| `thinking` | the executor streams this seq's call | the model is answering |
+| `waiting` | `InferenceTask.on_retry`, memory only | a retryable refusal: `error` (ModelUnavailable, Timeout, ...) and `retry_at` |
+| `failed` | durable: the seq's newest reply event is acked and the head is unanswered | terminal: `error` is the duty's checkpoint |
+
+Nothing ever writes text on Stark's behalf. A failed reply stays a user row without an
+answer, the duty `chat:stark:main` turns `blocked`, and the surfaces show the reason.
+`retry_reply` (presence fenced, like `send`) starts event `ev-reply-stark:main-<seq>-r<n>`
+and call `call:stark:main:<seq>:r<n>`; a resent retry, before or after its answer lands,
+finds the same `r<n>` and starts nothing. A new message supersedes a failed reply, as it
+supersedes any unanswered one. A model that is down waits rather than fails: the tracker
+refuses before dispatch, which costs no attempt, and re-probes after `--model-cooldown`
+(10 s), so a restarted server is back within seconds. A call that dispatches and times out
+counts an attempt; the third ends the reply as `failed` (AttemptsExhausted).
+
+Durability is the v0.3 journal's. The user row commits before the reply event, the call is
+one id per seq and retry, and the assistant row commits only through the journal, so a
+runtime restart, a SIGKILL mid stream, or a surface that drops and resyncs all end with one
+reply. Tests: `prototype/tests/test_live_inference.py` (loopback SSE server: Mac and phone,
+multi turn, resent ids, timeout and retry, model down, phone drop, Jack In and Out while a
+reply runs) and `test_gateway_daemon.py` (SIGKILL during an HTTP stream).
 
 `stark.py jack <surface>` moves presence through a control request. A silent source
 commits after the prepare deadline; a target that never acks reverts home under a newer
@@ -182,4 +227,5 @@ and what remains unproven on hardware.
 
 ## Not yet built
 
-Bonjour, voice, system notifications.
+Bonjour, voice, system notifications, long term memory, a user cancel for a reply in
+flight.

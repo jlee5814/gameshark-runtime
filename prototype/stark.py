@@ -20,19 +20,28 @@ State lives in ~/.gameshark/runtime.db (override with --db or GAMESHARK_DB). The
 token comes from GITHUB_TOKEN, else `gh auth token`. Every GitHub call is a GET.
 
 `run` also serves the surface gateway (StarkMac) on a Unix socket in a private directory
-beside the database, gateway/stark.sock, authenticated by gateway.token beside it. Replies come from a deterministic local fake
-model unless --inference-url names an OpenAI compatible server such as SGLang. With --lan it
-also serves paired devices over pinned TLS 1.3 on the local network (net_gateway.py); the
-listener is off by default and refuses addresses outside private ranges. Its endpoint is
-advertised for `pair` beside the socket (gateway/stark.sock.lan.json), one file per socket.
---tailscale adds a listener bound to this Mac's Tailscale IPv4 alone (tailscale.py), for a
-phone on cellular; it never enables Funnel and refuses to serve while `tailscale serve`
-forwards a runtime port.
+beside the database, gateway/stark.sock, authenticated by gateway.token beside it. Replies
+come from the OpenAI compatible server --inference-url names, such as SGLang or
+mlx_lm.server (or GAMESHARK_INFERENCE_URL, with GAMESHARK_INFERENCE_MODEL and
+GAMESHARK_INFERENCE_EXTRA). `run` refuses to start without one unless --fake-model asks for
+the deterministic demo model by name, whose every reply says [fake model]. For Qwen3:
+
+    uv run python stark.py run --inference-url http://127.0.0.1:30000/v1 \
+        --model mlx-community/Qwen3-4B-4bit \
+        --inference-extra '{"chat_template_kwargs": {"enable_thinking": false}}'
+
+With --lan it also serves paired devices over pinned TLS 1.3 on the local network
+(net_gateway.py); the listener is off by default and refuses addresses outside private
+ranges. Its endpoint is advertised for `pair` beside the socket
+(gateway/stark.sock.lan.json), one file per socket. --tailscale adds a listener bound to
+this Mac's Tailscale IPv4 alone (tailscale.py), for a phone on cellular; it never enables
+Funnel and refuses to serve while `tailscale serve` forwards a runtime port.
 """
 
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import importlib
 import json
 import os
@@ -134,15 +143,52 @@ def token_path(args, env=os.environ) -> Path:
     return socket_path(args, env).parent / "gateway.token"
 
 
+# Bytes held back from the history window beside max_tokens: the system prompt's template
+# and the gap between the byte bound and a real chat template.
+HISTORY_MARGIN = 256
+
+
 def make_provider(args):
-    """The model behind Stark's replies: a local fake unless an endpoint is named."""
+    """The model behind Stark's replies: the named endpoint, or the fake when asked for."""
     from gameshark.inference import OpenAICompatProvider, ProviderConfig
+    from gameshark.inference.journal import HISTORY_FIXED, HISTORY_PER_MESSAGE
+    from gameshark.inference.router import BoundKind, TokenBound
     from gameshark.stark_chat import CompanionFakeProvider
 
     if args.inference_url:
-        return ProviderConfig(OpenAICompatProvider("local", args.inference_url, args.model,
-                                                   args.context_window, max_concurrency=2))
+        p = OpenAICompatProvider("local", args.inference_url, args.model, args.context_window,
+                                 max_concurrency=2, extra_body=args.inference_extra)
+        # Route with the history window's byte bound (byte level BPE, as SGLang and MLX
+        # serve Qwen and Llama), so a context the model cannot hold fails here as
+        # ContextTooLong instead of reaching the server.
+        bound = TokenBound(BoundKind.TRUSTED_BYTES, HISTORY_PER_MESSAGE, HISTORY_FIXED)
+        return ProviderConfig(p, token_bound=bound, fingerprint=p.config_fingerprint)
     return ProviderConfig(CompanionFakeProvider(args.fake_delay))
+
+
+def model_label(provider) -> str:
+    endpoint = getattr(provider, "endpoint", None)
+    if endpoint is None:
+        return "the fake model (--fake-model)"
+    return f"{provider.capabilities().model} at {endpoint.url}"
+
+
+def chat_spec(args):
+    """Stark's reply call: max_tokens out, and a history window that leaves room for it."""
+    from gameshark.stark_chat import SPEC
+
+    budget = max(1, args.context_window - args.max_tokens - HISTORY_MARGIN)
+    return dataclasses.replace(SPEC, max_tokens=args.max_tokens, history_budget=budget)
+
+
+def json_object(text: str) -> dict:
+    try:
+        v = json.loads(text)
+    except ValueError as e:
+        raise argparse.ArgumentTypeError(f"not JSON: {e}") from None
+    if not isinstance(v, dict):
+        raise argparse.ArgumentTypeError("must be a JSON object")
+    return v
 
 
 def build_supervisor(db: Path, interval: float, notifier=None, client=None, chat=None):
@@ -316,19 +362,24 @@ def cmd_run(args) -> int:
         return 3
     try:
         from gameshark.inference import RouterPolicy
+        from gameshark.inference.tracker import TrackerPolicy
         from gameshark.stark_chat import StarkChatAdapter
 
-        chat = StarkChatAdapter()
+        chat = StarkChatAdapter(spec=chat_spec(args))
         sup = build_supervisor(args.db, args.interval, notifier=on_new, client=make_client(),
                                chat=chat)
-        sup.enable_inference([make_provider(args)],
+        provider = make_provider(args)
+        sup.enable_inference([provider],
                              policy=RouterPolicy(agent_in_flight=2, conversation_in_flight=1),
+                             # A restarted model server is back in routing within seconds.
+                             tracker_policy=TrackerPolicy(cooldown_s=args.model_cooldown),
                              retry_s=0.25)
         try:
             sup.start()                       # recover: reconcile effects, replay inbox
         except LeaseDenied as e:
             print(f"another host owns Stark: {e}", file=sys.stderr)
             return 3
+        log(f"replies from {model_label(provider.provider)}")
         active = [r.id for r in sup.responsibilities.outstanding()]
         log(f"Stark {sup.identity.uuid} generation {sup.generation}; "
             f"resuming {len(active)} responsibilities: {', '.join(active) or 'none'}")
@@ -610,12 +661,22 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--token", type=Path, default=None,
                    help="gateway token file (default: STARK_TOKEN, else gateway.token "
                         "beside the socket)")
-    r.add_argument("--fake-delay", type=float, default=2.0,
-                   help="seconds the local fake model takes per reply")
     r.add_argument("--inference-url", default=os.environ.get("GAMESHARK_INFERENCE_URL"),
                    help="OpenAI compatible base URL, for example http://127.0.0.1:30000/v1")
     r.add_argument("--model", default=os.environ.get("GAMESHARK_INFERENCE_MODEL", "default"))
-    r.add_argument("--context-window", type=int, default=8192)
+    r.add_argument("--inference-extra", type=json_object,
+                   default=os.environ.get("GAMESHARK_INFERENCE_EXTRA"),
+                   help="JSON object merged into each request, for example "
+                        '{"chat_template_kwargs": {"enable_thinking": false}}')
+    r.add_argument("--context-window", type=int, default=32768,
+                   help="the model's window in tokens; the history sent leaves max tokens free")
+    r.add_argument("--max-tokens", type=int, default=512, help="reply length bound")
+    r.add_argument("--model-cooldown", type=float, default=10.0,
+                   help="seconds an unreachable model stays out of routing before a new probe")
+    r.add_argument("--fake-model", action="store_true",
+                   help="answer with the deterministic demo model instead of a real one")
+    r.add_argument("--fake-delay", type=float, default=2.0,
+                   help="seconds the fake model takes per reply")
     r.add_argument("--lan", action="store_true",
                    help="also serve paired devices over TLS on the local network")
     r.add_argument("--lan-port", type=int, default=47820)
@@ -648,6 +709,15 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
     if args.cmd == "run" and args.tailscale and not args.lan:
         ap.error("--tailscale requires --lan")
+    if args.cmd == "run":
+        # Never a silent placeholder: a real endpoint, or the fake asked for by name.
+        if args.fake_model and args.inference_url:
+            ap.error("--fake-model and --inference-url name two models; choose one")
+        if not args.fake_model and not args.inference_url:
+            ap.error("run needs a model: --inference-url URL (or GAMESHARK_INFERENCE_URL), "
+                     "or --fake-model for the demo model")
+        if args.max_tokens < 1 or args.context_window <= args.max_tokens:
+            ap.error("--context-window must exceed --max-tokens")
     args.db.parent.mkdir(parents=True, exist_ok=True)
     if args.cmd in ("watch", "unwatch", "resume", "jack"):
         return cmd_control(args, args.cmd)

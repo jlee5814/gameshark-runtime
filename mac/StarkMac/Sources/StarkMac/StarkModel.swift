@@ -77,6 +77,19 @@ final class StarkModel {
 
     var visibleRows: [Row] { state.rows.filter { $0.role != "system" } }
 
+    /// What the runtime is doing with the newest message; nil once Stark answered.
+    var replyLine: String? { state.reply?.caption }
+
+    var canRetryReply: Bool { state.canRetryReply }
+
+    func retryReply() {
+        guard canRetryReply, let seq = state.reply?.seq else { return }
+        client.retryReply(seq: seq)
+    }
+
+    /// Set only for the demo model, so a fake answer is never mistaken for Stark's own.
+    var modelBadge: String? { state.model?.fake == true ? "fake model" : nil }
+
     var attention: [OutgoingMessage] {
         state.outbox.filter { if case .sent = $0.status { false } else { true } }
     }

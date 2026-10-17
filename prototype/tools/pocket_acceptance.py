@@ -72,8 +72,7 @@ class Pocket:
                "GAMESHARK_FIXTURE": str(self.dir / "github.json")}
         env.pop("GITHUB_TOKEN", None)
         cmd = [sys.executable, str(ROOT / "stark.py"), "--db", str(self.db), "--interval", "2",
-               "run", "--lan", "--lan-port", str(self.port),
-               "--fake-delay", str(self.args.fake_delay)]
+               "run", "--lan", "--lan-port", str(self.port), *model_args(self.args)]
         if self.args.tailscale:
             cmd += ["--tailscale", "--tailscale-port", str(self.tailnet_port)]
         self.daemon = subprocess.Popen(cmd, cwd=ROOT, env=env, stdout=log,
@@ -145,6 +144,8 @@ class Pocket:
     def ui_test(self, test: str, link: str, bundle: Path,
                 signal_dir: Path | None = None) -> subprocess.CompletedProcess:
         env = {**os.environ, "TEST_RUNNER_STARK_PAIR_LINK": link}
+        if self.args.inference_url:
+            env["TEST_RUNNER_STARK_LIVE_MODEL"] = "1"   # the UI test cannot know the words
         if signal_dir is not None:
             env["TEST_RUNNER_STARK_SIGNAL_DIR"] = str(signal_dir)
         shutil.rmtree(bundle, ignore_errors=True)
@@ -436,6 +437,14 @@ class Pocket:
         print(f"\nreport: {self.dir / 'pocket-acceptance.md'}")
 
 
+def model_args(args) -> list[str]:
+    """The daemon's model: the named endpoint, else the fake asked for by name."""
+    if not args.inference_url:
+        return ["--fake-model", "--fake-delay", str(args.fake_delay)]
+    out = ["--inference-url", args.inference_url, "--model", args.model]
+    return out + (["--inference-extra", args.inference_extra] if args.inference_extra else [])
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--app", type=Path, required=True)
@@ -444,6 +453,10 @@ def main() -> int:
     ap.add_argument("--simulator", default="iPhone 18 Pro")
     ap.add_argument("--dir", type=Path, default=Path.home() / ".gameshark" / "demo")
     ap.add_argument("--fake-delay", type=float, default=2.0)
+    ap.add_argument("--inference-url", default=None, help="for example http://127.0.0.1:30000/v1")
+    ap.add_argument("--model", default="default")
+    ap.add_argument("--inference-extra", default=None,
+                    help="JSON merged into each request, as for stark.py run")
     ap.add_argument("--skip-faults", action="store_true")
     ap.add_argument("--tailscale", action="store_true",
                     help="serve the tailnet too and pair with a dead LAN address")

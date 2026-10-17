@@ -12,7 +12,10 @@ Requires macOS 14 or later and Swift 6 (Xcode or Command Line Tools).
 
 ```sh
 cd prototype
-uv run python stark.py run                       # serves ~/.gameshark/gateway/stark.sock
+uv run python stark.py run --inference-url http://127.0.0.1:30000/v1 \
+    --model mlx-community/Qwen3-4B-4bit \
+    --inference-extra '{"chat_template_kwargs": {"enable_thinking": false}}'
+                                                 # serves ~/.gameshark/gateway/stark.sock
 ../mac/scripts/build-app.sh                      # mac/build/StarkMac.app
 open ../mac/build/StarkMac.app
 ```
@@ -37,9 +40,12 @@ UserDefaults (`dev.gameshark.starkmac`), never in the runtime database.
 `open` does not pass variables; run `StarkMac.app/Contents/MacOS/StarkMac` directly to
 use them.
 
-For a live model, start the runtime with `--inference-url http://127.0.0.1:30000/v1
---model <name>` (SGLang or any OpenAI compatible server). Without it, a deterministic
-local fake answers after `--fake-delay` seconds.
+Replies come from the OpenAI compatible server `--inference-url` names (SGLang,
+mlx_lm.server, LM Studio; also `GAMESHARK_INFERENCE_URL`). `run` will not start without
+one; `--fake-model` asks for the deterministic demo model instead, whose replies begin
+`[fake model]` and which the chat card badges. Under the newest message the card shows what
+the reply is doing (Stark has your message, Stark is thinking, Waiting for the model, No
+reply) and offers Retry on a failed reply. It never shows invented text.
 
 ## Stark's sprites
 

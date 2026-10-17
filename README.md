@@ -38,7 +38,9 @@ process restarts without a second prompt.
 - **v0.4 (in progress)** — Stark companion: a fenced presence lease and two phase Jack In
   handoff so a floating Mac avatar and a paired iPhone act as thin views over one runtime.
   Runtime core landed; StarkMac (floating panel over an authenticated Unix socket) landed;
-  iPhone pending. Design: [architecture/stark-companion.md](architecture/stark-companion.md),
+  Stark Pocket (iPhone) landed. Phase 4.1: replies come from a real OpenAI compatible
+  model through the v0.3 router, with visible waiting, failure, and retry states.
+  Design: [architecture/stark-companion.md](architecture/stark-companion.md),
   app: [mac/StarkMac/README.md](mac/StarkMac/README.md).
 
 ## Run
@@ -50,7 +52,8 @@ uv run python demo.py   # v0.1 durable-core demo (real SIGKILL)
 uv run python demo_v2.py  # v0.2 PR-monitoring demo across a restart and a revoke
 
 uv run python stark.py watch owner/repo#123   # assign once (token: GITHUB_TOKEN or gh)
-uv run python stark.py run --notify           # serve across restarts, no more prompts
+uv run python stark.py run --notify --inference-url http://127.0.0.1:30000/v1 \
+    --model <name>                            # serve across restarts; --fake-model for a demo
 uv run python stark.py feed                   # unread updates
 
 ../mac/scripts/build-app.sh                   # StarkMac.app; open it while `run` serves

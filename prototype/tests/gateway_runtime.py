@@ -51,7 +51,8 @@ class Gate:
 class Runtime:
     def __init__(self, db: Path, sock_dir: Path, gate: Gate | None = None,
                  github=None, lan: bool = False, allow=None, limiter=None,
-                 port: int = 0, tailnet_allow=None) -> None:
+                 port: int = 0, tailnet_allow=None, providers=None, spec=None,
+                 tracker_policy=None) -> None:
         self.db = db
         self.sock = sock_dir / "stark.sock"
         self.token_path = sock_dir / "gateway.token"
@@ -74,6 +75,10 @@ class Runtime:
         self.tailnet: LanListener | None = None
         self._lan_kw = {k: v for k, v in (("allow", allow), ("limiter", limiter)) if v}
         self._port = port
+        # Set: a factory for the providers behind Stark's replies (default: the gated fake).
+        self.providers = providers
+        self.spec = spec
+        self.tracker_policy = tracker_policy
         self.logs: list[str] = []
         self.thread = threading.Thread(target=self._run, name="coordinator", daemon=True)
 
@@ -81,7 +86,7 @@ class Runtime:
         try:
             sup = AgentSupervisor(db_path=self.db, agent_id=AGENT, owner_token=HOST,
                                   lease_ttl_s=6.0)
-            self.chat = StarkChatAdapter()
+            self.chat = StarkChatAdapter(**({"spec": self.spec} if self.spec else {}))
             sup.add_adapter(self.chat)
             if self.github is not None:
                 from sims.github_monitor import GitHubMonitorAdapter
@@ -89,11 +94,15 @@ class Runtime:
                 sup.add_adapter(GitHubMonitorAdapter(self.github, poll_interval_s=3600.0))
             self.sup = sup
             sup.enable_presence("mac", prepare_timeout_s=2.0, ack_timeout_s=1.0)
-            provider = CompanionFakeProvider(delay_s=0.01, sleep=self.gate.sleep)
-            sup.enable_inference([ProviderConfig(provider)],
+            if self.providers is None:
+                provider = CompanionFakeProvider(delay_s=0.01, sleep=self.gate.sleep)
+                configs = [ProviderConfig(provider)]
+            else:
+                configs = self.providers()
+            sup.enable_inference(configs,
                                  policy=RouterPolicy(agent_in_flight=2,
                                                      conversation_in_flight=1),
-                                 retry_s=0.05)
+                                 tracker_policy=self.tracker_policy, retry_s=0.05)
             sup.start()
             self.uuid = sup.identity.uuid
             server = GatewayServer(self.sock, self.token,

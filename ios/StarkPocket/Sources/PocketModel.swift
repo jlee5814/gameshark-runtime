@@ -13,6 +13,7 @@ protocol PocketClient: AnyObject {
     func reconnectNow()
     @discardableResult func send(_ text: String, presenceGen: Int?) -> String
     @discardableResult func jack(_ to: GatewayClient.JackDirection) -> String
+    func retryReply(seq: Int)
     func setDraftProvider(_ provider: @escaping @Sendable () -> String?)
     func confirmDraft(_ handoffId: String)
     func clearSentDraft(_ handoffId: String)
@@ -95,6 +96,11 @@ final class PocketModel {
     var pendingOutbox: [OutgoingMessage] {
         state?.outbox.filter { if case .sent = $0.status { false } else { true } } ?? []
     }
+    /// What the Mac's runtime is doing with the newest message; nil once Stark answered.
+    var replyLine: String? { state?.reply?.caption }
+    var canRetryReply: Bool { state?.canRetryReply ?? false }
+    /// Set only for the demo model, so a fake answer is never mistaken for Stark's own.
+    var modelBadge: String? { state?.model?.fake == true ? "fake model" : nil }
 
     // MARK: pairing
 
@@ -287,6 +293,11 @@ final class PocketModel {
     }
 
     // MARK: actions
+
+    func retryReply() {
+        guard canRetryReply, let seq = state?.reply?.seq else { return }
+        client?.retryReply(seq: seq)
+    }
 
     func send() {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)

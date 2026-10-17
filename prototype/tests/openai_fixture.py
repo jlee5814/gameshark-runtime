@@ -78,7 +78,7 @@ Route = Reply | list[Reply] | Callable[[dict], Reply]
 
 
 class OpenAIFixture:
-    def __init__(self, model: str = "m") -> None:
+    def __init__(self, model: str = "m", port: int = 0) -> None:
         self.routes: dict[str, Route] = {
             "/v1/models": Reply(headers={"Content-Type": "application/json"},
                                 parts=[json.dumps({"object": "list",
@@ -175,7 +175,7 @@ class OpenAIFixture:
             do_GET = _serve
             do_POST = _serve
 
-        self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.httpd = ThreadingHTTPServer(("127.0.0.1", port), Handler)
         self.httpd.daemon_threads = True
         self.port = self.httpd.server_port
         self.base = f"http://127.0.0.1:{self.port}"

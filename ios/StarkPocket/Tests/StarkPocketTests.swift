@@ -78,6 +78,7 @@ final class FakeClient: PocketClient, @unchecked Sendable {
     var started = 0
     var stopped = false
     var jacks: [GatewayClient.JackDirection] = []
+    var retries: [Int] = []
     var draftProvider: (@Sendable () -> String?)?
     var confirmed: [String] = []
     var clearedSent: [String] = []
@@ -109,6 +110,7 @@ final class FakeClient: PocketClient, @unchecked Sendable {
         onJack(self, to)
         return "h"
     }
+    func retryReply(seq: Int) { retries.append(seq) }
     func setDraftProvider(_ provider: @escaping @Sendable () -> String?) { draftProvider = provider }
     func setPath(_ path: NetworkPath) {
         paths.append(path)
@@ -169,6 +171,61 @@ final class PocketModelTests: XCTestCase {
             $0.presence = PresenceInfo(surface: surface, home: "mac", generation: 2)
             $0.handoff = nil
         }
+    }
+
+    // Phase 4.1: the phone shows what the head reply is doing and retries only a failed one.
+    func testTheReplyLineFollowsTheRuntimeAndRetryReachesTheClient() async throws {
+        let model = try pairedModel()
+        let c = clients[0]
+        model.networkChanged(.wifi)
+        holding(c)
+        c.emit { $0.activity = Activity(reply: ReplyState(seq: 3, state: "thinking")) }
+        await settle { model.replyLine != nil }
+        XCTAssertEqual(model.replyLine, "Stark is thinking…")
+        XCTAssertFalse(model.canRetryReply)
+        model.retryReply()
+        XCTAssertEqual(c.retries, [])                     // nothing failed: nothing to retry
+        c.emit { $0.activity = Activity(reply: ReplyState(seq: 3, state: "failed",
+                                                          error: "Timeout")) }
+        await settle { model.canRetryReply }
+        XCTAssertEqual(model.replyLine, "No reply: the model took too long")
+        model.retryReply()
+        XCTAssertEqual(c.retries, [3])
+        c.emit { $0.activity = Activity() }
+        await settle { model.replyLine == nil }
+        XCTAssertNil(model.replyLine)
+    }
+
+    func testAGhostPhoneSeesAFailedReplyButCannotRetryIt() async throws {
+        let model = try pairedModel()
+        let c = clients[0]
+        model.networkChanged(.wifi)
+        c.emit {
+            $0.connection = .live
+            $0.presence = PresenceInfo(surface: "mac", home: "mac", generation: 2)
+            $0.activity = Activity(reply: ReplyState(seq: 3, state: "failed", error: "Timeout"))
+        }
+        await settle { model.replyLine != nil }
+        XCTAssertFalse(model.canRetryReply)
+        model.retryReply()
+        XCTAssertEqual(c.retries, [])
+    }
+
+    func testAFakeModelIsLabelled() async throws {
+        let model = try pairedModel()
+        let c = clients[0]
+        model.networkChanged(.wifi)
+        c.emit {
+            $0.connection = .live
+            $0.model = ModelInfo(provider: "companion-fake", model: "companion-fake",
+                                 locality: "local", fake: true)
+        }
+        await settle { model.modelBadge != nil }
+        XCTAssertEqual(model.modelBadge, "fake model")
+        c.emit { $0.model = ModelInfo(provider: "local", model: "qwen", locality: "local",
+                                      fake: false) }
+        await settle { model.modelBadge == nil }
+        XCTAssertNil(model.modelBadge)
     }
 
     // Phase 3.3: Wi-Fi and cellular changes reach the connection, which picks the route.

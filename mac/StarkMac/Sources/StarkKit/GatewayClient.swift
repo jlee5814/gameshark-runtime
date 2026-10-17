@@ -79,7 +79,15 @@ public struct ClientState: Equatable, Sendable {
         guard let p = presence, p.surface != surface else { return nil }
         return deviceNames[p.surface] ?? (p.surface == p.home ? "Mac" : p.surface)
     }
+    /// The model behind replies, from the last snapshot.
+    public var model: ModelInfo?
     public var isWorking: Bool { activity?.isWorking ?? false }
+    /// What the runtime is doing with the newest user message; nil once answered.
+    public var reply: ReplyState? { activity?.reply }
+    /// Only the surface holding Stark, live, may ask for a failed reply again.
+    public var canRetryReply: Bool {
+        connection.isLive && isActiveSurface && reply?.failed == true
+    }
     public var isThinking: Bool { activity?.isThinking ?? working }
 
     public init(surface: String) {
@@ -158,7 +166,7 @@ public final class GatewayClient: @unchecked Sendable {
 
     private enum Pending {
         case snapshot, sync, send(String), readyOut(String), ackIn(String), jack(String),
-             draftAck(String)
+             draftAck(String), retryReply(Int)
     }
 
     public enum JackDirection: String, Sendable {
@@ -202,6 +210,11 @@ public final class GatewayClient: @unchecked Sendable {
     private var draftAcksOwed: Set<String> = []
     /// draft_ack requests sent on this connection and awaiting a result.
     private var draftAcksSent: Set<String> = []
+    /// A Retry the runtime has not answered, by seq; resent when live, since a reconnect
+    /// forgets pending requests. The runtime keys retries by seq, so a repeat is harmless.
+    private var retryOwed: Int?
+    /// retry_reply sent on this connection and awaiting a result.
+    private var retrySent = false
     /// The draft the last ready_out carried, until the runtime answers whether the
     /// committed jack holds it. Kept across reconnects: a lost reply is reconciled by
     /// replaying the same ready_out, which the runtime answers from the durable row.
@@ -337,6 +350,21 @@ public final class GatewayClient: @unchecked Sendable {
         return hid
     }
 
+    /// Ask the runtime to answer a failed reply again. The runtime keys the retry by seq,
+    /// so a repeat while the first is pending, or after it lands, starts nothing new.
+    public func retryReply(seq: Int) {
+        queue.async {
+            guard self.st.connection == .live, self.st.presence != nil else {
+                self.st.lastError = "retry: not connected"
+                self.publish()
+                return
+            }
+            self.retryOwed = seq
+            self.retrySent = false
+            self.sendRetry()
+        }
+    }
+
     @discardableResult
     public func send(_ text: String, presenceGen: Int? = nil) -> String {
         let id = "\(config.surface)-" + UUID().uuidString.lowercased()
@@ -387,6 +415,7 @@ public final class GatewayClient: @unchecked Sendable {
         inFlight = []
         handoffSent = []
         draftAcksSent = []
+        retrySent = false
         haveSnapshot = false
         haveSync = false
         clearActivity()
@@ -585,6 +614,7 @@ public final class GatewayClient: @unchecked Sendable {
             st.responsibilities = s.responsibilities
             st.working = s.activity.working
             st.activity = s.activity                 // rebuilt wholesale, never merged
+            st.model = s.model
             st.deviceNames = Dictionary((s.devices ?? []).map { ($0.surface, $0.name) },
                                         uniquingKeysWith: { a, _ in a })
             if let d = s.draft {
@@ -634,6 +664,11 @@ public final class GatewayClient: @unchecked Sendable {
             draftAcksOwed.remove(hid)
         case .jack:
             break                                   // the presence push carries the handoff
+        case .retryReply(let seq):
+            if retryOwed == seq { retryOwed = nil }
+            retrySent = false
+            let r = try Wire.decode(Result<RetryResult>.self, from: body).data
+            trace("retry seq=\(seq) r\(r.retry) replayed=\(r.replayed)")
         }
         if haveSnapshot && haveSync && st.connection != .live {
             st.connection = .live
@@ -641,6 +676,7 @@ public final class GatewayClient: @unchecked Sendable {
             backoff.reset()
             flushOutbox()
             sendDraftAcks()
+            sendRetry()
         }
         publish()
     }
@@ -670,6 +706,12 @@ public final class GatewayClient: @unchecked Sendable {
             if code == "stale_presence" || code == "invalid" { draftAcksOwed.remove(hid) }
         case .jack(let hid):
             st.lastError = "jack \(hid): \(code)"
+            if code == "stale_presence" { request("snapshot", .snapshot) }
+        case .retryReply(let seq):
+            st.lastError = "retry \(seq): \(code)"
+            retrySent = false
+            // A fenced or invalid refusal is final; anything else retries when live.
+            if code == "stale_presence" || code == "invalid", retryOwed == seq { retryOwed = nil }
             if code == "stale_presence" { request("snapshot", .snapshot) }
         case .snapshot, .sync:
             st.lastError = "\(code): \(message ?? "")"
@@ -763,6 +805,14 @@ public final class GatewayClient: @unchecked Sendable {
     private func offer(_ d: CarriedDraft) {
         guard !draftsConfirmed.contains(d.handoffId) else { return }
         st.incomingDraft = d
+    }
+
+    private func sendRetry() {
+        guard st.connection == .live, !retrySent, let seq = retryOwed,
+              let gen = st.presence?.generation else { return }
+        retrySent = true
+        request("retry_reply", .retryReply(seq), ["conversation_id": Wire.conversation,
+                                                  "seq": seq, "presence_gen": gen])
     }
 
     private func sendDraftAcks() {

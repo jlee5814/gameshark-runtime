@@ -16,11 +16,20 @@ itself superseded and ends.
 
 An adapter built with serve=False (a CLI applying controls while no daemon runs) leaves
 every reply event pending for the serving daemon instead of starting inference.
+
+A reply that fails terminally (attempts exhausted, auth refused, a context that cannot
+fit) writes no text: the event acks, the duty turns blocked with the error kind, and the
+head row stays unanswered. That is the durable failure record; reply_view reads it back
+after any restart. retry(seq) answers it with a new event and call, numbered r1, r2, ...
+per seq, so a resent retry finds its own pending event and never starts a second call.
+Retryable refusals (model down, timeout before the attempt cap) only hold the event; the
+adapter keeps the latest reason in memory so surfaces can say Stark is waiting and why.
 """
 
 from __future__ import annotations
 
 import math
+import time
 import uuid as uuidlib
 from collections.abc import Callable
 
@@ -38,7 +47,7 @@ from gameshark.inference import (
     RouteResult,
     Script,
 )
-from gameshark.inference.executor import InferenceTask
+from gameshark.inference.executor import EXECUTE, InferenceTask
 from gameshark.lifecycle import CancelToken
 
 CONVERSATION = "stark:main"
@@ -48,13 +57,21 @@ SYSTEM = ("You are Stark, a calm desktop companion. Answer in one or two short p
 SPEC = CallSpec(max_tokens=256, timeout_s=120.0)
 
 
-def reply_event(seq: int) -> dict:
-    return {"event_id": f"ev-reply-{CONVERSATION}-{seq}", "adapter": "stark",
-            "type": "reply", "payload": {"seq": seq}}
+QUEUED, THINKING, WAITING, FAILED = "queued", "thinking", "waiting", "failed"
 
 
-def call_id_for(seq: int) -> str:
-    return f"call:{CONVERSATION}:{seq}"
+def _suffix(retry: int) -> str:
+    return f"-r{retry}" if retry else ""
+
+
+def reply_event(seq: int, retry: int = 0) -> dict:
+    payload = {"seq": seq, "retry": retry} if retry else {"seq": seq}
+    return {"event_id": f"ev-reply-{CONVERSATION}-{seq}{_suffix(retry)}", "adapter": "stark",
+            "type": "reply", "payload": payload}
+
+
+def call_id_for(seq: int, retry: int = 0) -> str:
+    return f"call:{CONVERSATION}:{seq}" + (f":r{retry}" if retry else "")
 
 
 class StarkChatAdapter:
@@ -69,6 +86,8 @@ class StarkChatAdapter:
         self.ctx: AdapterContext | None = None
         self.pending: str | None = None      # call_id of the reply in flight, if any
         self._submitted: set[int] = set()    # seqs whose event this process submitted
+        # (seq, error kind, wall clock retry time or None): why the head reply waits.
+        self.waiting: tuple[int, str, float | None] | None = None
 
     # ------------------------------------------------------------------ lifecycle
     def init(self, ctx: AdapterContext) -> None:
@@ -100,6 +119,51 @@ class StarkChatAdapter:
         h = self.head()
         return h[0] if h is not None and h[1] == Role.USER.value else None
 
+    def _attempts(self, seq: int) -> list[tuple[int, str]]:
+        """(retry, status) of every reply event for seq, oldest first."""
+        assert self.ctx is not None
+        base = reply_event(seq)["event_id"]
+        # A key range, not LIKE: the pump reads this every tick, and only a range uses the
+        # primary key index.
+        rows = self.ctx.conn.execute(
+            "SELECT event_id, status FROM events WHERE event_id=? OR "
+            "(event_id>? AND event_id<?)", (base, f"{base}-r", f"{base}-s")).fetchall()
+        out = []
+        for r in rows:
+            tail = r["event_id"][len(base):]
+            if tail == "":
+                out.append((0, r["status"]))
+            elif tail[2:].isdigit():
+                out.append((int(tail[2:]), r["status"]))
+        return sorted(out)
+
+    def reply_view(self, calls: list[tuple[str, str, str]]) -> dict | None:
+        """What the head reply is doing, or None when no user row waits for one.
+
+        queued: accepted, not yet streaming. thinking: the provider is streaming.
+        waiting: a retryable refusal holds it (model down, timeout); error says which.
+        failed: terminal and durable; a retry or a new message moves it on.
+        """
+        seq = self.unanswered()
+        if seq is None:
+            return None
+        attempts = self._attempts(seq)
+        retry = attempts[-1][0] if attempts else 0
+        view: dict = {"seq": seq, "retry": retry}
+        if attempts and attempts[-1][1] in ("acked", "dead"):
+            assert self.ctx is not None
+            r = self.ctx.responsibilities.get(RESPONSIBILITY)
+            return {**view, "state": FAILED,
+                    "error": (r.checkpoint if r is not None else None) or "unknown"}
+        call = call_id_for(seq, retry)
+        stage = next((st for cid, _conv, st in calls if cid == call), None)
+        if stage == EXECUTE:
+            return {**view, "state": THINKING}
+        if self.waiting is not None and self.waiting[0] == seq:
+            _, kind, at = self.waiting
+            return {**view, "state": WAITING, "error": kind, "retry_at": at}
+        return {**view, "state": QUEUED}
+
     # ------------------------------------------------------------------ controls
     def apply_control(self, action: str, payload: dict) -> str:
         """Operator controls. jack moves presence toward another surface (demo and tests)."""
@@ -117,6 +181,28 @@ class StarkChatAdapter:
         return f"{h.id}:{h.from_surface}->{h.to_surface}"
 
     # ------------------------------------------------------------------ replies
+    def retry(self, seq: int) -> tuple[int, bool]:
+        """Answer a failed reply again. Return (retry number, replayed).
+
+        Only the newest retry of a failed head starts work; a resend, before or after its
+        answer lands, returns that same retry. A seq with nothing failed is refused.
+        """
+        ctx = self.ctx
+        assert ctx is not None and ctx.submit_event is not None
+        attempts = self._attempts(seq)
+        newest = attempts[-1] if attempts else None
+        if newest is not None and newest[0] > 0 and (
+                newest[1] == "pending" or self.unanswered() != seq):
+            return newest[0], True
+        if self.unanswered() != seq or newest is None or newest[1] not in ("acked", "dead"):
+            raise ValueError(f"message {seq} has no failed reply to retry")
+        n = newest[0] + 1
+        self.waiting = None
+        # The event is the one durable change: its handler marks the duty active, so a
+        # crash before it persists leaves the reply failed and Retry still offered.
+        ctx.submit_event(reply_event(seq, n))
+        return n, False
+
     def ensure_reply(self) -> str | None:
         """Submit the reply event for an unanswered head row once per process."""
         ctx = self.ctx
@@ -136,6 +222,7 @@ class StarkChatAdapter:
         ctx = self.ctx
         assert ctx is not None
         seq = int(event["payload"]["seq"])
+        retry = int(event["payload"].get("retry", 0))
         if self.unanswered() != seq:
             # Answered, or superseded by a newer user row whose own event replies.
             self.pending = None
@@ -147,20 +234,28 @@ class StarkChatAdapter:
         ctx.responsibilities.upsert(RESPONSIBILITY, kind="conversation",
                                     payload={"conversation_id": CONVERSATION}, state="active")
         ctx.responsibilities.transition(RESPONSIBILITY, "active")
-        call_id = call_id_for(seq)
+        call_id = call_id_for(seq, retry)
         self.pending = call_id
         return InferenceTask(call_id, CONVERSATION, self.spec,
                              on_done=lambda r: self._answered(call_id, r),
-                             on_error=lambda e: self._failed(call_id, e))
+                             on_error=lambda e: self._failed(call_id, e),
+                             on_retry=lambda e, at: self._waiting(seq, e, at))
+
+    def _waiting(self, seq: int, exc: Exception, at: float) -> None:
+        # Wall clock, fixed once per refusal, so the pushed view changes only with it.
+        when = None if math.isinf(at) else round(time.time() + at - time.monotonic(), 1)
+        self.waiting = (seq, type(exc).__name__, when)
 
     def _answered(self, call_id: str, result: RouteResult) -> None:
         if self.pending == call_id:
             self.pending = None
+        self.waiting = None
         self._settle()
 
     def _failed(self, call_id: str, exc: Exception) -> None:
         if self.pending == call_id:
             self.pending = None
+        self.waiting = None
         assert self.ctx is not None
         self.ctx.responsibilities.transition(RESPONSIBILITY, "blocked",
                                              checkpoint=type(exc).__name__)
@@ -191,7 +286,7 @@ class CompanionFakeProvider(FakeProvider):
     def default_text(self, req: ProviderRequest) -> tuple[str, ...]:
         last = next((m.content for m in reversed(req.messages) if m.role is Role.USER), "")
         users = sum(1 for m in req.messages if m.role is Role.USER)
-        words = f"Got it. You said: {_clip(last)} (message {users})".split()
+        words = f"[fake model] Got it. You said: {_clip(last)} (message {users})".split()
         return tuple(w + " " for w in words[:-1]) + (words[-1],)
 
     def generate(self, req: ProviderRequest, cancel: CancelToken) -> FakeCall:

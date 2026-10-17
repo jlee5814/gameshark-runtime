@@ -15,6 +15,9 @@ public enum AvatarState: String, CaseIterable, Sendable {
         if !s.connection.isLive { return .disconnected }
         if !s.isActiveSurface { return .ghost }
         if s.isWorking || s.isThinking { return .working }
+        // Queued or waiting for the model is still work on the user's message; a failed
+        // reply is not, and shows in the conversation instead.
+        if s.reply?.pending == true { return .working }
         if listening { return .listening }
         let newest = s.rows.last { $0.role == "assistant" }?.seq ?? -1
         if newest > viewedSeq { return .notification }

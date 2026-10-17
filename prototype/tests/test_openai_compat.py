@@ -518,6 +518,28 @@ def test_config_fingerprint_tracks_key_endpoint_and_model(srv):
     assert local(srv).config_fingerprint != a.config_fingerprint
 
 
+def test_extra_body_reaches_the_server_beside_the_fixed_fields(srv):
+    p = local(srv, extra_body={"chat_template_kwargs": {"enable_thinking": False},
+                               "top_p": 0.9})
+    run(p)
+    body = srv.chats()[0]
+    assert body["chat_template_kwargs"] == {"enable_thinking": False} and body["top_p"] == 0.9
+    assert body["model"] == "m" and body["stream"] is True and body["max_tokens"] == 16
+
+
+@pytest.mark.parametrize("key", ["model", "messages", "stream", "max_tokens", "temperature",
+                                 "stream_options"])
+def test_extra_body_cannot_override_a_fixed_field(srv, key):
+    with pytest.raises(ValueError, match=key):
+        local(srv, extra_body={key: 1})
+
+
+def test_extra_body_is_part_of_the_config_fingerprint(srv):
+    plain = local(srv).config_fingerprint
+    assert local(srv, extra_body={}).config_fingerprint == plain
+    assert local(srv, extra_body={"top_p": 0.9}).config_fingerprint != plain
+
+
 # ---------------------------------------------------------------------- health
 def test_health_ok_degraded_down(srv):
     p = local(srv)

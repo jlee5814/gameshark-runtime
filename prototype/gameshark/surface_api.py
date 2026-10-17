@@ -15,6 +15,10 @@ AuthRequest, and the device proof or pairing is checked against the database on 
 thread. Each pump first applies operator revocations, closing a revoked device's sessions
 and evicting it from presence before any of its queued requests could be answered.
 
+A failed reply is retried only by retry_reply, fenced by presence like send. The runtime
+never answers in Stark's voice on its own: no fallback text, only the reply state in
+activity (queued, thinking, waiting, failed) and the model behind it in the snapshot.
+
 Pushes are at least once: a session that has synced receives rows after the last seq it
 was sent, plus presence, responsibility, and activity changes. The surface merges by seq,
 so a repeat is harmless and a gap triggers a sync.
@@ -29,10 +33,12 @@ from collections.abc import Callable
 from gameshark.devices import AuthRejected, DeviceRegistry
 from gameshark.errors import Cancelled, Draining, FencedError, HandoffConflict, StalePresence
 from gameshark.gateway import HELLO, LOST, PROTO_VERSIONS, GatewayServer, Session
+from gameshark.inference.fake import FakeProvider
 from gameshark.inference.types import InvalidRequest, OwnershipMismatch
 from gameshark.net_gateway import AuthRequest, TLSSession
 from gameshark.presence import ACKED, COMMITTED
 from gameshark.stark_chat import CONVERSATION, StarkChatAdapter
+from gameshark.store import write_txn
 from gameshark.supervisor import AgentSupervisor
 
 ID_RE = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
@@ -106,6 +112,7 @@ class SurfaceAPI:
             "snapshot": self._snapshot,
             "sync": self._sync,
             "send": self._send,
+            "retry_reply": self._retry_reply,
             "ready_out": self._ready_out,
             "ack_in": self._ack_in,
             "jack": self._jack,
@@ -196,6 +203,8 @@ class SurfaceAPI:
             "responsibilities": self._responsibilities(),
             "conversation": {"id": CONVERSATION, "head_seq": self._head_seq()},
             "activity": self._activity(),
+            # The model behind Stark's replies: runtime configuration, never his identity.
+            "model": self._model(),
             # A draft carried here by an acked jack, until this surface confirms it.
             "draft": self._draft_view(surface),
             # Display names of paired devices, so a surface can say where Stark is.
@@ -225,6 +234,18 @@ class SurfaceAPI:
         sub = self.sup.surface.submit(sess.surface, gen, client_msg_id, cid, text)
         self.chat.ensure_reply()
         return {"conversation_id": cid, "seq": sub.seq, "replayed": sub.replayed}
+
+    def _retry_reply(self, sess: Session, msg: dict) -> dict:
+        cid = _conversation(msg)
+        seq = _int(msg, "seq", 0)
+        gen = _int(msg, "presence_gen", 0)
+        sup = self.sup
+        assert sup.presence is not None
+        with write_txn(sup.conn):
+            sup.lease.guard_in_txn(sup.generation)
+            sup.presence.guard_surface_in_txn(sess.surface, gen)
+        retry, replayed = self.chat.retry(seq)
+        return {"conversation_id": cid, "seq": seq, "retry": retry, "replayed": replayed}
 
     def _ready_out(self, sess: Session, msg: dict) -> dict:
         hid = _id(msg, "handoff_id")
@@ -369,6 +390,15 @@ class SurfaceAPI:
             "LIMIT 20", (self.sup.agent_id,)).fetchall()
         return [dict(r) for r in rows]
 
+    def _model(self) -> dict | None:
+        router = self.sup.inference_router
+        if router is None or not router.providers:
+            return None
+        provider = next(iter(router.providers.values())).provider
+        caps = provider.capabilities()
+        return {"provider": provider.name, "model": caps.model,
+                "locality": caps.locality.value, "fake": isinstance(provider, FakeProvider)}
+
     def _head_seq(self) -> int:
         row = self.sup.conn.execute(
             "SELECT MAX(seq) AS s FROM messages WHERE conversation_id=?",
@@ -382,7 +412,9 @@ class SurfaceAPI:
         return {**self.sup.activity.view(blocked), "boot": self.boot,
                 "owner_generation": self.sup.generation,
                 # v1 fields: the companion reply in flight.
-                "working": self.chat.pending is not None, "call_id": self.chat.pending}
+                "working": self.chat.pending is not None, "call_id": self.chat.pending,
+                # Phase 4.1: the head reply's state, absent once it is answered.
+                "reply": self.chat.reply_view(self.sup.activity.calls())}
 
     @staticmethod
     def _row(r) -> dict:

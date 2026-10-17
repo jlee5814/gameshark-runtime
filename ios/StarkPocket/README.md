@@ -24,10 +24,16 @@ xcodebuild -project ios/StarkPocket/StarkPocket.xcodeproj -scheme StarkPocket \
   -destination 'platform=iOS Simulator,name=iPhone 18 Pro' test -only-testing:StarkPocketTests
 ios/scripts/pocket-demo.sh            # live: runtime, StarkMac, simulator, faults
 ios/scripts/pocket-demo.sh --skip-faults
+ios/scripts/pocket-demo.sh --tailscale --skip-faults \
+  --inference-url http://127.0.0.1:30000/v1 --model mlx-community/Qwen3-4B-4bit \
+  --inference-extra '{"chat_template_kwargs": {"enable_thinking": false}}'   # a real model
 ```
 
 `pocket-demo.sh` uses `~/.gameshark/demo` (fresh each run) and writes
-`pocket-acceptance.md`, StarkMac snapshots, and simulator screenshots there.
+`pocket-acceptance.md`, StarkMac snapshots, and simulator screenshots there. Without
+`--inference-url` it asks the runtime for the fake model. Keep `--skip-faults` against a
+real server: the faults SIGKILL the runtime mid stream, and the local SGLang server has
+answered later identical prompts with another request's text after aborted streams.
 
 These are the automated tests, and they run in the simulator. The physical iPhone results
 under On a physical iPhone are the user's own observations by hand, not automated runs.
@@ -55,7 +61,7 @@ checklist uses its own database, never `~/.gameshark/runtime.db` or the simulato
 
 ```sh
 export DB=~/.gameshark/device-check/runtime.db && mkdir -p "$(dirname "$DB")"
-uv run python stark.py --db "$DB" run --lan          # terminal 1; allow incoming connections
+uv run python stark.py --db "$DB" run --lan --fake-model   # terminal 1; allow incoming connections
 STARK_SOCKET="$(dirname "$DB")/gateway/stark.sock" \
   "$(../mac/scripts/build-app.sh | tail -1)/Contents/MacOS/StarkMac" &   # this database's StarkMac
 uv run --with qrcode==8.0 python stark.py --db "$DB" pair --name "My iPhone"
@@ -154,7 +160,7 @@ iPhone. The checklist below pairs over Wi-Fi first, so the link carries both the
 the tailnet endpoints.
 
 ```sh
-uv run python stark.py --db "$DB" run --lan --tailscale   # terminal 1; expect "tailnet gateway on 100.x:47821"
+uv run python stark.py --db "$DB" run --lan --tailscale --fake-model   # terminal 1; expect "tailnet gateway on 100.x:47821"
 tailscale serve status                                    # expect no handlers: the runtime refuses to serve otherwise
 uv run --with qrcode==8.0 python stark.py --db "$DB" pair --name "My iPhone"
 ```
@@ -183,3 +189,50 @@ link printed a Tailscale endpoint (a phone paired before `--tailscale` holds LAN
 only; unpair and pair again). `rejected tailnet … dropped`, `setup`, `tls`, or `auth`
 names the stage that refused it. `netstat -Lan -p tcp | grep 4782` should show an empty
 listen queue on both ports.
+
+### Live inference (Phase 4.1)
+
+Not yet run on a physical iPhone. Fake provider and simulator acceptance prove the
+pipeline; this checklist is the first time a real model reaches a phone in your hand. Use
+the device check database and pairing from above (Tailscale signed in on both).
+
+```sh
+# terminal 1: the model server (skip if already serving on :30000)
+python -m sglang.launch_server --model-path mlx-community/Qwen3-4B-4bit --port 30000
+curl -s http://127.0.0.1:30000/v1/models          # expect the model id
+
+# terminal 2: the runtime, from prototype/
+export GAMESHARK_INFERENCE_URL=http://127.0.0.1:30000/v1
+export GAMESHARK_INFERENCE_MODEL=mlx-community/Qwen3-4B-4bit
+export GAMESHARK_INFERENCE_EXTRA='{"chat_template_kwargs": {"enable_thinking": false}}'
+uv run python stark.py --db "$DB" run --lan --tailscale   # expect "replies from mlx-community/Qwen3-4B-4bit at ..."
+
+# terminal 3: StarkMac on this database
+STARK_SOCKET="$(dirname "$DB")/gateway/stark.sock" \
+  "$(../mac/scripts/build-app.sh | tail -1)/Contents/MacOS/StarkMac" &
+```
+
+1. Mac answer: in StarkMac ask something substantive ("My cat is Biscuit. Why do cats
+   purr?"). Expect "Stark is thinking…" under it, then a model written answer with no
+   `[fake model]` prefix and no fake model badge.
+2. Jack In over cellular: iPhone Wi-Fi off, Tailscale on, open Stark Pocket, tap Jack In.
+   StarkMac dims; the runtime log shows `via tailnet`.
+3. Follow up needing context, from the phone: "What is my cat's name?" Expect "Biscuit".
+4. Jack Out: StarkMac active, all four rows on both surfaces.
+5. Disconnect during inference: on the phone ask something long ("Explain how TCP slow
+   start works in five sentences."), and as soon as "Stark is thinking…" shows, turn on
+   Airplane Mode. Wait 10 s, turn it off. Expect the answer once, on the phone and on the
+   Mac; no second copy, no second question.
+6. Model down (optional): stop the SGLang server, send a message. Expect "Waiting for the
+   model: the model server is unreachable" and no answer text. Start the server again;
+   within about 15 s the answer arrives once.
+7. Evidence:
+
+```sh
+sqlite3 "$DB" "SELECT seq, role, substr(content, 1, 60) FROM messages
+  WHERE conversation_id='stark:main' ORDER BY seq"                     # no duplicate turn
+sqlite3 "$DB" "SELECT call_id, status, attempts FROM inference_calls
+  ORDER BY created"                                                   # one done call per question
+sqlite3 "$DB" "SELECT COUNT(*), COUNT(DISTINCT seq) FROM surface_writes"   # equal
+uv run python stark.py --db "$DB" status                              # chat:stark:main done
+```

@@ -274,7 +274,7 @@ class AgentSupervisor:
             if delay is None:
                 task.on_error(exc)
                 return None
-            return Deferred(time.monotonic() + delay)
+            return Deferred(self._retry_at(task, exc, delay))
         if isinstance(done, RouteResult):
             task.on_done(done)
             return None
@@ -286,7 +286,15 @@ class AgentSupervisor:
         if delay is None:
             self.router.finish(event_id, lambda: task.on_error(exc))
         else:
-            self.router.release(event_id, time.monotonic() + delay)
+            self.router.release(event_id, self._retry_at(task, exc, delay))
+
+    @staticmethod
+    def _retry_at(task: InferenceTask, exc: ProviderError, delay: float) -> float:
+        """When the event retries; the task's owner hears why it waits."""
+        at = time.monotonic() + delay
+        if task.on_retry is not None:
+            task.on_retry(exc, at)
+        return at
 
     def _retry_delay(self, exc: ProviderError) -> float | None:
         """Seconds until the owning event retries, or None when the error is its outcome."""

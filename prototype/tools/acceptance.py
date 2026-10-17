@@ -49,9 +49,7 @@ class Demo:
                "GAMESHARK_FIXTURE": str(self.dir / "github.json")}
         env.pop("GITHUB_TOKEN", None)
         cmd = [sys.executable, str(ROOT / "stark.py"), "--db", str(self.db), "--interval", "2",
-               "run", "--fake-delay", str(self.args.fake_delay)]
-        if self.args.inference_url:
-            cmd += ["--inference-url", self.args.inference_url, "--model", self.args.model]
+               "run", *model_args(self.args)]
         self.daemon = subprocess.Popen(cmd, cwd=ROOT, env=env, stdout=log,
                                        stderr=subprocess.STDOUT)
         self.wait(lambda: self.sock.exists(), 30, "gateway socket")
@@ -321,6 +319,14 @@ class Demo:
         print(f"\nreport: {self.dir / 'acceptance.md'}")
 
 
+def model_args(args) -> list[str]:
+    """The daemon's model: the named endpoint, else the fake asked for by name."""
+    if not args.inference_url:
+        return ["--fake-model", "--fake-delay", str(args.fake_delay)]
+    out = ["--inference-url", args.inference_url, "--model", args.model]
+    return out + (["--inference-extra", args.inference_extra] if args.inference_extra else [])
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--app", type=Path, required=True)
@@ -329,6 +335,8 @@ def main() -> int:
     ap.add_argument("--fake-delay", type=float, default=3.0)
     ap.add_argument("--inference-url", default=None, help="for example http://127.0.0.1:30000/v1")
     ap.add_argument("--model", default="default")
+    ap.add_argument("--inference-extra", default=None,
+                    help="JSON merged into each request, as for stark.py run")
     ap.add_argument("--interactive", action="store_true", help="pause for a real drag and a look")
     ap.add_argument("--fresh", action="store_true", help="start from an empty demo database")
     ap.add_argument("--keep", action="store_true", help="leave the daemon and app running")

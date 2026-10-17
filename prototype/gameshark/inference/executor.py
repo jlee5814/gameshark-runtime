@@ -49,6 +49,8 @@ class InferenceTask:
 
     on_done and on_error run on the coordinator, after the outcome is durable. The
     supervisor wraps them with event acknowledgment, so a handler never acks itself.
+    on_retry, if set, hears each retryable refusal before the event is redelivered: the
+    error and the monotonic time of the next attempt (inf when a successor replays it).
     """
 
     call_id: str
@@ -56,6 +58,7 @@ class InferenceTask:
     spec: CallSpec
     on_done: Callable[[RouteResult], None]
     on_error: Callable[[ProviderError], None]
+    on_retry: Callable[[ProviderError, float], None] | None = None
 
 
 @dataclass(frozen=True)
