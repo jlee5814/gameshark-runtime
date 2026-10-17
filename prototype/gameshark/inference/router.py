@@ -340,8 +340,15 @@ class InferenceRouter:
     def select(self, conversation_id: str, spec: CallSpec) -> list[Candidate]:
         """Ordered eligible candidates for the conversation's next call, or a typed refusal."""
         conv = self.journal.conversation(conversation_id)
-        messages = self.journal.context(conversation_id, conv["next_seq"],
-                                        spec.history_budget)
+        prompts: dict[Locality, tuple[Message, ...]] = {}
+
+        def prompt(locality: Locality) -> tuple[Message, ...]:
+            # Memory differs by locality: a cloud request never carries local_only facts.
+            if locality not in prompts:
+                prompts[locality] = self.journal.request_messages(
+                    conversation_id, conv["next_seq"], spec, locality)[0]
+            return prompts[locality]
+
         privacy = Privacy(conv["privacy"])
 
         # 1. Capability: features, model constraint, context window under the prompt bound.
@@ -353,7 +360,7 @@ class InferenceRouter:
             caps, bound = cfg.provider.capabilities(), self._bound(cfg)
             if not caps.supports(spec.needs):
                 continue
-            if bound.prompt(messages) + spec.max_tokens > caps.context_window:
+            if bound.prompt(prompt(caps.locality)) + spec.max_tokens > caps.context_window:
                 too_long = True
                 continue
             fits.append(Candidate(cfg, caps, bound, generation))

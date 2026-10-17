@@ -19,6 +19,8 @@ final class StarkModel {
         }
     }
     var clickThrough = false
+    /// The chat card shows saved memories instead of the conversation.
+    var showMemories = false
     private(set) var viewedSeq = -1 { didSet { followRuntime() } }
 
     /// Stark's sprite body, or nil when no atlas loaded (the vector avatar draws instead).
@@ -96,10 +98,45 @@ final class StarkModel {
 
     func send() {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty, canSend else { return }
+        guard !text.isEmpty else { return }
+        // An explicit command saves memory; it never becomes a chat row.
+        switch MemoryCommand.parse(text) {
+        case .show?:
+            showMemories = true
+            draft = ""
+            return
+        case .remember(let fact)?:
+            guard state.canWriteMemory else { return }
+            client.remember(fact)
+            showMemories = true
+            draft = ""
+            return
+        case nil:
+            break
+        }
+        guard canSend else { return }
         client.send(text)
         draft = ""
     }
+
+    func addMemory(_ text: String) {
+        let fact = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !fact.isEmpty, state.canWriteMemory else { return }
+        client.remember(fact)
+    }
+
+    func correctMemory(_ m: MemoryItem, text: String) {
+        let fact = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !fact.isEmpty, fact != m.content, state.canWriteMemory else { return }
+        client.correctMemory(id: m.id, revision: m.revision, text: fact)
+    }
+
+    func forgetMemory(_ id: String) {
+        guard state.canForgetMemory else { return }
+        client.forgetMemory(id: id)
+    }
+
+    func dismissMemoryOp(_ id: String) { client.discardMemoryOp(id) }
 
     func apply(_ s: ClientState) {
         let identityChanged = s.identity?.uuid != state.identity?.uuid

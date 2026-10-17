@@ -104,7 +104,10 @@ final class FakeClient: PocketClient, @unchecked Sendable {
     }
     func stop() { stopped = true }
     func reconnectNow() {}
-    func send(_ text: String, presenceGen: Int?) -> String { "m" }
+    func send(_ text: String, presenceGen: Int?) -> String {
+        sent.append(text)
+        return "m"
+    }
     func jack(_ to: GatewayClient.JackDirection) -> String {
         jacks.append(to)
         onJack(self, to)
@@ -124,6 +127,23 @@ final class FakeClient: PocketClient, @unchecked Sendable {
         clearedSent.append(handoffId)
         emit { if $0.sentDraft?.handoffId == handoffId { $0.sentDraft = nil } }
     }
+    var sent: [String] = []
+    var remembered: [String] = []
+    var corrected: [String] = []
+    var forgotten: [String] = []
+    func remember(_ text: String) -> String {
+        remembered.append(text)
+        return "op"
+    }
+    func correctMemory(id: String, revision: Int, text: String) -> String {
+        corrected.append("\(id)@\(revision):\(text)")
+        return "op"
+    }
+    func forgetMemory(id: String) -> String {
+        forgotten.append(id)
+        return "op"
+    }
+    func discardMemoryOp(_ opId: String) {}
 }
 
 @MainActor
@@ -171,6 +191,79 @@ final class PocketModelTests: XCTestCase {
             $0.presence = PresenceInfo(surface: surface, home: "mac", generation: 2)
             $0.handoff = nil
         }
+    }
+
+    // Phase 4.2: memory commands are typed, and only an explicit one saves a fact.
+    func testRememberCommandSavesMemoryAndNeverSendsChat() async throws {
+        let model = try pairedModel()
+        let c = clients[0]
+        model.networkChanged(.wifi)
+        holding(c)
+        c.emit { $0.memoryAvailable = true }
+        await settle { model.canWriteMemory }
+        model.draft = "/remember Parked on level 3"
+        model.send()
+        XCTAssertEqual(c.remembered, ["Parked on level 3"])
+        XCTAssertEqual(c.sent, [])
+        XCTAssertTrue(model.showMemories)
+        XCTAssertEqual(model.draft, "")
+        model.draft = "please remember my locker is 12"
+        model.send()
+        XCTAssertEqual(c.sent, ["please remember my locker is 12"])   // ordinary chat
+        XCTAssertEqual(c.remembered, ["Parked on level 3"])
+    }
+
+    func testAGhostPhoneCanForgetButNotSaveOrCorrect() async throws {
+        let model = try pairedModel()
+        let c = clients[0]
+        model.networkChanged(.wifi)
+        let m = MemoryItem(id: "mem-1", content: "likes tea", revision: 2, sourceSurface: "mac")
+        c.emit {
+            $0.connection = .live
+            $0.presence = PresenceInfo(surface: "mac", home: "mac", generation: 2)
+            $0.memoryAvailable = true
+            $0.memories = [m]
+        }
+        await settle { model.canForgetMemory }
+        XCTAssertFalse(model.canWriteMemory)
+        model.addMemory("not while Stark is on the Mac")
+        model.correctMemory(m, text: "likes coffee")
+        model.draft = "/remember nope"
+        model.send()
+        XCTAssertEqual(c.remembered, [])
+        XCTAssertEqual(c.corrected, [])
+        model.forgetMemory("mem-1")
+        XCTAssertEqual(c.forgotten, ["mem-1"])
+    }
+
+    func testACorrectionCarriesTheRevisionItEdited() async throws {
+        let model = try pairedModel()
+        let c = clients[0]
+        model.networkChanged(.wifi)
+        holding(c)
+        let m = MemoryItem(id: "mem-1", content: "lives in Boston", revision: 4,
+                           sourceSurface: "mac")
+        c.emit {
+            $0.memoryAvailable = true
+            $0.memories = [m]
+        }
+        await settle { model.memories.count == 1 }
+        model.correctMemory(m, text: "lives in Boston")             // unchanged: nothing sent
+        model.correctMemory(m, text: "  lives in Atlanta ")
+        XCTAssertEqual(c.corrected, ["mem-1@4:lives in Atlanta"])
+    }
+
+    func testMemoriesStayHiddenFromAnOlderRuntime() async throws {
+        let model = try pairedModel()
+        let c = clients[0]
+        model.networkChanged(.wifi)
+        holding(c)
+        await settle { model.state?.connection == .live }
+        XCTAssertFalse(model.memoryAvailable)
+        model.draft = "/remember x"
+        model.send()
+        XCTAssertEqual(c.remembered, [])
+        XCTAssertEqual(c.sent, [])
     }
 
     // Phase 4.1: the phone shows what the head reply is doing and retries only a failed one.

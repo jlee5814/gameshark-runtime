@@ -263,6 +263,39 @@ CREATE TABLE IF NOT EXISTS pairings (
     device_id     TEXT,
     created       REAL NOT NULL
 );
+
+-- v0.5: persistent memory (memory.py). Facts the user explicitly saved through a typed
+-- surface command, owned by the identity like conversations. Never model output.
+CREATE TABLE IF NOT EXISTS memories (
+    id               TEXT PRIMARY KEY,     -- mem-<32 hex>, stable across corrections
+    agent_id         TEXT NOT NULL,
+    scope            TEXT NOT NULL,        -- global (every Stark conversation)
+    privacy          TEXT NOT NULL,        -- local_only | cloud_ok
+    state            TEXT NOT NULL,        -- active | forgotten
+    content          TEXT NOT NULL,        -- '' once forgotten
+    revision         INTEGER NOT NULL,     -- 1, then one more per correction
+    source_surface   TEXT NOT NULL,        -- provenance: mac, pocket-xxxxxx, operator-cli
+    source_device_id TEXT,
+    created          REAL NOT NULL,
+    updated          REAL NOT NULL,
+    forgotten_at     REAL,
+    generation       INTEGER NOT NULL      -- lease generation of the last write
+);
+
+-- Memory writes, deduplicated by the client chosen op_id so a resend lands once. The
+-- hash covers only the memory's current text; correct and forget null older ones.
+CREATE TABLE IF NOT EXISTS memory_ops (
+    agent_id         TEXT NOT NULL,
+    op_id            TEXT NOT NULL,
+    kind             TEXT NOT NULL,        -- remember | correct | forget
+    memory_id        TEXT NOT NULL,
+    revision         INTEGER NOT NULL,
+    content_sha256   TEXT,
+    surface          TEXT NOT NULL,
+    history_mentions INTEGER NOT NULL DEFAULT 0,
+    created          REAL NOT NULL,
+    PRIMARY KEY (agent_id, op_id)
+);
 """
 
 # Columns added after a table first shipped. Applied idempotently so a v0.1 or early v0.2
@@ -339,6 +372,8 @@ def connect(path: str | Path) -> sqlite3.Connection:
     conn.execute("PRAGMA synchronous=FULL")
     conn.execute("PRAGMA foreign_keys=ON")
     conn.execute("PRAGMA busy_timeout=3000")
+    # Freed cells are zeroed, so a forgotten or corrected memory leaves no plaintext behind.
+    conn.execute("PRAGMA secure_delete=ON")
     conn.executescript(SCHEMA)
     migrate(conn)
     return conn

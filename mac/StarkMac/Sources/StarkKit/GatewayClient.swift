@@ -90,6 +90,23 @@ public struct ClientState: Equatable, Sendable {
     }
     public var isThinking: Bool { activity?.isThinking ?? working }
 
+    /// The runtime serves memory commands (its snapshot lists the feature).
+    public var memoryAvailable = false
+    /// Saved memories, from memory_list and memories pushes: the runtime's list, never a
+    /// local copy that could drift from it.
+    public var memories: [MemoryItem] = []
+    /// Whether saved memories reach the model; the operator can revoke it on the Mac.
+    public var memoryInject = true
+    /// Memory writes not yet answered, and refused ones until discarded.
+    public var memoryOps: [MemoryOp] = []
+    /// The last memory outcome worth saying, such as what a forget left in history.
+    public var memoryNotice: String?
+
+    /// Remember and correct need presence, as a chat send does.
+    public var canWriteMemory: Bool { connection.isLive && isActiveSurface && memoryAvailable }
+    /// Forget needs only a live session: deleting is never blocked by where Stark is.
+    public var canForgetMemory: Bool { connection.isLive && memoryAvailable }
+
     public init(surface: String) {
         self.surface = surface
     }
@@ -166,7 +183,7 @@ public final class GatewayClient: @unchecked Sendable {
 
     private enum Pending {
         case snapshot, sync, send(String), readyOut(String), ackIn(String), jack(String),
-             draftAck(String), retryReply(Int)
+             draftAck(String), retryReply(Int), memoryList, memory(String)
     }
 
     public enum JackDirection: String, Sendable {
@@ -219,6 +236,11 @@ public final class GatewayClient: @unchecked Sendable {
     /// committed jack holds it. Kept across reconnects: a lost reply is reconciled by
     /// replaying the same ready_out, which the runtime answers from the durable row.
     private var draftAttempt: DraftAttempt?
+    /// Memory ops sent on this connection and awaiting a result. Cleared on reconnect, so
+    /// an op lost with its connection is sent again under the same op id.
+    private var memorySent: Set<String> = []
+    /// memory_list asked on this connection.
+    private var memoryListed = false
 
     private struct DraftAttempt {
         var draft: CarriedDraft
@@ -365,6 +387,52 @@ public final class GatewayClient: @unchecked Sendable {
         }
     }
 
+    /// Save a fact the user typed as an explicit command. Returns the op id.
+    @discardableResult
+    public func remember(_ text: String) -> String {
+        enqueueMemory(.remember(text: text))
+    }
+
+    /// Replace a memory's text. revision is the one the user edited; a newer one elsewhere
+    /// makes the runtime refuse with conflict instead of overwriting it.
+    @discardableResult
+    public func correctMemory(id: String, revision: Int, text: String) -> String {
+        enqueueMemory(.correct(memoryId: id, revision: revision, text: text))
+    }
+
+    /// Forget a memory. Allowed from any live surface, wherever Stark is.
+    @discardableResult
+    public func forgetMemory(id: String) -> String {
+        enqueueMemory(.forget(memoryId: id))
+    }
+
+    /// Drop a refused memory op from the list, and the notice with it.
+    public func discardMemoryOp(_ opId: String) {
+        queue.async {
+            self.st.memoryOps.removeAll { $0.id == opId && $0.status != .pending }
+            self.st.memoryNotice = nil
+            self.publish()
+        }
+    }
+
+    public func dismissMemoryNotice() {
+        queue.async {
+            self.st.memoryNotice = nil
+            self.publish()
+        }
+    }
+
+    private func enqueueMemory(_ kind: MemoryOp.Kind) -> String {
+        let id = "\(config.surface)-mem-" + UUID().uuidString.lowercased()
+        queue.async {
+            self.st.memoryOps.append(MemoryOp(id: id, kind: kind, status: .pending))
+            self.st.memoryNotice = nil
+            self.flushMemoryOps()
+            self.publish()
+        }
+        return id
+    }
+
     @discardableResult
     public func send(_ text: String, presenceGen: Int? = nil) -> String {
         let id = "\(config.surface)-" + UUID().uuidString.lowercased()
@@ -416,6 +484,8 @@ public final class GatewayClient: @unchecked Sendable {
         handoffSent = []
         draftAcksSent = []
         retrySent = false
+        memorySent = []
+        memoryListed = false
         haveSnapshot = false
         haveSync = false
         clearActivity()
@@ -569,6 +639,11 @@ public final class GatewayClient: @unchecked Sendable {
                 // Another runtime database: nothing cached belongs to it.
                 mirror.reset()
                 st.rows = []
+                // Memories belong to an identity: a write queued for the old runtime is
+                // never sent to this one, pending or not.
+                st.memories = []
+                st.memoryOps = []
+                memorySent = []
                 st.outbox.removeAll { if case .pending = $0.status { false } else { true } }
             }
             st.identity = w.identity
@@ -617,6 +692,12 @@ public final class GatewayClient: @unchecked Sendable {
             st.model = s.model
             st.deviceNames = Dictionary((s.devices ?? []).map { ($0.surface, $0.name) },
                                         uniquingKeysWith: { a, _ in a })
+            st.memoryAvailable = s.features?.contains("memory") == true
+            if let m = s.memory { st.memoryInject = m.inject }
+            if st.memoryAvailable && !memoryListed {
+                memoryListed = true
+                request("memory_list", .memoryList)
+            }
             if let d = s.draft {
                 offer(d)
             } else if let d = st.incomingDraft, !draftAcksOwed.contains(d.handoffId) {
@@ -669,6 +750,26 @@ public final class GatewayClient: @unchecked Sendable {
             retrySent = false
             let r = try Wire.decode(Result<RetryResult>.self, from: body).data
             trace("retry seq=\(seq) r\(r.retry) replayed=\(r.replayed)")
+        case .memoryList:
+            let p = try Wire.decode(Result<MemoriesPayload>.self, from: body).data
+            st.memories = p.memories
+            st.memoryInject = p.inject
+        case .memory(let opId):
+            memorySent.remove(opId)
+            guard let op = st.memoryOps.first(where: { $0.id == opId }) else { break }
+            st.memoryOps.removeAll { $0.id == opId }
+            if case .forget(let mid) = op.kind {
+                let r = try Wire.decode(Result<ForgetResult>.self, from: body).data
+                st.memories.removeAll { $0.id == mid }
+                st.memoryNotice = MemoryText.forgotten(historyMentions: r.historyMentions)
+            } else {
+                let m = try Wire.decode(Result<MemoryWriteResult>.self, from: body).data.memory
+                if let i = st.memories.firstIndex(where: { $0.id == m.id }) {
+                    st.memories[i] = m
+                } else {
+                    st.memories.append(m)
+                }
+            }
         }
         if haveSnapshot && haveSync && st.connection != .live {
             st.connection = .live
@@ -677,6 +778,7 @@ public final class GatewayClient: @unchecked Sendable {
             flushOutbox()
             sendDraftAcks()
             sendRetry()
+            flushMemoryOps()
         }
         publish()
     }
@@ -713,6 +815,31 @@ public final class GatewayClient: @unchecked Sendable {
             // A fenced or invalid refusal is final; anything else retries when live.
             if code == "stale_presence" || code == "invalid", retryOwed == seq { retryOwed = nil }
             if code == "stale_presence" { request("snapshot", .snapshot) }
+        case .memoryList:
+            st.lastError = "memory_list: \(code)"
+        case .memory(let opId):
+            memorySent.remove(opId)
+            guard let i = st.memoryOps.firstIndex(where: { $0.id == opId }) else { break }
+            if case .forget(let mid) = st.memoryOps[i].kind, code == "invalid" {
+                // Already gone from the runtime: nothing is left to forget.
+                st.memoryOps.remove(at: i)
+                st.memories.removeAll { $0.id == mid }
+                break
+            }
+            // The runtime lost or is handing over ownership and wrote nothing: the op stays
+            // pending and goes again, under the same op id, once a session is live.
+            if code == "fenced" || code == "draining" { break }
+            if code == "superseded" {
+                // It landed on an earlier attempt and the memory changed since: settled.
+                st.memoryOps.remove(at: i)
+                request("memory_list", .memoryList)
+                break
+            }
+            // Any other refusal is final for this op; the user decides whether to try again.
+            st.memoryOps[i].status = .rejected(code: code)
+            st.memoryNotice = MemoryText.refused(code)
+            if code == "stale_presence" { request("snapshot", .snapshot) }
+            if code == "conflict" { request("memory_list", .memoryList) }
         case .snapshot, .sync:
             st.lastError = "\(code): \(message ?? "")"
         }
@@ -746,6 +873,10 @@ public final class GatewayClient: @unchecked Sendable {
             guard haveSnapshot, a.boot == nil || a.boot == st.activity?.boot else { return }
             st.working = a.working
             st.activity = a
+        case "memories":
+            let p = try Wire.decode(Event<MemoriesPayload>.self, from: body).data
+            st.memories = p.memories
+            st.memoryInject = p.inject
         default:
             return
         }
@@ -830,6 +961,25 @@ public final class GatewayClient: @unchecked Sendable {
             request("send", .send(m.id), ["conversation_id": Wire.conversation,
                                           "client_msg_id": m.id, "text": m.text,
                                           "presence_gen": m.presenceGenOverride ?? gen])
+        }
+    }
+
+    private func flushMemoryOps() {
+        guard st.connection == .live, st.memoryAvailable,
+              let gen = st.presence?.generation else { return }
+        for op in st.memoryOps where op.status == .pending && !memorySent.contains(op.id) {
+            memorySent.insert(op.id)
+            switch op.kind {
+            case .remember(let text):
+                request("memory_remember", .memory(op.id), ["op_id": op.id, "text": text,
+                                                           "presence_gen": gen])
+            case .correct(let mid, let rev, let text):
+                request("memory_correct", .memory(op.id), ["op_id": op.id, "memory_id": mid,
+                                                          "revision": rev, "text": text,
+                                                          "presence_gen": gen])
+            case .forget(let mid):
+                request("memory_forget", .memory(op.id), ["op_id": op.id, "memory_id": mid])
+            }
         }
     }
 

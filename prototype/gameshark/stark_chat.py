@@ -49,12 +49,16 @@ from gameshark.inference import (
 )
 from gameshark.inference.executor import EXECUTE, InferenceTask
 from gameshark.lifecycle import CancelToken
+from gameshark.memory import HEADER as MEMORY_HEADER
+from gameshark.memory import ITEM as MEMORY_ITEM
 
 CONVERSATION = "stark:main"
 RESPONSIBILITY = "chat:stark:main"
 SYSTEM = ("You are Stark, a calm desktop companion. Answer in one or two short plain "
           "sentences.")
-SPEC = CallSpec(max_tokens=256, timeout_s=120.0)
+# Bytes of saved memory each reply may carry, apart from the history window.
+MEMORY_BUDGET = 1024
+SPEC = CallSpec(max_tokens=256, timeout_s=120.0, memory_budget=MEMORY_BUDGET)
 
 
 QUEUED, THINKING, WAITING, FAILED = "queued", "thinking", "waiting", "failed"
@@ -166,9 +170,20 @@ class StarkChatAdapter:
 
     # ------------------------------------------------------------------ controls
     def apply_control(self, action: str, payload: dict) -> str:
-        """Operator controls. jack moves presence toward another surface (demo and tests)."""
+        """Operator controls. jack moves presence toward another surface (demo and tests);
+        forget_memory forgets one saved memory for `stark.py memory forget`."""
         ctx = self.ctx
         assert ctx is not None
+        if action == "forget_memory":
+            if ctx.memory is None:
+                raise ValueError("memory is not enabled")
+            mid = str(payload.get("memory_id", ""))
+            op = str(payload.get("op_id") or f"cli-{uuidlib.uuid4().hex}")
+            try:
+                m = ctx.memory.forget("operator-cli", op, mid)
+            except LookupError as e:
+                raise ValueError(str(e)) from None
+            return f"{m.id}:{m.state}:history_mentions={m.history_mentions}"
         if action != "jack":
             raise ValueError(f"unknown action {action}")
         if ctx.presence is None:
@@ -286,7 +301,15 @@ class CompanionFakeProvider(FakeProvider):
     def default_text(self, req: ProviderRequest) -> tuple[str, ...]:
         last = next((m.content for m in reversed(req.messages) if m.role is Role.USER), "")
         users = sum(1 for m in req.messages if m.role is Role.USER)
-        words = f"[fake model] Got it. You said: {_clip(last)} (message {users})".split()
+        text = f"[fake model] Got it. You said: {_clip(last)} (message {users})"
+        # Recall made visible: the demo model names the saved memories its request carried,
+        # so a surface can show that a fact reached the model and that a forgotten one did not.
+        block = next((m.content for m in req.messages
+                      if m.role is Role.SYSTEM and m.content.startswith(MEMORY_HEADER)), "")
+        facts = block.split(MEMORY_ITEM)[1:]
+        if facts:
+            text += " Saved memories: " + "; ".join(_clip(f, 8) for f in facts[:3])
+        words = text.split()
         return tuple(w + " " for w in words[:-1]) + (words[-1],)
 
     def generate(self, req: ProviderRequest, cancel: CancelToken) -> FakeCall:

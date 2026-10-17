@@ -18,6 +18,10 @@ protocol PocketClient: AnyObject {
     func confirmDraft(_ handoffId: String)
     func clearSentDraft(_ handoffId: String)
     func setPath(_ path: NetworkPath)
+    @discardableResult func remember(_ text: String) -> String
+    @discardableResult func correctMemory(id: String, revision: Int, text: String) -> String
+    @discardableResult func forgetMemory(id: String) -> String
+    func discardMemoryOp(_ opId: String)
 }
 
 extension GatewayClient: PocketClient {}
@@ -301,10 +305,58 @@ final class PocketModel {
 
     func send() {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty, summary?.canSend == true else { return }
+        guard !text.isEmpty else { return }
+        // An explicit command saves memory; it never becomes a chat row.
+        switch MemoryCommand.parse(text) {
+        case .show?:
+            showMemories = true
+            draft = ""
+            return
+        case .remember(let fact)?:
+            guard canWriteMemory else { return }
+            client?.remember(fact)
+            showMemories = true
+            draft = ""
+            return
+        case nil:
+            break
+        }
+        guard summary?.canSend == true else { return }
         client?.send(text, presenceGen: nil)
         draft = ""
     }
+
+    // MARK: memory
+
+    /// The Memories sheet is open.
+    var showMemories = false
+    var memoryAvailable: Bool { state?.memoryAvailable ?? false }
+    var memories: [MemoryItem] { state?.memories ?? [] }
+    var memoryOps: [MemoryOp] { state?.memoryOps ?? [] }
+    var memoryNotice: String? { state?.memoryNotice }
+    var memoryInject: Bool { state?.memoryInject ?? true }
+    /// Saving and correcting need Stark here; forgetting only a live connection.
+    var canWriteMemory: Bool { state?.canWriteMemory ?? false }
+    var canForgetMemory: Bool { state?.canForgetMemory ?? false }
+
+    func addMemory(_ text: String) {
+        let fact = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !fact.isEmpty, canWriteMemory else { return }
+        client?.remember(fact)
+    }
+
+    func correctMemory(_ m: MemoryItem, text: String) {
+        let fact = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !fact.isEmpty, fact != m.content, canWriteMemory else { return }
+        client?.correctMemory(id: m.id, revision: m.revision, text: fact)
+    }
+
+    func forgetMemory(_ id: String) {
+        guard canForgetMemory else { return }
+        client?.forgetMemory(id: id)
+    }
+
+    func dismissMemoryOp(_ id: String) { client?.discardMemoryOp(id) }
 
     func jack() {
         switch summary?.control {

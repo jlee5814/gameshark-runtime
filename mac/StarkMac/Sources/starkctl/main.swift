@@ -13,7 +13,7 @@ import Foundation
 //   starkctl snapshot PATH
 let args = Array(CommandLine.arguments.dropFirst())
 guard let cmd = args.first else {
-    FileHandle.standardError.write(Data("usage: starkctl move|chat|say|draft|clickthrough|reconnect|jackin|snapshot ...\n".utf8))
+    FileHandle.standardError.write(Data("usage: starkctl move|chat|say|draft|memories|forget|clickthrough|reconnect|jackin|snapshot ...\n".utf8))
     exit(2)
 }
 DistributedNotificationCenter.default().postNotificationName(
