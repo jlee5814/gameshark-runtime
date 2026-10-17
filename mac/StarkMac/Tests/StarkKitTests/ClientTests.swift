@@ -65,6 +65,8 @@ final class FakeRuntime: @unchecked Sendable {
     var model: [String: Any]?
     /// Every retry_reply received, as (seq, presence_gen).
     var retries: [[Int]] = []
+    /// When set, the next retry_reply is lost on the way and the connection drops.
+    var dropNextRetry = false
 
     /// The open jack resolves (acked by its target, or reverted) and presence moves to
     /// holder; the push tells every connection the jack closed.
@@ -155,6 +157,11 @@ final class FakeRuntime: @unchecked Sendable {
             let seq = msg["seq"] as? Int ?? -1
             let gen = msg["presence_gen"] as? Int ?? -1
             retries.append([seq, gen])
+            if dropNextRetry {
+                dropNextRetry = false
+                t.hangUp()
+                return
+            }
             guard gen == generation, surface == "mac" else {
                 t.push(["type": "error", "id": id, "code": "stale_presence", "message": "stale"])
                 return
@@ -583,6 +590,25 @@ func eventually(_ timeout: TimeInterval = 5, _ cond: () -> Bool) -> Bool {
         #expect(eventually { c.state.presence?.generation == 2 })
         c.retryReply(seq: 4)
         #expect(eventually { rt.lock.withLock { rt.retries } == [[4, 1], [4, 2]] })
+    }
+
+    /// Codex P2: a Retry lost with its connection is sent again once live, like a
+    /// message or a draft receipt; the runtime keys it by seq, so a repeat is harmless.
+    @Test func aRetryLostWithItsConnectionIsResent() throws {
+        let rt = FakeRuntime()
+        rt.dropNextRetry = true
+        let c = try client(rt)
+        c.start()
+        defer { c.stop() }
+        #expect(eventually { c.state.connection == .live })
+        c.retryReply(seq: 4)
+        #expect(eventually { rt.lock.withLock { rt.retries } == [[4, 1], [4, 1]] })
+        Thread.sleep(forTimeInterval: 0.2)
+        #expect(rt.lock.withLock { rt.retries }.count == 2)    // answered: never again
+        c.reconnectNow()
+        #expect(eventually { c.state.connection == .live && rt.lock.withLock { rt.connections.count == 3 } })
+        Thread.sleep(forTimeInterval: 0.2)
+        #expect(rt.lock.withLock { rt.retries }.count == 2)
     }
 
     @Test func retryWhileDisconnectedSendsNothing() throws {
