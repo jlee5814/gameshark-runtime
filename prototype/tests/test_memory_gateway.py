@@ -397,3 +397,20 @@ def test_an_operator_inject_revocation_reaches_live_surfaces(rt):
             conn.close()
         mac.call("ping")                                  # the pump notices the grant
         assert mac.wait_event("memories", lambda d: not d["inject"])["memories"]
+
+
+def test_duplicate_and_superseded_are_typed(rt):
+    with rt.client() as mac:
+        g = gen(mac)
+        a = remember(mac, "op1", "likes tea", g)["memory"]
+        remember(mac, "op2", "likes coffee", g)
+        with pytest.raises(GatewayError) as e:
+            mac.call("memory_correct", op_id="op3", memory_id=a["id"], revision=1,
+                     text="likes coffee", presence_gen=g)
+        assert e.value.code == "duplicate"
+        mac.call("memory_correct", op_id="op4", memory_id=a["id"], revision=1,
+                 text="likes green tea", presence_gen=g)
+        with pytest.raises(GatewayError) as e:
+            remember(mac, "op1", "likes tea", g)          # its hash went with the old text
+        assert e.value.code == "superseded"
+        assert sorted(m["content"] for m in listed(mac)) == ["likes coffee", "likes green tea"]

@@ -72,6 +72,16 @@ class MemoryLimit(Exception):
     """The active memory count is at MAX_ACTIVE."""
 
 
+class MemorySuperseded(Exception):
+    """A resent op landed earlier, but its memory changed since, so its text can no longer
+    be checked against the request: its hash was scrubbed with the old text. Nothing is
+    written; the surface refreshes its list."""
+
+
+class MemoryDuplicate(Exception):
+    """A correction would give two active memories the same text."""
+
+
 @dataclass(frozen=True)
 class Memory:
     id: str
@@ -218,7 +228,9 @@ class MemoryStore:
                 memory_id: str | None = None) -> Memory:
         if seen["kind"] != kind or (memory_id is not None and seen["memory_id"] != memory_id):
             raise ValueError(f"op {seen['op_id']} was already used for another request")
-        if digest is not None and seen["content_sha256"] not in (None, digest):
+        if digest is not None and seen["content_sha256"] is None:
+            raise MemorySuperseded(f"op {seen['op_id']} landed before its memory changed")
+        if digest is not None and seen["content_sha256"] != digest:
             raise ValueError(f"op {seen['op_id']} was already sent with other text")
         row = self._row(seen["memory_id"])
         assert row is not None
@@ -274,6 +286,11 @@ class MemoryStore:
             if row["revision"] != revision:
                 raise MemoryConflict(f"{memory_id} is at revision {row['revision']}, not "
                                      f"{revision}")
+            other = self.conn.execute(
+                "SELECT id FROM memories WHERE agent_id=? AND state=? AND content=? AND id<>?",
+                (self.agent_id, ACTIVE, content, memory_id)).fetchone()
+            if other is not None:
+                raise MemoryDuplicate(f"{other['id']} already holds this text")
             self.conn.execute(
                 "UPDATE memories SET content=?, revision=?, updated=?, generation=? WHERE id=?",
                 (content, revision + 1, now, self.generation, memory_id))
@@ -388,5 +405,6 @@ class MemoryStore:
 
 
 __all__ = ["ACTIVE", "FORGOTTEN", "GRANT_ADAPTER", "HEADER", "INJECT", "MAX_ACTIVE",
-           "MAX_TEXT", "WRITE", "Memory", "MemoryConflict", "MemoryLimit", "MemoryStore",
+           "MAX_TEXT", "WRITE", "Memory", "MemoryConflict", "MemoryDuplicate", "MemoryLimit",
+           "MemoryStore", "MemorySuperseded",
            "active_memories", "block_cost", "inject_enabled", "normalize", "render"]

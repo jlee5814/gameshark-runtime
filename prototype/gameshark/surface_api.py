@@ -43,7 +43,7 @@ from gameshark.inference.fake import FakeProvider
 from gameshark.inference.types import InvalidRequest, OwnershipMismatch
 from gameshark.memory import ID_RE as MEMORY_ID_RE
 from gameshark.memory import MAX_TEXT as MEMORY_TEXT
-from gameshark.memory import MemoryConflict, MemoryLimit
+from gameshark.memory import MemoryConflict, MemoryDuplicate, MemoryLimit, MemorySuperseded
 from gameshark.net_gateway import AuthRequest, TLSSession
 from gameshark.presence import ACKED, COMMITTED
 from gameshark.stark_chat import CONVERSATION, StarkChatAdapter
@@ -205,6 +205,10 @@ class SurfaceAPI:
             self._error(sess, rid, "conflict", e)
         except MemoryLimit as e:
             self._error(sess, rid, "memory_limit", e)
+        except MemoryDuplicate as e:
+            self._error(sess, rid, "duplicate", e)
+        except MemorySuperseded as e:
+            self._error(sess, rid, "superseded", e)
         except PermissionError as e:
             self._error(sess, rid, "forbidden", e)
         except HandoffConflict as e:

@@ -339,3 +339,29 @@ def test_a_restarted_supervisor_scrubs_a_forget_that_died_before_its_checkpoint(
         sup.stop()
         sup.close()
         first.conn.close()
+
+
+def test_a_reused_op_after_its_hash_was_scrubbed_is_never_silently_accepted(ms):
+    from gameshark.memory import MemorySuperseded
+
+    m = ms.remember("mac", 1, "op1", "v1")
+    ms.correct("mac", 1, "op2", m.id, 1, "v2")           # scrubs op1's hash
+    for text in ("v1", "something else"):                 # neither can be verified now
+        with pytest.raises(MemorySuperseded):
+            ms.remember("mac", 1, "op1", text)
+    assert [x.content for x in ms.list()] == ["v2"]
+    ms.forget("mac", "op3", m.id)                          # scrubs op2's hash
+    with pytest.raises(MemorySuperseded):
+        ms.correct("mac", 1, "op2", m.id, 1, "v3")
+    assert ms.forget("mac", "op3", m.id).replayed          # forget carries no text
+
+
+def test_correcting_into_another_active_memory_is_refused(ms):
+    from gameshark.memory import MemoryDuplicate
+
+    a = ms.remember("mac", 1, "op1", "likes tea")
+    ms.remember("mac", 1, "op2", "likes coffee")
+    with pytest.raises(MemoryDuplicate):
+        ms.correct("mac", 1, "op3", a.id, 1, "likes   coffee")
+    assert sorted(x.content for x in ms.list()) == ["likes coffee", "likes tea"]
+    assert ms.correct("mac", 1, "op4", a.id, 1, "likes tea").revision == 2   # own text is fine

@@ -50,7 +50,12 @@ corrections.
 touched, the revision it produced, and the surface. A resend returns the first result;
 a reused op id with other text is refused. The op log keeps a SHA256 of the memory's
 current text only: a correction or forget nulls the hashes of earlier ops, so neither a
-superseded nor a forgotten fact survives as a guessable digest.
+superseded nor a forgotten fact survives as a guessable digest. A resend whose hash was
+scrubbed this way can no longer be checked against its text, so the runtime answers
+`superseded` and writes nothing: the op landed earlier and its memory has changed since.
+StarkKit settles it and refreshes the list. A correction to text another active memory
+already holds is refused as `duplicate`; `fenced` and `draining` leave an op pending for
+the next owner under the same op id.
 
 At most 256 memories are active. Remembering text equal to an active memory returns that
 memory, so a lost acknowledgement resent under a fresh op id still yields one row.
