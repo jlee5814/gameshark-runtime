@@ -67,6 +67,15 @@ final class FakeRuntime: @unchecked Sendable {
     var retries: [[Int]] = []
     /// When set, the next retry_reply is lost on the way and the connection drops.
     var dropNextRetry = false
+    /// Memory (Phase 4.2): whether the snapshot advertises it, the saved list in wire form,
+    /// each op id's first answer, and every memory op id received in order.
+    var memoryFeature = false
+    var memories: [[String: Any]] = []
+    var memoryAnswers: [String: [String: Any]] = [:]
+    var memoryRequests: [String] = []
+    /// When set, the next memory write lands but its reply is lost and the connection drops.
+    var dropNextMemoryReply = false
+    var nextMemory = 1
 
     /// The open jack resolves (acked by its target, or reverted) and presence moves to
     /// holder; the push tells every connection the jack closed.
@@ -127,6 +136,8 @@ final class FakeRuntime: @unchecked Sendable {
                 "responsibilities": [], "conversation": ["id": Wire.conversation, "head_seq": rows.count - 1],
                 "activity": activity, "devices": devices,
                 "model": model.map { $0 as Any } ?? NSNull(),
+                "features": memoryFeature ? ["memory"] : [],
+                "memory": ["count": memories.count, "inject": true],
                 "draft": draft.map { $0 as Any } ?? NSNull()]])
         case "sync":
             let after = msg["after_seq"] as? Int ?? -1
@@ -253,8 +264,79 @@ final class FakeRuntime: @unchecked Sendable {
             t.push(["type": "event", "kind": "presence", "rev": 1, "data": [
                 "presence": ["surface": surface, "home": "mac", "generation": generation],
                 "handoff": h]])
+        case "memory_list":
+            t.push(["type": "result", "id": id, "data": ["memories": memories, "inject": true]])
+        case "memory_remember", "memory_correct", "memory_forget":
+            memoryWrite(type, msg, id: id, on: t)
         default:
             t.push(["type": "error", "id": id, "code": "unknown_command", "message": type])
+        }
+    }
+
+    /// Called with the lock held. Dedup by op id, presence for remember and correct, and a
+    /// revision check for correct, as memory.py does.
+    private func memoryWrite(_ type: String, _ msg: [String: Any], id: Int, on t: FakeTransport) {
+        let op = msg["op_id"] as! String
+        memoryRequests.append(op)
+        if let first = memoryAnswers[op] {
+            var again = first
+            again["replayed"] = true
+            t.push(["type": "result", "id": id, "data": again])
+            return
+        }
+        func refuse(_ code: String) {
+            t.push(["type": "error", "id": id, "code": code, "message": code])
+        }
+        let data: [String: Any]
+        switch type {
+        case "memory_forget":
+            let mid = msg["memory_id"] as! String
+            guard memories.contains(where: { $0["id"] as? String == mid }) else { return refuse("invalid") }
+            memories.removeAll { $0["id"] as? String == mid }
+            data = ["memory_id": mid, "state": "forgotten", "replayed": false, "history_mentions": 1]
+        default:
+            guard msg["presence_gen"] as? Int == generation, surface == "mac" else {
+                return refuse("stale_presence")
+            }
+            var m: [String: Any]
+            if type == "memory_remember" {
+                m = ["id": String(format: "mem-%032d", nextMemory), "content": msg["text"]!,
+                     "revision": 1, "scope": "global", "state": "active",
+                     "source_surface": "mac", "created": 1.0, "updated": 1.0]
+                nextMemory += 1
+                memories.append(m)
+            } else {
+                let mid = msg["memory_id"] as! String
+                guard let i = memories.firstIndex(where: { $0["id"] as? String == mid }) else {
+                    return refuse("invalid")
+                }
+                guard memories[i]["revision"] as? Int == msg["revision"] as? Int else {
+                    return refuse("conflict")
+                }
+                memories[i]["content"] = msg["text"]!
+                memories[i]["revision"] = (memories[i]["revision"] as! Int) + 1
+                m = memories[i]
+            }
+            data = ["memory": m, "replayed": false]
+        }
+        memoryAnswers[op] = data
+        if dropNextMemoryReply {
+            dropNextMemoryReply = false
+            t.hangUp()
+            return
+        }
+        t.push(["type": "result", "id": id, "data": data])
+    }
+
+    /// The runtime's memories push, to every connection.
+    func pushMemories() {
+        lock.lock()
+        let list = memories
+        let conns = connections
+        lock.unlock()
+        for c in conns {
+            c.push(["type": "event", "kind": "memories", "rev": 5,
+                    "data": ["memories": list, "inject": true]])
         }
     }
 }

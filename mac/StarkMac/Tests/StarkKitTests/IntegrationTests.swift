@@ -35,16 +35,24 @@ final class IntegrationTests {
         p.arguments = ["uv", "run", "python", "stark.py", "--db", dir.appendingPathComponent("runtime.db").path,
                        "--interval", "1", "run"] + model + extra
         p.currentDirectoryURL = prototype
-        var env = ProcessInfo.processInfo.environment
+        var env = Self.cleanEnvironment()
         env["GAMESHARK_TRANSPORT"] = "tests.file_transport:make"
         env["GAMESHARK_FIXTURE"] = dir.appendingPathComponent("github.json").path
-        env.removeValue(forKey: "GITHUB_TOKEN")
         p.environment = env
         p.standardOutput = FileHandle(forWritingAtPath: "/dev/null")
         p.standardError = p.standardOutput
         try p.run()
         daemon = p
         #expect(eventually(30) { FileManager.default.fileExists(atPath: sockPath) })
+    }
+
+    /// The shell's environment without settings that would contradict a test's own: each
+    /// test names its model, and its socket belongs beside its own database.
+    static func cleanEnvironment() -> [String: String] {
+        ProcessInfo.processInfo.environment.filter { key, _ in
+            !key.hasPrefix("GAMESHARK_INFERENCE_")
+                && !["GITHUB_TOKEN", "STARK_SOCKET", "STARK_TOKEN", "GAMESHARK_DB"].contains(key)
+        }
     }
 
     func stopDaemon() {
@@ -123,6 +131,41 @@ final class IntegrationTests {
         stopDaemon()
     }
 
+    /// Phase 4.2: a fact saved with a typed command survives a runtime restart, never
+    /// becomes a chat row, and a forget keeps it gone after the next restart too.
+    @Test func savedMemorySurvivesRestartAndForgetSticks() throws {
+        try Data("{}".utf8).write(to: dir.appendingPathComponent("github.json"))
+        try startDaemon()
+        let c = client()
+        c.start()
+        defer { c.stop() }
+        #expect(eventually(15) { c.state.connection == .live && c.state.memoryAvailable })
+        if let cmd = MemoryCommand.parse("/remember Parked on level 3"),
+           case .remember(let fact) = cmd {
+            c.remember(fact)
+        }
+        #expect(eventually(10) { c.state.memories.map(\.content) == ["Parked on level 3"] })
+        #expect(!c.state.rows.contains { $0.content.contains("Parked") })
+
+        stopDaemon()
+        try startDaemon()
+        #expect(eventually(30) { c.state.connection == .live })
+        #expect(eventually(10) { c.state.memories.map(\.content) == ["Parked on level 3"] })
+        let m = c.state.memories[0]
+        c.correctMemory(id: m.id, revision: m.revision, text: "Parked on level 4")
+        #expect(eventually(10) { c.state.memories.first?.revision == 2 })
+        c.forgetMemory(id: m.id)
+        #expect(eventually(10) { c.state.memories.isEmpty })
+        #expect(c.state.memoryNotice == MemoryText.forgotten(historyMentions: 0))
+
+        stopDaemon()
+        try startDaemon()
+        #expect(eventually(30) { c.state.connection == .live })
+        Thread.sleep(forTimeInterval: 0.3)
+        #expect(c.state.memories.isEmpty)
+        stopDaemon()
+    }
+
     // MARK: paired device over the LAN gateway
 
     var lanInfo: URL { dir.appendingPathComponent("gateway/stark.sock.lan.json") }
@@ -140,6 +183,7 @@ final class IntegrationTests {
                        dir.appendingPathComponent("runtime.db").path, "pair", "--name",
                        "Swift Phone", "--json", "--address", "127.0.0.1"]
         p.currentDirectoryURL = prototype
+        p.environment = Self.cleanEnvironment()
         let out = Pipe()
         p.standardOutput = out
         p.standardError = FileHandle(forWritingAtPath: "/dev/null")

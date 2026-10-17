@@ -243,6 +243,10 @@ public struct Snapshot: Decodable, Equatable, Sendable {
     public var draft: CarriedDraft?
     /// The model behind replies; absent from a runtime before Phase 4.1.
     public var model: ModelInfo?
+    /// Optional commands the runtime serves, such as memory; absent before Phase 4.2.
+    public var features: [String]?
+    /// Saved memory count and whether it reaches the model; absent before Phase 4.2.
+    public var memory: MemorySummary?
 }
 
 struct ReadyOutResult: Decodable {
