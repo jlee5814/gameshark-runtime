@@ -152,8 +152,10 @@ counts an attempt; the third ends the reply as `failed` (AttemptsExhausted).
 Durability is the v0.3 journal's. The user row commits before the reply event, the call is
 one id per seq and retry, and the assistant row commits only through the journal, so a
 runtime restart, a SIGKILL mid stream, or a surface that drops and resyncs all end with one
-reply. Tests: `prototype/tests/test_live_inference.py` (loopback SSE server: Mac and phone,
-multi turn, resent ids, timeout and retry, model down, phone drop, Jack In and Out while a
+reply. On a physical iPhone, by hand, a phone disconnected mid reply saw the answer once
+(no SIGKILL mid stream ran); see
+[ios/StarkPocket/README.md](../ios/StarkPocket/README.md). Tests:
+`prototype/tests/test_live_inference.py` (loopback SSE server: Mac and phone, multi turn, resent ids, timeout and retry, model down, phone drop, Jack In and Out while a
 reply runs) and `test_gateway_daemon.py` (SIGKILL during an HTTP stream).
 
 `stark.py jack <surface>` moves presence through a control request. A silent source
@@ -222,8 +224,10 @@ Jack In / Jack Out through the `jack` command. It stores only its pairing (Keych
 presentation facts. StarkMac names the device holding Stark and offers Jack In Here.
 `ios/scripts/pocket-demo.sh` runs the full Mac → simulator → Mac handoff with faults; see
 [ios/StarkPocket/README.md](../ios/StarkPocket/README.md). A physical iPhone passed the
-Phase 3.3 cellular and Tailscale acceptance by hand; that README records what was shown
-and what remains unproven on hardware.
+Phase 3.3 cellular and Tailscale acceptance and the Phase 4.1 live inference acceptance by
+hand; that README records what was shown and what remains unproven on hardware. Recall
+across Jack In and a restart came from the conversation history window, not from long
+term memory.
 
 ## Not yet built
 

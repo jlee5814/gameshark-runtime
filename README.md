@@ -39,7 +39,9 @@ process restarts without a second prompt.
   handoff so a floating Mac avatar and a paired iPhone act as thin views over one runtime.
   Runtime core landed; StarkMac (floating panel over an authenticated Unix socket) landed;
   Stark Pocket (iPhone) landed. Phase 4.1: replies come from a real OpenAI compatible
-  model through the v0.3 router, with visible waiting, failure, and retry states.
+  model through the v0.3 router, with visible waiting, failure, and retry states,
+  accepted by hand on a physical iPhone for the recorded scenarios
+  ([ios/StarkPocket/README.md](ios/StarkPocket/README.md)).
   Design: [architecture/stark-companion.md](architecture/stark-companion.md),
   app: [mac/StarkMac/README.md](mac/StarkMac/README.md).
 

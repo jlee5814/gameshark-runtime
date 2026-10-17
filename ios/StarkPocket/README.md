@@ -55,7 +55,9 @@ the app leaving. A revoked device drops to the pairing screen.
 ## On a physical iPhone
 
 A physical iPhone has passed the Phase 3.3 cellular acceptance by hand; see Over cellular
-with Tailscale. The LAN checklist below has still not run end to end on a device. The
+with Tailscale. It has also passed the Phase 4.1 live inference acceptance by hand; see
+Live inference (Phase 4.1). The LAN checklist below has still not run end to end on a
+device. The
 checklist uses its own database, never `~/.gameshark/runtime.db` or the simulator's
 `~/.gameshark/demo`. Run the Mac commands from `prototype/`.
 
@@ -192,9 +194,67 @@ listen queue on both ports.
 
 ### Live inference (Phase 4.1)
 
-Not yet run on a physical iPhone. Fake provider and simulator acceptance prove the
-pipeline; this checklist is the first time a real model reaches a phone in your hand. Use
-the device check database and pairing from above (Tailscale signed in on both).
+#### Phase 4.1 acceptance: physical iPhone, 2026-10-17
+
+User observed on a physical iPhone, by hand; not automated test results. Environment:
+
+- Model: SGLang hosted on the Mac, serving `mlx-community/Qwen3-4B-4bit`.
+- The runtime served genuine model replies through the PR #34 live inference path.
+- One SQLite database for the whole run, including across the runtime restart.
+- Not recorded: the exact commits of the runtime, StarkMac, and the iPhone build; the
+  inference flags; the surface that asked the question in observation 7; whether the
+  phone was on Wi-Fi or cellular for each step; how the phone was disconnected in
+  observation 8; and the output of checklist step 7.
+
+Observed:
+
+1. StarkMac showed a genuine model reply from `mlx-community/Qwen3-4B-4bit`, not the fake
+   model.
+2. The user told Stark in the Mac conversation that their cat is named Biscuit.
+3. After Jack In on Stark Pocket, the user asked "What's my cat's name?" on the phone and
+   Stark answered Biscuit.
+4. Stark kept one identity and one conversation across the Mac and the iPhone.
+5. Jack Out returned active presence to the Mac.
+6. The user restarted the GameShark runtime on the same SQLite database.
+7. After the restart the user asked "What was my cat's name?" and Stark again answered
+   Biscuit.
+8. The user disconnected the iPhone while Stark was answering, restored connectivity, and
+   saw the answer arrive once, with no observed duplicate.
+
+Conversation history, not long term memory. Stark recalled Biscuit because the Mac turn naming
+Biscuit is a row in `messages`, and every reply call sends the newest rows that fit the context
+window (`journal.fit_history`). The restart rebuilt that window from the same SQLite rows.
+This is ordinary conversation history retrieval, bounded by `--context-window`. Durable
+long term semantic memory is not built: a fact that falls out of the window is gone, and
+nothing extracts, indexes, or retrieves facts across conversations.
+
+Phase 4.1 is accepted for these demonstrated scenarios. One run by hand is not a claim of
+production reliability or of exactly once delivery in general.
+
+Simulator and automated results, from PR #34 and unchanged here: the fake provider suites
+(`pytest`, SwiftPM, the StarkPocket simulator tests, `demo.sh`, `pocket-demo.sh` with
+faults); a scripted run against the real model on the Mac (Mac turn, phone turn over
+pinned TLS answered `Biscuit.`); and `pocket-demo.sh --tailscale --skip-faults` with the
+real model in the simulator, 5 of 5.
+
+Not yet proven on physical hardware:
+
+- Checklist step 6: the model server down, then back, with one answer.
+- Checklist step 7: the SQL evidence for one call per question and no duplicate turn.
+- The disconnect of observation 8 over a named route (cellular with Tailscale, or
+  Wi-Fi), with the checklist step 7 queries confirming one call and one assistant row.
+- SIGKILL of the runtime mid stream against a real server; on the Mac this stays limited by
+  the SGLang prefix cache answering identical prompts with stale text after aborts.
+- A reply that times out three times (AttemptsExhausted), then `retry_reply`.
+- A message too long for the window (ContextTooLong).
+- Jack In or Jack Out while a reply streams.
+- Recall of a fact older than the context window (expected to fail; see above).
+
+#### Checklist
+
+Fake provider and simulator acceptance prove the pipeline; this checklist brings a real
+model to a phone in your hand. Use the device check database and pairing from above
+(Tailscale signed in on both).
 
 ```sh
 # terminal 1: the model server (skip if already serving on :30000)
