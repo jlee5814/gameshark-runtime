@@ -74,3 +74,39 @@ def test_non_serving_supervisor_leaves_reply_pending(tmp_path):
     assert roles(db) == ["system", "user"]
     sup.stop()
     sup.close()
+
+
+def test_a_crash_before_the_retry_event_persists_leaves_the_reply_failed(tmp_path):
+    """Codex P2: retry used to mark the duty active in its own write before the retry
+    event existed, so a crash between them lost the Retry and hid the failure. Nothing
+    changes until the event persists; its handler marks the duty active."""
+    import pytest
+
+    from gameshark.errors import CrashInjected
+
+    db = tmp_path / "runtime.db"
+    user_row_without_event(db)
+    chat = StarkChatAdapter(serve=False)
+    sup = AgentSupervisor(db_path=db, agent_id=AGENT, owner_token=HOST)
+    sup.add_adapter(chat)
+    sup.enable_presence("mac")
+    sup.start()
+    sup.poll()                                        # the base reply event, pending
+    sup.responsibilities.upsert("chat:stark:main", kind="conversation",
+                                payload={"conversation_id": CONVERSATION}, state="active")
+    sup.responsibilities.transition("chat:stark:main", "blocked", checkpoint="Timeout")
+    sup.conn.execute("UPDATE events SET status='acked' WHERE event_id=?",
+                     (reply_event(1)["event_id"],))  # the failed attempt's outcome
+    assert chat.reply_view([])["state"] == "failed"
+
+    def crash(_event):
+        raise CrashInjected("before the retry event persists")
+    import dataclasses
+
+    chat.ctx = dataclasses.replace(chat.ctx, submit_event=crash)
+    with pytest.raises(CrashInjected):
+        chat.retry(1)
+    assert sup.responsibilities.get("chat:stark:main").state == "blocked"
+    assert chat.reply_view([])["state"] == "failed"   # Retry is still offered
+    sup.stop()
+    sup.close()

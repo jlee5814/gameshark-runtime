@@ -197,8 +197,9 @@ class StarkChatAdapter:
         if self.unanswered() != seq or newest is None or newest[1] not in ("acked", "dead"):
             raise ValueError(f"message {seq} has no failed reply to retry")
         n = newest[0] + 1
-        ctx.responsibilities.transition(RESPONSIBILITY, "active")
         self.waiting = None
+        # The event is the one durable change: its handler marks the duty active, so a
+        # crash before it persists leaves the reply failed and Retry still offered.
         ctx.submit_event(reply_event(seq, n))
         return n, False
 
