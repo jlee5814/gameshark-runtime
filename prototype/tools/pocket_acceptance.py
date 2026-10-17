@@ -68,9 +68,8 @@ class Pocket:
     def start_daemon(self) -> None:
         self.boots += 1
         log = open(self.dir / f"pocket-daemon-{self.boots}.log", "w")  # noqa: SIM115
-        env = {**os.environ, "GAMESHARK_TRANSPORT": "tests.file_transport:make",
+        env = {**clean_env(), "GAMESHARK_TRANSPORT": "tests.file_transport:make",
                "GAMESHARK_FIXTURE": str(self.dir / "github.json")}
-        env.pop("GITHUB_TOKEN", None)
         cmd = [sys.executable, str(ROOT / "stark.py"), "--db", str(self.db), "--interval", "2",
                "run", "--lan", "--lan-port", str(self.port), *model_args(self.args)]
         if self.args.tailscale:
@@ -103,7 +102,8 @@ class Pocket:
 
     def cli(self, *args: str) -> str:
         out = subprocess.run([sys.executable, str(ROOT / "stark.py"), "--db", str(self.db), *args],
-                             cwd=ROOT, capture_output=True, text=True, timeout=30, check=True)
+                             cwd=ROOT, env=clean_env(), capture_output=True, text=True,
+                             timeout=30, check=True)
         return out.stdout
 
     def pair_link(self, name: str) -> str:
@@ -391,6 +391,73 @@ class Pocket:
         self.faults = log
         return "; ".join(log) + "; app returned to pairing"
 
+    def s7_memory(self) -> str:
+        """Phase 4.2: save, recall, correct on the phone; the runtime SIGKILLed and restarted
+        mid way; forget. Evidence from the database, not only the UI."""
+        link = self.pair_link("iPhone Simulator (memory)")
+        signals = self.dir / "memory-signals"
+        signals.mkdir(exist_ok=True)
+        log: list[str] = []
+        error: list[BaseException] = []
+        stop = threading.Event()
+
+        def drive() -> None:
+            try:
+                marker = signals / "memory-restart"
+                end = time.monotonic() + 600
+                while not marker.exists():
+                    if stop.is_set() or time.monotonic() > end:
+                        return
+                    time.sleep(0.1)
+                before = self.q("SELECT id, content, revision FROM memories WHERE "
+                                "state='active'")
+                self.stop_daemon(signal.SIGKILL)
+                log.append(f"SIGKILL with {before}")
+                time.sleep(2)
+                self.start_daemon()
+                after = self.q("SELECT id, content, revision FROM memories WHERE "
+                               "state='active'")
+                if after != before:
+                    raise AssertionError(f"memories {before} became {after} across SIGKILL")
+                log.append("restarted with the same memories")
+            except BaseException as e:
+                error.append(e)
+
+        t = threading.Thread(target=drive, daemon=True)
+        t.start()
+        bundle = self.dir / "pocket-memory.xcresult"
+        res = self.ui_test("PocketMemoryUITests/testRememberRecallCorrectRestartForget", link,
+                           bundle, signal_dir=signals)
+        stop.set()
+        t.join(timeout=60)
+        self.memory_shots = self.export_shots(bundle, self.dir / "pocket-sim-shots" / "memory")
+        (self.dir / "pocket-memory-xcodebuild.log").write_text(res.stdout + res.stderr)
+        if error:
+            raise error[0]
+        if res.returncode != 0:
+            tail = [ln for ln in (res.stdout + res.stderr).splitlines() if "error" in ln][-3:]
+            raise AssertionError(f"UI test failed: {tail}; driver: {log}")
+        mems = self.q("SELECT id, state, content, revision, source_surface FROM memories")
+        if len(mems) != 1 or mems[0][1:4] != ("forgotten", "", 2) or not mems[0][4].startswith(
+                "pocket-"):
+            raise AssertionError(f"memories {mems}")
+        ops = [k for (k,) in self.q("SELECT kind FROM memory_ops WHERE memory_id=? ORDER BY "
+                                    "created", mems[0][0])]
+        if ops != ["remember", "correct", "forget"]:
+            raise AssertionError(f"memory ops {ops}")
+        if any("/remember" in c for _s, _r, c in self.rows()):
+            raise AssertionError("the /remember command became a chat row")
+        replies = {c.split("You said: ")[-1][:30]: c for _s, r, c in self.rows()
+                   if r == "assistant"}
+        recall = next((c for k, c in replies.items() if k.startswith("Which locker is mine?")), "")
+        after = next((c for k, c in replies.items() if k.startswith("Which locker is mine now")),
+                     "")
+        if not self.args.inference_url and ("My locker is 42" not in recall
+                                            or "Saved memories" in after):
+            raise AssertionError(f"recall {recall!r}; after forget {after!r}")
+        return ("; ".join(log) + f"; ops {' -> '.join(ops)} from {mems[0][4]}; content wiped; "
+                f"recall named the fact, the reply after forget did not")
+
     # ------------------------------------------------------------------ run
     def run(self) -> int:
         if self.dir.exists():
@@ -401,6 +468,7 @@ class Pocket:
         self.handoff_shots: list[str] = []
         self.fault_shots: list[str] = []
         self.timeline: list[str] = []
+        self.memory_shots: list[str] = []
         try:
             self.start_daemon()
             self.start_app()
@@ -414,6 +482,9 @@ class Pocket:
             if self.args.tailscale:
                 self.check("tailnet: every device session took the Tailscale route",
                            self.s6_tailnet_only)
+            if not self.args.skip_memory:
+                self.check("memory: save, recall, correct, SIGKILL restart, forget on the phone",
+                           self.s7_memory)
         finally:
             if self.app is not None:
                 self.app.terminate()
@@ -432,9 +503,17 @@ class Pocket:
             lines.append(f"| {name} | {'PASS' if ok else 'FAIL'} | {detail} |")
         lines += ["", f"StarkMac snapshots and `states.log`: `{self.shots}`.",
                   (f"Simulator screenshots: `{self.dir / 'pocket-sim-shots'}` "
-                  f"({', '.join(self.handoff_shots + self.fault_shots) or 'none'}).")]
+                  f"({', '.join(self.handoff_shots + self.fault_shots + self.memory_shots) or 'none'}).")]
         (self.dir / "pocket-acceptance.md").write_text("\n".join(lines) + "\n")
         print(f"\nreport: {self.dir / 'pocket-acceptance.md'}")
+
+
+def clean_env() -> dict[str, str]:
+    """This shell's environment without settings that would steer the demo daemon or the
+    CLI away from the demo database: model variables (the tool names its model) and sockets."""
+    return {k: v for k, v in os.environ.items()
+            if not k.startswith("GAMESHARK_INFERENCE_")
+            and k not in ("GITHUB_TOKEN", "STARK_SOCKET", "STARK_TOKEN", "GAMESHARK_DB")}
 
 
 def model_args(args) -> list[str]:
@@ -458,6 +537,7 @@ def main() -> int:
     ap.add_argument("--inference-extra", default=None,
                     help="JSON merged into each request, as for stark.py run")
     ap.add_argument("--skip-faults", action="store_true")
+    ap.add_argument("--skip-memory", action="store_true")
     ap.add_argument("--tailscale", action="store_true",
                     help="serve the tailnet too and pair with a dead LAN address")
     args = ap.parse_args()

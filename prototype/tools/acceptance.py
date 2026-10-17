@@ -45,9 +45,8 @@ class Demo:
     def start_daemon(self) -> None:
         self.daemon_logs += 1
         log = open(self.dir / f"daemon-{self.daemon_logs}.log", "w")  # noqa: SIM115
-        env = {**os.environ, "GAMESHARK_TRANSPORT": "tests.file_transport:make",
+        env = {**clean_env(), "GAMESHARK_TRANSPORT": "tests.file_transport:make",
                "GAMESHARK_FIXTURE": str(self.dir / "github.json")}
-        env.pop("GITHUB_TOKEN", None)
         cmd = [sys.executable, str(ROOT / "stark.py"), "--db", str(self.db), "--interval", "2",
                "run", *model_args(self.args)]
         self.daemon = subprocess.Popen(cmd, cwd=ROOT, env=env, stdout=log,
@@ -75,6 +74,14 @@ class Demo:
     def client(self) -> GatewayClient:
         return GatewayClient(self.sock, bytes.fromhex((self.sock.parent / "gateway.token").read_text()),
                              surface="mac")
+
+    def memories(self) -> list[tuple[str, str, int]]:
+        conn = sqlite3.connect(self.db, timeout=5)
+        try:
+            return conn.execute("SELECT id, content, revision FROM memories WHERE "
+                                "state='active' ORDER BY created").fetchall()
+        finally:
+            conn.close()
 
     def rows(self) -> list[tuple[int, str, str]]:
         conn = sqlite3.connect(self.db, timeout=5)
@@ -257,6 +264,47 @@ class Demo:
         assert len(self.rows()) == n
         return f"drain exit {code}; same identity {uuid[:8]}; {n} rows intact"
 
+    def s9_memory(self) -> str:
+        """Phase 4.2: /remember saves a typed memory, the model's request carries it, it
+        survives a restart, and a forget keeps it out of every later request."""
+        fact = "My parking spot is B12."
+        n = len(self.rows())
+        self.ctl("say", "/remember", fact)
+        mid = self.wait(lambda: next((m[0] for m in self.memories() if m[1] == fact), None),
+                        10, "the memory in SQLite")
+        assert len(self.rows()) == n, "the /remember command became a chat row"
+        self.wait(lambda: " memories=1 mview=true " in self.last_state(), 10,
+                  "the app to list the memory")
+        self.ctl("snapshot", str(self.shots / "memories.png"))
+        self.ctl("memories", "close")
+        recall = self.ask("Where did I park?")
+        fake = not self.args.inference_url
+        if fake:
+            assert "B12" in recall, f"the fake model saw no memory: {recall!r}"
+        self.ctl("snapshot", str(self.shots / "memory-recall.png"))
+        self.stop_daemon()
+        self.start_daemon()
+        self.wait(lambda: " disconnected " not in self.last_state(), 30, "the app to reconnect")
+        self.wait(lambda: " memories=1 " in self.last_state(), 10, "the memory after restart")
+        self.ctl("forget", mid)
+        self.wait(lambda: not self.memories(), 10, "the memory to be forgotten")
+        self.wait(lambda: " memories=0 " in self.last_state(), 10, "the app to drop it")
+        after = self.ask("Where did I park now?")
+        if fake:
+            assert "Saved memories" not in after, f"a forgotten memory reached the model: {after!r}"
+        self.ctl("snapshot", str(self.shots / "memory-forgotten.png"))
+        with sqlite3.connect(self.db, timeout=5) as conn:
+            row = conn.execute("SELECT state, content FROM memories WHERE id=?", (mid,)).fetchone()
+        assert row == ("forgotten", ""), row
+        return (f"{mid[:12]} saved without a chat row; recall reply {recall[:70]!r}; kept across "
+                f"restart; forgotten (content wiped); next reply {after[:50]!r}")
+
+    def ask(self, text: str) -> str:
+        self.ctl("say", text)
+        self.wait(lambda: any(r[2] == text for r in self.rows()), 10, "the question in SQLite")
+        self.wait(lambda: self.rows()[-1][1] == "assistant", 60, "Stark's reply")
+        return self.rows()[-1][2]
+
     def s8_gallery(self) -> str:
         gallery = self.shots / "gallery"
         gallery.mkdir(exist_ok=True)
@@ -294,9 +342,10 @@ class Demo:
                      ("5 obsolete presence generation is rejected", self.s5_obsolete),
                      ("6 inference and duties run while the avatar stays responsive",
                       self.s6_responsive),
-                     ("7 runtime restart keeps identity", self.s7_restart)]
+                     ("7 runtime restart keeps identity", self.s7_restart),
+                     ("8 memory: save, recall, restart, forget", self.s9_memory)]
             if self.args.sprites:
-                steps.append(("8 sprite animations and scales", self.s8_gallery))
+                steps.append(("9 sprite animations and scales", self.s8_gallery))
             for name, fn in steps:
                 self.check(name, fn)
         finally:
@@ -317,6 +366,14 @@ class Demo:
                   "`shots/`.")]
         (self.dir / "acceptance.md").write_text("\n".join(lines) + "\n")
         print(f"\nreport: {self.dir / 'acceptance.md'}")
+
+
+def clean_env() -> dict[str, str]:
+    """This shell's environment without settings that would steer the demo daemon away
+    from the demo database: model variables (the tool names its model) and socket paths."""
+    return {k: v for k, v in os.environ.items()
+            if not k.startswith("GAMESHARK_INFERENCE_")
+            and k not in ("GITHUB_TOKEN", "STARK_SOCKET", "STARK_TOKEN", "GAMESHARK_DB")}
 
 
 def model_args(args) -> list[str]:

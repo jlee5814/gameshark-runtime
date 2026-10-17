@@ -60,6 +60,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let anim = model.stage.map { " anim=\($0.animation.rawValue) scale=\(model.avatarScale)" } ?? ""
         let line = "\(model.avatar.rawValue)\(anim) chat=\(model.chatOpen) rows=\(s.rows.count) "
             + "draft=\(model.draft.count) offer=\(model.draftOffer != nil) "
+            + "memories=\(s.memories.count) mview=\(model.showMemories) "
             + "presence=\(s.presence.map { "\($0.surface)@\($0.generation)" } ?? "-") "
             + "origin=\(Int(panel.panel.frame.minX)),\(Int(panel.panel.frame.minY))"
         guard line != lastShot else { return }
@@ -107,6 +108,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             panel.setChat(open: true)
             model.draft = args.joined(separator: " ")
             model.send()
+        case "memories":
+            panel.setChat(open: true)
+            model.showMemories = args.first != "close"
+        case "forget" where args.count == 1:
+            model.forgetMemory(args[0])
         case "clickthrough":
             setClickThrough(args.first != "off")
         case "reconnect":
