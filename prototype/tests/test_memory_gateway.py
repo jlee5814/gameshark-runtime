@@ -382,3 +382,18 @@ def test_cli_lists_and_forgets_through_the_daemon(denv):
     finally:
         d1.send_signal(signal.SIGTERM)
         d1.wait(15)
+
+
+def test_an_operator_inject_revocation_reaches_live_surfaces(rt):
+    with rt.client() as mac:
+        mac.call("snapshot")
+        remember(mac, "op1", "a fact")
+        mac.wait_event("memories", lambda d: d["inject"] and len(d["memories"]) == 1)
+        conn = connect(rt.db)
+        try:
+            conn.execute("UPDATE grants SET granted=0 WHERE adapter='memory' AND "
+                         "cap='memory.inject'")
+        finally:
+            conn.close()
+        mac.call("ping")                                  # the pump notices the grant
+        assert mac.wait_event("memories", lambda d: not d["inject"])["memories"]

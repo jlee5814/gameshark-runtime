@@ -538,7 +538,10 @@ class SurfaceAPI:
             s.send({"type": "event", "kind": "messages", "rev": self.rev,
                     "data": {"conversation_id": CONVERSATION,
                              "rows": [self._row(r) for r in rows]}})
-        if self.sup.memory is not None and self._changed("memories", self.sup.memory.version):
+        # The grant is read too: an operator may revoke injection outside this process.
+        store = self.sup.memory
+        if store is not None and self._changed("memories", (store.version,
+                                                            store.inject_enabled())):
             self._push(sessions, "memories", self._memories())
         # After rows, so a surface never shows Stark idle before his reply has arrived.
         self._push_activity(sessions)
