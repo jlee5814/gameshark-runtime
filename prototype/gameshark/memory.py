@@ -131,6 +131,22 @@ def render(contents: Iterable[str]) -> str:
     return HEADER + "".join(ITEM + c for c in contents)
 
 
+def active_memories(conn: sqlite3.Connection, agent_id: str) -> list[Memory]:
+    """Active memories in creation order. A plain read: the CLI needs no lease for it."""
+    rows = conn.execute(
+        "SELECT * FROM memories WHERE agent_id=? AND state=? ORDER BY created, rowid",
+        (agent_id, ACTIVE)).fetchall()
+    return [Memory.of(r) for r in rows]
+
+
+def inject_enabled(conn: sqlite3.Connection, agent_id: str) -> bool:
+    """Whether saved memories reach the model: on until memory.inject is revoked."""
+    row = conn.execute(
+        "SELECT granted FROM grants WHERE agent_id=? AND adapter=? AND cap=?",
+        (agent_id, GRANT_ADAPTER, INJECT)).fetchone()
+    return row is None or row["granted"] == 1
+
+
 class MemoryStore:
     def __init__(self, conn: sqlite3.Connection, agent_id: str, lease: LeaseManager,
                  generation: int, presence: PresenceManager | None, grants: GrantStore,
@@ -155,10 +171,7 @@ class MemoryStore:
         self.grants.ensure_granted(GRANT_ADAPTER, frozenset({WRITE, INJECT}))
 
     def inject_enabled(self) -> bool:
-        row = self.conn.execute(
-            "SELECT granted FROM grants WHERE agent_id=? AND adapter=? AND cap=?",
-            (self.agent_id, GRANT_ADAPTER, INJECT)).fetchone()
-        return row is None or row["granted"] == 1      # default on until revoked
+        return inject_enabled(self.conn, self.agent_id)
 
     def _check_write(self) -> None:
         row = self.conn.execute(
@@ -178,10 +191,7 @@ class MemoryStore:
 
     def list(self) -> list[Memory]:
         """Active memories in creation order."""
-        rows = self.conn.execute(
-            "SELECT * FROM memories WHERE agent_id=? AND state=? ORDER BY created, rowid",
-            (self.agent_id, ACTIVE)).fetchall()
-        return [Memory.of(r) for r in rows]
+        return active_memories(self.conn, self.agent_id)
 
     def count(self) -> int:
         return self.conn.execute("SELECT COUNT(*) FROM memories WHERE agent_id=? AND state=?",
@@ -372,4 +382,4 @@ class MemoryStore:
 
 __all__ = ["ACTIVE", "FORGOTTEN", "GRANT_ADAPTER", "HEADER", "INJECT", "MAX_ACTIVE",
            "MAX_TEXT", "WRITE", "Memory", "MemoryConflict", "MemoryLimit", "MemoryStore",
-           "block_cost", "normalize", "render"]
+           "active_memories", "block_cost", "inject_enabled", "normalize", "render"]

@@ -148,8 +148,9 @@ active rows, and the commit fence discards any reply already built on it.
 
 It can still reach the model through ordinary history. If the user also typed the fact
 in chat, or a reply repeated it, those rows stay in `messages` and are sent while they sit
-inside the history window. Forget counts them (`history_mentions`, an exact case
-insensitive substring match across this agent's conversations) and the surfaces say so:
+inside the history window. Forget counts them (`history_mentions`, an exact substring
+match across this agent's conversations, case insensitive for ASCII letters) and the
+surfaces say so:
 
 > Removed from saved memory. 2 earlier chat messages still contain this text and can
 > reach Stark while recent.
@@ -203,7 +204,16 @@ answer and from `stark.py memory`.
 | 7 Forget | Swipe the memory, tap Forget. | It leaves the list. The notice reads "Removed from saved memory." plus, with the fake model, how many earlier replies still contain the text. |
 | 8 Recall after forget | Ask "Which locker is mine now?" | The reply names no saved memory (fake: no `Saved memories:`). An earlier reply that quoted 43 still shows in the chat, as documented. |
 | 9 Restart again | `kill -9` and restart the daemon. | The list stays empty. `stark.py memory` shows 0 saved memories. |
-| 10 Revoke injection (optional) | Revoke `memory.inject` in the `grants` table, save a fact, ask about it. | The fact is listed but the reply does not see it; the sheet says memory is off. |
+| 10 Revoke injection (optional) | Run the SQL below, save a fact, ask about it. | The fact is listed but the reply does not see it; the sheet says memory is off. |
+
+Step 10 revokes injection durably; the second statement restores it:
+
+```
+sqlite3 ~/.gameshark/memory-check/runtime.db \
+  "UPDATE grants SET granted=0 WHERE adapter='memory' AND cap='memory.inject'"
+sqlite3 ~/.gameshark/memory-check/runtime.db \
+  "UPDATE grants SET granted=1 WHERE adapter='memory' AND cap='memory.inject'"
+```
 
 Record the outcome of each step, the device and iOS version, the build, and the daemon
 log in a dated note, as Phase 4.1 did.

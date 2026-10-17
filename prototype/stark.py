@@ -544,7 +544,7 @@ def cmd_devices(args) -> int:
 def cmd_memory(args) -> int:
     """List saved memories, or forget one. Forget goes through the control queue, so a
     running daemon applies it under its lease; this CLI never competes for ownership."""
-    from gameshark.memory import ID_RE, MemoryStore
+    from gameshark.memory import ID_RE, active_memories, inject_enabled
 
     if args.action == "forget":
         if not args.memory or not ID_RE.match(args.memory):
@@ -561,9 +561,8 @@ def cmd_memory(args) -> int:
         return _apply_now(args, rid)
     conn = connect(args.db)
     try:
-        store = MemoryStore(conn, AGENT, None, 0, None, None, None)
-        rows = store.list()
-        inject = store.inject_enabled()
+        rows = active_memories(conn, AGENT)
+        inject = inject_enabled(conn, AGENT)
     finally:
         conn.close()
     for m in rows:
