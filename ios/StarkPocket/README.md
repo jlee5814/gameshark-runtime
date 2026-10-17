@@ -296,3 +296,20 @@ sqlite3 "$DB" "SELECT call_id, status, attempts FROM inference_calls
 sqlite3 "$DB" "SELECT COUNT(*), COUNT(DISTINCT seq) FROM surface_writes"   # equal
 uv run python stark.py --db "$DB" status                              # chat:stark:main done
 ```
+
+### Saved memory (Phase 4.2)
+
+The phone stores no memory. The Memories sheet (brain button) lists what the Mac keeps,
+`/remember <fact>` in the composer saves one, a tap corrects one, and a swipe forgets one.
+Saving and correcting need Stark on this phone; forgetting works from either surface.
+The ten step physical checklist (save, recall on both surfaces, the presence fence,
+correct, SIGKILL restart, forget, recall after forget, restart again, injection revoked)
+and the SQL to verify each step are in `architecture/stark-memory.md`. Forgetting removes
+a fact from saved memory, not from chat history; the sheet says how many earlier messages
+still quote it.
+
+```
+uv run python stark.py --db "$DB" memory                                # saved, with provenance
+sqlite3 "$DB" "SELECT id, state, revision, length(content), source_surface FROM memories"
+sqlite3 "$DB" "SELECT kind, surface FROM memory_ops ORDER BY created"   # remember, correct, forget
+```
