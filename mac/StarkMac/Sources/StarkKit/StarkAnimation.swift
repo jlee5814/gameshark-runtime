@@ -20,7 +20,9 @@ public enum StarkAnimation: String, CaseIterable, Sendable {
         if !s.isActiveSurface { return .idle }          // ghost: drawn dimmed by the view
         if s.responsibilities.contains(where: { $0.state == "blocked" }) { return .error }
         if s.isWorking || workingHeld { return .working }
-        if s.isThinking { return .thinking }
+        // A reply still on its way (queued, or waiting for a model that is down) is
+        // thinking even while no call runs; a failed one shows as its blocked duty.
+        if s.isThinking || s.reply?.pending == true { return .thinking }
         if listening { return .listening }
         let newest = s.rows.last { $0.role == "assistant" }?.seq ?? -1
         if newest > viewedSeq { return .notify }

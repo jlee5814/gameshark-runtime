@@ -192,6 +192,23 @@ final class Dice: @unchecked Sendable {
         #expect(base(state(), idle: StarkAnimation.dozeAfter - 1) == .idle)
     }
 
+    /// Codex P2: the sprite path, which both apps draw, follows a reply still on its way
+    /// even while no call runs (queued, or waiting for a model that is down).
+    @Test func aPendingReplyThinksAndAFailedOneDoesNot() {
+        func with(_ s: ClientState, _ r: ReplyState) -> ClientState {
+            var s = s
+            var a = s.activity ?? Activity(boot: "b1")
+            a.reply = r
+            s.activity = a
+            return s
+        }
+        for st in ["queued", "thinking", "waiting"] {
+            #expect(base(with(state(), ReplyState(seq: 1, state: st))) == .thinking)
+            #expect(base(with(state(work: 1), ReplyState(seq: 1, state: st))) == .working)
+        }
+        #expect(base(with(state(), ReplyState(seq: 1, state: "failed", error: "Timeout"))) == .idle)
+    }
+
     @Test func workingFollowsRuntimeWorkAndOutranksThinking() {
         #expect(base(state(work: 1)) == .working)
         #expect(base(state(work: 1, inference: 1)) == .working)
