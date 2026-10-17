@@ -155,6 +155,12 @@ surfaces say so:
 > Removed from saved memory. 2 earlier chat messages still contain this text and can
 > reach Stark while recent.
 
+The count matches the whole saved text, so it misses paraphrase. In the genuine model
+run, Qwen3 answered `Dr. Okafor` from the memory `My dentist is Dr. Okafor on Elm
+Street.`; after the forget, `history_mentions` was 0, the next request carried no memory
+ids, and Qwen3 still answered `Dr. Okafor` from its own earlier reply in history. A zero
+count therefore means no verbatim copy, not no trace.
+
 Facts saved with `/remember` never enter chat, so for them the count is zero unless a
 reply quoted the fact. The demo model (`--fake-model`) quotes saved memories in its
 replies on purpose, so this limitation is visible in every demo.
