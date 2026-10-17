@@ -232,6 +232,8 @@ class AgentSupervisor:
                                   self.presence, self.grants, self.clock,
                                   crash=self._maybe_crash)
         self.memory.ensure_grants()
+        # A forget committed just before a crash may still sit in the WAL; no resend is owed.
+        self.memory.scrub()
         self.inference.memory = self.memory
         if self._inference_cfg is not None:
             self._start_inference()

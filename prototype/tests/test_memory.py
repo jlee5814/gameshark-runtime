@@ -259,14 +259,19 @@ def test_crash_after_forget_wipe_keeps_it_forgotten(paths, clock):
             raise Crash
 
     first = boot(paths["runtime"], clock)
-    m = first.remember("mac", 1, "op1", "short lived")
+    secret = "short lived " + "k" * 40
+    m = first.remember("mac", 1, "op1", secret)
     first._crash = crash
     with pytest.raises(Crash):
         first.forget("mac", "op2", m.id)
-    first.conn.close()
+    # Died before the checkpoint: hold the WAL open as a crashed process would leave it.
     again = boot(paths["runtime"], clock)
     assert again.list() == []
-    assert again.forget("mac", "op2", m.id).replayed
+    assert again.forget("mac", "op2", m.id).replayed          # the resend scrubs too
+    for f in paths["runtime"].parent.iterdir():
+        if f.name.startswith(paths["runtime"].name):
+            assert secret.encode() not in f.read_bytes(), f.name
+    first.conn.close()
 
 
 def test_two_connections_race_one_revision(paths, clock):
@@ -312,3 +317,25 @@ def test_schema_upgrade_keeps_old_rows(paths):
     assert c.execute("SELECT uuid FROM identity").fetchone()[0] == "u-1"
     assert c.execute("SELECT COUNT(*) FROM memories").fetchone()[0] == 0
     assert c.execute("PRAGMA secure_delete").fetchone()[0] == 1
+
+
+def test_a_restarted_supervisor_scrubs_a_forget_that_died_before_its_checkpoint(paths, clock):
+    from gameshark.supervisor import AgentSupervisor
+
+    first = boot(paths["runtime"], clock, crash=lambda label: (_ for _ in ()).throw(Crash())
+                 if label == "M2_after_forget_wipe" else None)
+    secret = "never resent " + "z" * 40
+    m = first.remember("mac", 1, "op1", secret)
+    with pytest.raises(Crash):
+        first.forget("mac", "op2", m.id)
+    clock.advance(31.0)
+    sup = AgentSupervisor(paths["runtime"], AGENT, "next-host", clock=clock)
+    sup.start()
+    try:
+        for f in paths["runtime"].parent.iterdir():
+            if f.name.startswith(paths["runtime"].name):
+                assert secret.encode() not in f.read_bytes(), f.name
+    finally:
+        sup.stop()
+        sup.close()
+        first.conn.close()

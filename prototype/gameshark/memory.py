@@ -290,18 +290,29 @@ class MemoryStore:
 
         The result's history_mentions counts conversation rows that still contain the
         forgotten text verbatim (case insensitive); those rows are not changed.
+
+        Every answer scrubs the WAL, a replay too: a process that died after the wipe
+        committed and before its checkpoint left the old page images there.
         """
+        out, fresh = self._forget(surface, op_id, memory_id)
+        if fresh:
+            self.version += 1
+            self._crash("M2_after_forget_wipe")
+        self.scrub()
+        return out
+
+    def _forget(self, surface: str, op_id: str, memory_id: str) -> tuple[Memory, bool]:
         now = self.clock.now()
         with write_txn(self.conn):
             self.lease.guard_in_txn(self.generation)
             if (seen := self._op(op_id)) is not None:
-                return self._replay(seen, FORGET, None, memory_id)
+                return self._replay(seen, FORGET, None, memory_id), False
             row = self._row(memory_id)
             if row is None:
                 raise LookupError(f"no memory {memory_id}")
             if row["state"] == FORGOTTEN:
                 self._record(op_id, FORGET, memory_id, row["revision"], None, surface, now)
-                return Memory.of(row, replayed=True)
+                return Memory.of(row, replayed=True), False
             mentions = self.conn.execute(
                 "SELECT COUNT(*) FROM messages m JOIN conversations c "
                 "ON c.id = m.conversation_id WHERE c.agent_id=? AND "
@@ -314,11 +325,7 @@ class MemoryStore:
             self._drop_digests(memory_id)
             self._record(op_id, FORGET, memory_id, row["revision"], None, surface, now,
                          mentions)
-            out = Memory.of(self._row(memory_id), history_mentions=mentions)
-        self.version += 1
-        self._crash("M2_after_forget_wipe")
-        self.scrub()
-        return out
+            return Memory.of(self._row(memory_id), history_mentions=mentions), True
 
     def scrub(self) -> bool:
         """Checkpoint and truncate the WAL so old page images leave the disk. False when a
