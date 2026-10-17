@@ -10,7 +10,7 @@ Reports p50 and p99 in milliseconds for:
                   with 256 memories (adds selection twice, the request JSON ids, and the
                   commit fence that rereads each carried memory)
     remember      one fenced remember (synchronous=FULL)
-    correct       one fenced correct
+    correct       one fenced correct, including the WAL TRUNCATE checkpoint
     forget        one fenced forget, including the WAL TRUNCATE checkpoint
 """
 

@@ -365,3 +365,14 @@ def test_correcting_into_another_active_memory_is_refused(ms):
         ms.correct("mac", 1, "op3", a.id, 1, "likes   coffee")
     assert sorted(x.content for x in ms.list()) == ["likes coffee", "likes tea"]
     assert ms.correct("mac", 1, "op4", a.id, 1, "likes tea").revision == 2   # own text is fine
+
+
+def test_corrected_plaintext_leaves_the_files_while_the_runtime_runs(paths, clock):
+    ms = boot(paths["runtime"], clock)
+    old = "superseded-quartz-" + "w" * 40
+    m = ms.remember("mac", 1, "op1", old)
+    ms.correct("mac", 1, "op2", m.id, 1, "the corrected text")
+    for f in paths["runtime"].parent.iterdir():               # the connection stays open
+        if f.name.startswith(paths["runtime"].name):
+            assert old.encode() not in f.read_bytes(), f.name
+    ms.conn.close()

@@ -271,13 +271,24 @@ class MemoryStore:
 
     def correct(self, surface: str, presence_gen: int, op_id: str, memory_id: str,
                 revision: int, text: str, device_id: str | None = None) -> Memory:
+        out, fresh = self._correct(surface, presence_gen, op_id, memory_id, revision, text)
+        if fresh:
+            self.version += 1
+            self._crash("M1_after_memory_write")
+        # The superseded text is gone from the tables; its old page images leave the WAL
+        # here, on a replay too, as forget does.
+        self.scrub()
+        return out
+
+    def _correct(self, surface: str, presence_gen: int, op_id: str, memory_id: str,
+                 revision: int, text: str) -> tuple[Memory, bool]:
         content = normalize(text)
         digest = _digest(content)
         now = self.clock.now()
         with write_txn(self.conn):
             self.lease.guard_in_txn(self.generation)
             if (seen := self._op(op_id)) is not None:
-                return self._replay(seen, CORRECT, digest, memory_id)
+                return self._replay(seen, CORRECT, digest, memory_id), False
             self._check_write()
             self._presence(surface, presence_gen)
             row = self._row(memory_id)
@@ -296,10 +307,7 @@ class MemoryStore:
                 (content, revision + 1, now, self.generation, memory_id))
             self._drop_digests(memory_id)
             self._record(op_id, CORRECT, memory_id, revision + 1, digest, surface, now)
-            out = Memory.of(self._row(memory_id))
-        self.version += 1
-        self._crash("M1_after_memory_write")
-        return out
+            return Memory.of(self._row(memory_id)), True
 
     def forget(self, surface: str, op_id: str, memory_id: str,
                device_id: str | None = None) -> Memory:

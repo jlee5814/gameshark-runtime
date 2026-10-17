@@ -144,8 +144,8 @@ against the durable cap of three.
 
 Forget empties `content`, sets `state = forgotten`, nulls the op hashes, and keeps the id
 and timestamps for audit. The connection runs with `PRAGMA secure_delete=ON`, so freed
-cells are zeroed, and forget ends with `PRAGMA wal_checkpoint(TRUNCATE)`, so old page
-images leave the WAL. A test reads every database file byte by byte after a forget and a
+cells are zeroed, and forget and correct both end with `PRAGMA wal_checkpoint(TRUNCATE)`
+(a replay too, and once at every start), so old page images leave the WAL. A test reads every database file byte by byte after a forget and a
 SIGKILL and finds no copy of the text.
 
 After a forget, the fact cannot return through the memory path: selection reads only
