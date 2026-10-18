@@ -232,6 +232,8 @@ hand; that README records what was shown and what remains unproven on hardware. 
 across Jack In and a restart came from the conversation history window, not from long
 term memory. The Phase 4.2 saved memory acceptance also passed by hand on a physical
 iPhone; see [stark-memory.md](stark-memory.md#phase-42-acceptance-physical-iphone-2026-10-17).
+The Phase 4.3A persona acceptance passed by hand on StarkMac and a physical iPhone; see
+[stark-persona.md](stark-persona.md#phase-43a-acceptance-physical-iphone-and-starkmac-2026-10-18).
 
 ## Not yet built
 

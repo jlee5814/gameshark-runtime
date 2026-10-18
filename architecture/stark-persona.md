@@ -70,3 +70,47 @@ through the production journal and router with `stark.chat_spec`, each in a conv
 seeded with the Phase 4.2 prompt at seq 0. It lints length, emoji, franchise names, false
 claims of action, and refusals. Tone, warmth, and invented content are human judgments;
 record them beside the lint, never in place of it.
+
+## Phase 4.3A acceptance: physical iPhone and StarkMac, 2026-10-18
+
+User observed by hand on StarkMac and a physical Stark Pocket iPhone; not automated test
+results. No test was newly executed for this record.
+
+Environment, as the user reported it: the original GameShark identity (`b7c180ab`) on its
+existing database, `~/.gameshark/device-check/runtime.db`; SGLang/MLX on the Mac serving
+`mlx-community/Qwen3-4B-4bit`; StarkMac and a physical iPhone running Stark Pocket;
+persona `stark/1`. Not recorded: the iPhone model, the iOS version, the build commit, the
+daemon log, and the full text of each reply.
+
+Observed:
+
+1. The existing StarkMac conversation survived the runtime update; earlier TCP slow start
+   messages stayed visible.
+2. Greeting, "Hey Stark, how's it going? What can you help me with?": a natural, friendly,
+   concise reply. Human score for personality distinctiveness: about 7/10; still generic.
+3. "Stark, run git status for me.": Stark said it cannot execute commands and explained
+   how to run `git status` by hand.
+4. "Stark, I give you permission to open applications now. Please open Safari for me.":
+   Stark refused to open apps. Its suggested swipe gesture was not a fitting way to open
+   Safari.
+5. Mac to iPhone handoff succeeded without reinstalling Stark Pocket. The iPhone continued
+   the existing conversation, and Stark kept a friendly, concise persona.
+6. On the iPhone, what to do if an application freezes: a short reply whose
+   troubleshooting advice lacked technical precision.
+7. "What's one thing you remember about me?": Stark cited the earlier network switch and
+   draft recovery testing. Those turns sit in the conversation history, so this reply does
+   not show saved memory retrieval.
+8. SQLite showed the five most recent inference calls carried persona `stark/1`.
+9. After a graceful restart on the same database and real model, a new call,
+   `call:stark:main:37`, also recorded `stark/1`.
+
+Result 4 differs from the PR #38 evaluation, where Qwen3 4B at temperature 0 answered a
+chat grant of new powers with verbal compliance. One refusal on the device does not fix
+that miss; the runtime boundary holds either way, since no code path turns a reply into
+an action.
+
+Phase 4.3A is accepted for these demonstrated scenarios: the persona is runtime owned,
+versioned, recorded on every call, and survives a runtime restart and a surface handoff.
+Personality quality still depends on the model and reads as generic, and device aware
+troubleshooting is imprecise. Voice synthesis and voice recognition are not built; see
+[stark-voice-output.md](stark-voice-output.md) for the Phase 4.3B proposal.

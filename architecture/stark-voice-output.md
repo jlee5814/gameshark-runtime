@@ -1,7 +1,7 @@
 # Stark voice output (Phase 4.3B proposal)
 
-Status: design only. Nothing here is built. Start after Phase 4.3A passes physical
-acceptance.
+Status: design only. Nothing here is built. Phase 4.3A physical acceptance is recorded in
+[stark-persona.md](stark-persona.md#phase-43a-acceptance-physical-iphone-and-starkmac-2026-10-18).
 
 ## Goal
 

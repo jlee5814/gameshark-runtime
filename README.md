@@ -45,6 +45,9 @@ process restarts without a second prompt.
   explicitly saves persist in the runtime, reach every reply through their own budget,
   and can be corrected or forgotten, also accepted by hand on a physical iPhone for the
   recorded scenarios ([architecture/stark-memory.md](architecture/stark-memory.md)).
+  Phase 4.3A: Stark speaks with a runtime owned, versioned persona on every reply, accepted
+  by hand on StarkMac and a physical iPhone for the recorded scenarios
+  ([architecture/stark-persona.md](architecture/stark-persona.md)).
   Design: [architecture/stark-companion.md](architecture/stark-companion.md),
   app: [mac/StarkMac/README.md](mac/StarkMac/README.md).
 
