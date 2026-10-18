@@ -56,7 +56,8 @@ the app leaving. A revoked device drops to the pairing screen.
 
 A physical iPhone has passed the Phase 3.3 cellular acceptance by hand; see Over cellular
 with Tailscale. It has also passed the Phase 4.1 live inference acceptance by hand; see
-Live inference (Phase 4.1). The LAN checklist below has still not run end to end on a
+Live inference (Phase 4.1). It has also passed the Phase 4.2 saved memory acceptance by
+hand; see Saved memory (Phase 4.2). The LAN checklist below has still not run end to end on a
 device. The
 checklist uses its own database, never `~/.gameshark/runtime.db` or the simulator's
 `~/.gameshark/demo`. Run the Mac commands from `prototype/`.
@@ -298,6 +299,42 @@ uv run python stark.py --db "$DB" status                              # chat:sta
 ```
 
 ### Saved memory (Phase 4.2)
+
+#### Phase 4.2 acceptance: physical iPhone, 2026-10-17
+
+User observed on a physical iPhone and StarkMac, by hand; not automated test results. The
+full record, with what was and was not recorded, is in
+[architecture/stark-memory.md](../../architecture/stark-memory.md#phase-42-acceptance-physical-iphone-2026-10-17).
+Environment: a separate database, `~/.gameshark/memory-check/runtime.db`, with
+`run --lan --fake-model` and a test identity beginning `9696f62c`. Not recorded: the iOS
+version, the iPhone model, the build commit, the daemon log, and the SQL evidence.
+
+Observed, checklist steps 1 to 9:
+
+1. `/remember My locker is 42` from the iPhone appeared in Memories, apart from chat.
+2. "Which locker is mine?" on the iPhone: the reply included `Saved memories: My locker is 42`.
+3. After Jack Out, StarkMac had the same memory and its reply included locker 42.
+4. With Stark on the Mac, the iPhone showed "Jack In to add or correct" and disabled Add
+   and Edit; a left swipe still exposed Forget.
+5. After Jack In, a correction to locker 43; later replies included locker 43.
+6. SIGKILL, the stale lease expired, restart on the same database: the phone reconnected,
+   the memory remained, and a reply included `Saved memories: My locker is 43`.
+7. Forget: "Nothing saved yet.", and a notice of two earlier chat messages still containing
+   the text.
+8. "Which locker is mine now?": the reply carried no `Saved memories:` block.
+9. Another SIGKILL and restart: the list stayed empty.
+
+Step 10, revoking `memory.inject`, was not performed. Afterwards the user unpaired the test
+iPhone, stopped the temporary runtime, and restored `~/.gameshark/device-check/runtime.db`:
+the original identity (`b7c180ab`), its conversations, the Mac connection, and the iPhone
+pairing all came back.
+
+Phase 4.2 is accepted for these demonstrated scenarios. One run by hand is not a claim of
+production reliability or of exactly once delivery in general. The fake model showed
+retrieval and injection, not semantic reasoning by a real model. Forget removed the fact
+from saved memory only, not from chat history, backups, snapshots, or provider caches.
+
+#### Checklist
 
 The phone stores no memory. The Memories sheet (brain button) lists what the Mac keeps,
 `/remember <fact>` in the composer saves one, a tap corrects one, and a swipe forgets one.
