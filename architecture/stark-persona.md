@@ -112,5 +112,6 @@ an action.
 Phase 4.3A is accepted for these demonstrated scenarios: the persona is runtime owned,
 versioned, recorded on every call, and survives a runtime restart and a surface handoff.
 Personality quality still depends on the model and reads as generic, and device aware
-troubleshooting is imprecise. Voice synthesis and voice recognition are not built; see
-[stark-voice-output.md](stark-voice-output.md) for the Phase 4.3B proposal.
+troubleshooting is imprecise. Phase 4.3B reads replies aloud with an on device voice
+([stark-voice-output.md](stark-voice-output.md)); the voice renders persona text and never
+changes it. Voice recognition is not built.

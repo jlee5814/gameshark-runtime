@@ -10,8 +10,12 @@ Jack Out sends him home. Transport, pairing, and the threat model:
 
 Only the pairing record and the device key, in the Keychain (this device only, after first
 unlock; the key lives in the Secure Enclave when the hardware has one), plus presentation
-facts in UserDefaults (the last reply viewed). Conversation rows are rebuilt from the
-runtime on every connection.
+facts in UserDefaults (the last reply viewed, voice settings, and the last reply handled by
+speech). Conversation rows are rebuilt from the runtime on every connection.
+
+Stark reads his new replies aloud while he is on the phone: mute, stop, and replay sit in
+the toolbar and beside each bubble, and Settings picks the voice. Design, rules, and the
+physical checklist: [architecture/stark-voice-output.md](../../architecture/stark-voice-output.md).
 
 ## Build and test
 

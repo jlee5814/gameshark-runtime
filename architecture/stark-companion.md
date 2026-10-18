@@ -237,7 +237,7 @@ The Phase 4.3A persona acceptance passed by hand on StarkMac and a physical iPho
 
 ## Not yet built
 
-Bonjour, voice (proposal: [stark-voice-output.md](stark-voice-output.md)), system
+Bonjour, voice input (voice output is built: [stark-voice-output.md](stark-voice-output.md)), system
 notifications, automatic long term memory (Stark keeps only facts
 the user saves; see [stark-memory.md](stark-memory.md)), a user cancel for a reply in
 flight.
