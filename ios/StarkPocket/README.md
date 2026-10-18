@@ -16,7 +16,9 @@ speech). Conversation rows are rebuilt from the runtime on every connection.
 Stark reads his new replies aloud while he is on the phone: mute, stop, and replay sit in
 the toolbar and beside each bubble, and Settings picks the voice. Design, rules, and the
 physical checklist: [architecture/stark-voice-output.md](../../architecture/stark-voice-output.md).
-The checklist passed by hand on 2026-10-18; see Voice output (Phase 4.3B).
+Accepted by hand on 2026-10-18 for the recorded scenarios only: checklist step 9 (message
+growth) was not established, and one silent StarkMac relaunch stays open; see Voice
+output (Phase 4.3B).
 
 ## Build and test
 
