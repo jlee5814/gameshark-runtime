@@ -44,6 +44,17 @@ public struct OutgoingMessage: Equatable, Sendable, Identifiable {
     public var text: String
     public var status: Status
     var presenceGenOverride: Int?
+
+    public init(id: String, text: String, status: Status) {
+        self.init(id: id, text: text, status: status, presenceGenOverride: nil)
+    }
+
+    init(id: String, text: String, status: Status, presenceGenOverride: Int?) {
+        self.id = id
+        self.text = text
+        self.status = status
+        self.presenceGenOverride = presenceGenOverride
+    }
 }
 
 /// Everything the UI renders, rebuilt from the runtime after every change. It holds no

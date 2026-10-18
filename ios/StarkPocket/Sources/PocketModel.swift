@@ -396,13 +396,15 @@ final class PocketModel {
         case .active:
             NetLog.trace("scene active network=\(network?.rawValue ?? "nil")")
             foreground = true
+            voice.setSuspended(false)
             stage?.setVisible(true)
             if let network { client?.setPath(network) }
             startWhenPathKnown()                // resyncs rows after the last contiguous seq
         case .background:
             NetLog.trace("scene background")
             foreground = false
-            voice.stop()                        // no background audio: Stark never talks unseen
+            // No background audio: Stark never talks unseen, even while a send lingers.
+            voice.setSuspended(true)
             firstPathWait?.cancel()
             firstPathWait = nil
             stage?.setVisible(false)

@@ -38,6 +38,9 @@ public final class SpeechCoordinator {
 
     public func replay(seq: Int) { apply(.replay(seq)) }
 
+    /// Off screen, Stark is silent; on return, replies that landed meanwhile stay unspoken.
+    public func setSuspended(_ hidden: Bool) { apply(.setSuspended(hidden)) }
+
     /// Stop button and avatar tap.
     public func stop() { apply(.stop) }
 

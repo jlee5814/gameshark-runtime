@@ -10,7 +10,7 @@ import Foundation
 /// The watermark persists before the engine speaks, so a killed utterance never replays.
 public struct SpeechMachine: Sendable {
     public enum Disarm: Equatable, Sendable {
-        case noIdentity, offline, ghost, handoff
+        case noIdentity, offline, ghost, handoff, suspended
     }
 
     /// Presence as this surface held it when it armed; any change re-arms.
@@ -28,6 +28,8 @@ public struct SpeechMachine: Sendable {
     public enum Event: Sendable {
         case state(ClientState)
         case setMuted(Bool)
+        /// The surface left the screen (iOS background); rows arriving meanwhile are history.
+        case setSuspended(Bool)
         case replay(Int)
         /// The user asked for silence: Stop, the avatar, or a new message.
         case stop
@@ -46,6 +48,7 @@ public struct SpeechMachine: Sendable {
     public private(set) var gate: Gate = .disarmed(.noIdentity)
     public private(set) var speaking: Utterance.ID?
     public private(set) var muted: Bool
+    public private(set) var suspended = false
     /// The ledger key of the identity last seen, and its watermark.
     public private(set) var ledgerKey: String?
     public private(set) var handled = -1
@@ -68,6 +71,9 @@ public struct SpeechMachine: Sendable {
         case .setMuted(let m):
             muted = m
             return m ? silence() : []
+        case .setSuspended(let hidden):
+            suspended = hidden
+            return hidden ? disarm(.suspended) : []
         case .replay(let seq):
             guard isArmed, let text = assistantRows[seq] else { return [] }
             return silence() + say(seq, text)
@@ -96,6 +102,7 @@ public struct SpeechMachine: Sendable {
         guard s.connection.isLive else { return fx + disarm(.offline) }
         guard s.isActiveSurface, let p = s.presence else { return fx + disarm(.ghost) }
         guard s.handoff == nil else { return fx + disarm(.handoff) }
+        guard !suspended else { return fx + disarm(.suspended) }
         let head = s.rows.map(\.seq).max() ?? -1
         let arm = ArmKey(uuid: uuid, surface: s.surface, generation: p.generation)
         if gate != .armed(arm) {

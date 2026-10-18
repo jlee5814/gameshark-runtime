@@ -663,6 +663,26 @@ final class PocketVoiceTests: PocketHarness {
         XCTAssertNil(engine.playing)
     }
 
+    func testAReplyDuringTheBackgroundGraceStaysSilent() async throws {
+        let (model, c) = try voiced()
+        here(c)
+        await settle { model.state?.rows.count == 3 }
+        c.emit { $0.outbox = [OutgoingMessage(id: "m", text: "bye", status: .pending)] }
+        await settle { model.pendingOutbox.count == 1 }
+        model.scenePhase(.background)                   // the client lingers for the send
+        c.emit { s in
+            s.outbox = []
+            s.rows.append(Row(seq: 3, role: "user", content: "bye"))
+            s.rows.append(Row(seq: 4, role: "assistant", content: "see you"))
+        }
+        await settle { model.state?.rows.count == 5 }
+        XCTAssertEqual(engine.spoken, [])
+        model.scenePhase(.active)
+        c.emit { _ in }
+        await settle()
+        XCTAssertEqual(engine.spoken, [])
+    }
+
     func testReplayAndMuteStayOnThePhone() async throws {
         let (model, c) = try voiced()
         here(c)

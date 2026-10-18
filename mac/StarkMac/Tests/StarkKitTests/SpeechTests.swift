@@ -415,6 +415,25 @@ func speaker(_ store: MemorySpeechStore = MemorySpeechStore())
         #expect(keyMine != keyTest)
     }
 
+    @Test func aSuspendedSurfaceStaysSilentAndNeverCatchesUp() {
+        let (voice, engine) = speaker()
+        let feed = Feed()
+        voice.observe(feed.next())
+        voice.observe(feed.reply("one"))
+        voice.setSuspended(true)                        // the app left the foreground
+        #expect(engine.playing == nil)
+        // The connection lingers to finish a send; its reply lands while hidden.
+        voice.observe(feed.add("user", "sent as the app left"))
+        voice.observe(feed.reply("answer while hidden"))
+        #expect(engine.seqs == [1])
+        #expect(!voice.canReplay)
+        voice.setSuspended(false)
+        voice.observe(feed.next())
+        #expect(engine.seqs == [1])                     // never a backlog on return
+        voice.observe(feed.reply("after return"))
+        #expect(engine.seqs == [1, 4])
+    }
+
     @Test func aStaleFinishNeverEndsANewerUtterance() {
         let (voice, engine) = speaker()
         let feed = Feed()
