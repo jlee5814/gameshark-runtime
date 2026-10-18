@@ -124,8 +124,11 @@ no identity, conversation, or duty. `--inference-extra` adds server fields such 
 reply budget); it joins the provider's config fingerprint and cannot replace a field the
 provider sets.
 
-Context. The reply call sends a window, not the whole conversation: the leading system rows
-plus the newest rows whose byte bound fits `--context-window` minus `--max-tokens` minus a
+Persona. Every reply request opens with Stark's runtime owned persona, not the prompt a
+conversation stored at seq 0; see [stark-persona.md](stark-persona.md).
+
+Context. The reply call sends a window, not the whole conversation: the persona plus the
+newest rows whose byte bound fits `--context-window` minus `--max-tokens` minus a
 256 byte margin, starting on a user turn (`journal.fit_history`). The bound assumes a byte
 level tokenizer, so it trims early rather than late. Selection, reservation, and every
 replay compute the same window from the same rows.
@@ -232,6 +235,7 @@ iPhone; see [stark-memory.md](stark-memory.md#phase-42-acceptance-physical-iphon
 
 ## Not yet built
 
-Bonjour, voice, system notifications, automatic long term memory (Stark keeps only facts
+Bonjour, voice (proposal: [stark-voice-output.md](stark-voice-output.md)), system
+notifications, automatic long term memory (Stark keeps only facts
 the user saves; see [stark-memory.md](stark-memory.md)), a user cancel for a reply in
 flight.

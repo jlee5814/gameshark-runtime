@@ -25,7 +25,7 @@ from gameshark import devices as dv
 from gameshark.gateway_client import GatewayError, pair_device
 from gameshark.inference import CallSpec, OpenAICompatProvider, ProviderConfig
 from gameshark.inference.tracker import LoadPlan, TrackerPolicy
-from gameshark.stark_chat import CONVERSATION
+from gameshark.stark_chat import CONVERSATION, SYSTEM
 from gameshark.store import connect
 from tests.gateway_runtime import Runtime, short_dir
 from tests.helpers import AGENT
@@ -214,7 +214,9 @@ def test_a_follow_up_from_the_phone_carries_the_mac_turn_as_context(tmp_path, fx
 
 def test_a_long_conversation_keeps_the_system_row_and_the_newest_turns(tmp_path, fx):
     fx.routes["/v1/chat/completions"] = Reply(parts=[completion(["ok"])])
-    spec = CallSpec(max_tokens=64, timeout_s=10.0, history_budget=400)
+    # Room for the stored prompt plus a few turns, so older turns must leave the window.
+    budget = len(SYSTEM.encode()) + 400
+    spec = CallSpec(max_tokens=64, timeout_s=10.0, history_budget=budget)
     rt = runtime(tmp_path, fx.base, spec=spec)
     try:
         with rt.client() as mac:
@@ -227,7 +229,7 @@ def test_a_long_conversation_keeps_the_system_row_and_the_newest_turns(tmp_path,
         assert len(last) < 12                             # older turns left the window
         assert not any(m["content"].startswith("turn 0 ") for m in last)
         size = sum(len(m["content"].encode()) + 8 for m in last) + 16
-        assert size <= 400
+        assert size <= budget
     finally:
         rt.close()
 

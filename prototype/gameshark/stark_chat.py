@@ -51,14 +51,16 @@ from gameshark.inference.executor import EXECUTE, InferenceTask
 from gameshark.lifecycle import CancelToken
 from gameshark.memory import HEADER as MEMORY_HEADER
 from gameshark.memory import ITEM as MEMORY_ITEM
+from gameshark.persona import CURRENT as PERSONA
 
 CONVERSATION = "stark:main"
 RESPONSIBILITY = "chat:stark:main"
-SYSTEM = ("You are Stark, a calm desktop companion. Answer in one or two short plain "
-          "sentences.")
+# A new conversation stores the current persona at seq 0 as its record; every request
+# carries SPEC.persona in its place, so older conversations speak with it too.
+SYSTEM = PERSONA.text
 # Bytes of saved memory each reply may carry, apart from the history window.
 MEMORY_BUDGET = 1024
-SPEC = CallSpec(max_tokens=256, timeout_s=120.0, memory_budget=MEMORY_BUDGET)
+SPEC = CallSpec(max_tokens=256, timeout_s=120.0, memory_budget=MEMORY_BUDGET, persona=PERSONA)
 
 
 QUEUED, THINKING, WAITING, FAILED = "queued", "thinking", "waiting", "failed"
