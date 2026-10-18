@@ -1,7 +1,9 @@
 # Stark voice output (Phase 4.3B)
 
-Status: built. Automated tests pass on macOS and in the iOS simulator. Physical device
-acceptance is pending; nothing below claims it.
+Status: built. Automated tests pass on macOS and in the iOS simulator. Physically
+accepted by hand on StarkMac and a physical iPhone for the recorded scenarios on
+2026-10-18, with one open observation: a silent first relaunch of StarkMac. See
+[Phase 4.3B acceptance](#phase-43b-acceptance-physical-iphone-and-starkmac-2026-10-18).
 
 ## Goal
 
@@ -165,6 +167,9 @@ bounded ranges (rate 0.85 to 1.2, pitch 0.9 to 1.2).
   control.
 - One English voice for every reply; a reply in another language is read with English
   pronunciation.
+- Open observation: on one StarkMac relaunch, automatic speech and manual replay stayed
+  silent until the voice was switched in Settings. Not reproduced and not explained; see
+  [Phase 4.3B acceptance](#phase-43b-acceptance-physical-iphone-and-starkmac-2026-10-18).
 
 ## Out of scope
 
@@ -191,9 +196,9 @@ speech, leaving the foreground stops speech, a reply during the background send 
 silent, replay and mute, and no client call from
 speech.
 
-## Physical acceptance checklist (pending)
+## Physical acceptance checklist
 
-Not yet run. Use the device check database from the Stark Pocket README and the existing
+Run by hand on 2026-10-18; results below. Use the device check database from the Stark Pocket README and the existing
 pairing; no reinstall and no new pairing are needed. Run the Mac commands from
 `prototype/`.
 
@@ -231,3 +236,60 @@ shows the build commit.
 9. Run the `sqlite3` line again: the message count grew only by the turns you sent and
    their replies, and the active memory count is unchanged. Scroll each conversation: the
    earlier history is intact, and Memories lists the same saved facts.
+
+## Phase 4.3B acceptance: physical iPhone and StarkMac, 2026-10-18
+
+User observed by hand on StarkMac and a physical Stark Pocket iPhone; not automated test
+results. No test was newly executed for this record.
+
+Environment, as the user reported it: the existing database
+`~/.gameshark/device-check/runtime.db`; a Qwen3 model served on the Mac; StarkMac and a
+physical iPhone running Stark Pocket; default voice Reed on StarkMac. Not recorded: the
+iPhone model, the iOS version, the build commit, the daemon log, and the StarkMac log.
+
+Observed (checklist step in brackets; 9 and 10 go beyond the checklist):
+
+1. StarkMac spoke each new Qwen3 reply exactly once. [1]
+2. Mute prevented automatic playback. [2]
+3. Unmute did not replay missed replies. [2]
+4. Manual replay worked; clicking the avatar stopped speech. [2]
+5. Jack In moved voice output to the iPhone. [3, 4]
+6. StarkMac stayed silent while Stark was present on the iPhone. [5]
+7. Jack Out during iPhone speech stopped audio at once, and StarkMac did not read that
+   reply. [6]
+8. Disconnecting and restarting the GameShark runtime stopped speech, preserved the
+   conversation, and replayed no earlier reply. [7]
+9. Sending Stark Pocket to the background suppressed speech; on return no missed audio
+   played.
+10. Force quitting and reopening Stark Pocket replayed no earlier reply. [8]
+11. StarkMac relaunch preserved the conversation and read no earlier reply; a later fresh
+    reply was spoken exactly once. [8]
+
+Database, run against `~/.gameshark/device-check/runtime.db` [9]: `PRAGMA quick_check`
+returned `ok`; 55 messages; 0 active memories. Zero active memories is valid for this
+database. These counts do not by themselves establish saved memory retention, and the
+message count before the run was not recorded, so growth by only the sent turns is not
+shown.
+
+### Open observation: silent first relaunch
+
+On the first StarkMac relaunch, text replies arrived but automatic speech and manual replay
+were both silent. At the time:
+
+- the macOS `say` command spoke;
+- StarkMac was connected, active on the Mac, and unmuted;
+- switching the voice from the default (Reed) to Samantha restored speech, and switching
+  back to Reed also spoke;
+- a later StarkMac relaunch spoke a fresh reply automatically.
+
+Recorded as a potential intermittent speech initialization issue. It was not reproduced,
+no root cause is known, and nothing was changed for it; the passing retest does not close
+it. Unverified places to look if it recurs: the synthesizer or voice loading on first
+launch, and how the stored voice identifier resolves at startup. If it recurs, capture the
+StarkMac log and the `voice=` state line before switching voices.
+
+### Verdict
+
+Phase 4.3B is physically accepted for the demonstrated scenarios on StarkMac and one
+physical iPhone. One run by hand is not a reliability claim, and the silent relaunch stays
+open.

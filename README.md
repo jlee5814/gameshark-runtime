@@ -48,6 +48,10 @@ process restarts without a second prompt.
   Phase 4.3A: Stark speaks with a runtime owned, versioned persona on every reply, accepted
   by hand on StarkMac and a physical iPhone for the recorded scenarios
   ([architecture/stark-persona.md](architecture/stark-persona.md)).
+  Phase 4.3B: Stark reads his new replies aloud on the surface he is present on, accepted
+  by hand on StarkMac and a physical iPhone for the recorded scenarios, with one silent
+  relaunch observation open
+  ([architecture/stark-voice-output.md](architecture/stark-voice-output.md#phase-43b-acceptance-physical-iphone-and-starkmac-2026-10-18)).
   Design: [architecture/stark-companion.md](architecture/stark-companion.md),
   app: [mac/StarkMac/README.md](mac/StarkMac/README.md).
 
