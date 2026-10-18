@@ -28,6 +28,11 @@ the request JSON as ids only. Commit refuses (ContextConflict, retryable) when a
 was forgotten or corrected since, so no answer built on a fact the user withdrew lands;
 the owner replays the call and the new attempt is built without it.
 
+A CallSpec with a persona (persona.py) replaces the stored leading system rows with the
+persona text before the window is cut, so the request carries exactly one prompt, the
+current one, even in a conversation that stored an older prompt. The rows stay as written;
+the reservation records persona.key.
+
 Execution is at least once; commit is at most once. Recovery only settles abandoned
 reservations. It never dispatches: the owner replays and reissues the same call_id.
 Nothing here claims exactly once provider execution or billing.
@@ -40,6 +45,7 @@ import sqlite3
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from gameshark.clock import Clock
 from gameshark.inference.provider import Provider, ProviderCall
@@ -69,6 +75,9 @@ from gameshark.inference.types import (
 from gameshark.lease import LeaseManager
 from gameshark.lifecycle import CancelToken
 from gameshark.store import write_txn
+
+if TYPE_CHECKING:
+    from gameshark.persona import Persona
 
 PENDING, DONE, FAILED, CANCELLED = "pending", "done", "failed", "cancelled"
 RESERVED, SETTLED, LOST = "reserved", "settled", "lost"
@@ -118,6 +127,8 @@ class CallSpec:
     history_budget: int | None = None
     # Upper bound, in the same units, on the saved memory block; None injects no memory.
     memory_budget: int | None = None
+    # Runtime owned system prompt (a gameshark.persona.Persona); None sends stored rows.
+    persona: Persona | None = None
 
 
 @dataclass(frozen=True)
@@ -276,12 +287,20 @@ class InferenceJournal:
         return self._fenced(body)
 
     def context(self, conversation_id: str, before_seq: int,
-                budget: int | None = None) -> tuple[Message, ...]:
+                budget: int | None = None, system: str | None = None) -> tuple[Message, ...]:
+        """Rows before before_seq, windowed to budget. system, when given, stands in for
+        the stored leading system rows."""
         rows = self.conn.execute(
             "SELECT role, content FROM messages WHERE conversation_id=? AND seq<? ORDER BY seq",
             (conversation_id, before_seq),
         ).fetchall()
-        return fit_history(tuple(Message(Role(r["role"]), r["content"]) for r in rows), budget)
+        messages = tuple(Message(Role(r["role"]), r["content"]) for r in rows)
+        if system is not None and messages:
+            head = 0
+            while head < len(messages) and messages[head].role is Role.SYSTEM:
+                head += 1
+            messages = (Message(Role.SYSTEM, system),) + messages[head:]
+        return fit_history(messages, budget)
 
     def request_messages(self, conversation_id: str, before_seq: int, spec: CallSpec,
                          locality: Locality) -> tuple[tuple[Message, ...],
@@ -289,7 +308,8 @@ class InferenceJournal:
         """The prompt for a call: the history window plus, when the spec has a memory
         budget, one block of saved memories after the leading system rows. Also return the
         (memory id, revision) pairs the block carries."""
-        history = self.context(conversation_id, before_seq, spec.history_budget)
+        persona = spec.persona.text if spec.persona is not None else None
+        history = self.context(conversation_id, before_seq, spec.history_budget, persona)
         if self.memory is None or spec.memory_budget is None or not history:
             return history, ()
         query = next((m.content for m in reversed(history) if m.role is Role.USER), "")
@@ -385,6 +405,8 @@ class InferenceJournal:
                 admit(conn, reserved_tokens, reserved_micros, now)
             request = {"max_tokens": spec.max_tokens, "temperature": spec.temperature,
                        "needs": sorted(spec.needs)}
+            if spec.persona is not None:
+                request["persona"] = spec.persona.key
             if memories:
                 request["memories"] = [list(p) for p in memories]   # ids, never content
             request_json = json.dumps(request)

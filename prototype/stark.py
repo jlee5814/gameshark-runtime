@@ -185,6 +185,16 @@ def chat_spec(args):
                                memory_budget=memory or None)
 
 
+def persona_floor() -> int:
+    """History bytes the persona needs alongside one short message."""
+    from gameshark.inference.journal import HISTORY_FIXED, HISTORY_PER_MESSAGE
+    from gameshark.inference.types import Message, Role, prompt_bytes_bound
+    from gameshark.persona import CURRENT
+
+    return prompt_bytes_bound((Message(Role.SYSTEM, CURRENT.text), Message(Role.USER, "")),
+                              HISTORY_PER_MESSAGE, HISTORY_FIXED) + 64
+
+
 def json_object(text: str) -> dict:
     try:
         v = json.loads(text)
@@ -766,6 +776,9 @@ def main(argv: list[str] | None = None) -> int:
             ap.error("--context-window must exceed --max-tokens")
         if not 0 <= args.memory_budget < args.context_window - args.max_tokens:
             ap.error("--memory-budget must be at least 0 and leave room for history")
+        if chat_spec(args).history_budget < persona_floor():
+            ap.error("--context-window leaves no room for Stark's persona and a message; "
+                     "raise it or lower --max-tokens or --memory-budget")
     args.db.parent.mkdir(parents=True, exist_ok=True)
     if args.cmd in ("watch", "unwatch", "resume", "jack"):
         return cmd_control(args, args.cmd)
