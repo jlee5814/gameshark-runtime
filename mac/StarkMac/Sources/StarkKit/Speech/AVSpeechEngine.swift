@@ -14,6 +14,8 @@ public final class AVSpeechEngine: NSObject, SpeechEngine {
     private let synth = AVSpeechSynthesizer()
     private var current: (ObjectIdentifier, Utterance.ID)?
     private var observers: [NSObjectProtocol] = []
+    /// The iOS audio session is ours right now; released only when it was taken.
+    private var sessionActive = false
 
     public override init() {
         super.init()
@@ -55,15 +57,17 @@ public final class AVSpeechEngine: NSObject, SpeechEngine {
 
     private func activateSession() {
         #if os(iOS)
+        guard !sessionActive else { return }
         let s = AVAudioSession.sharedInstance()
         try? s.setCategory(.playback, mode: .spokenAudio, options: [.duckOthers])
-        try? s.setActive(true)
+        sessionActive = (try? s.setActive(true)) != nil
         #endif
     }
 
     private func deactivateSession() {
         #if os(iOS)
-        guard !synth.isSpeaking else { return }
+        guard sessionActive, !synth.isSpeaking else { return }
+        sessionActive = false
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
         #endif
     }
