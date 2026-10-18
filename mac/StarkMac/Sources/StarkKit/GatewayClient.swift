@@ -101,6 +101,9 @@ public struct ClientState: Equatable, Sendable {
     public var memoryOps: [MemoryOp] = []
     /// The last memory outcome worth saying, such as what a forget left in history.
     public var memoryNotice: String?
+    /// Publish order, rising across every client in the process: a consumer that receives
+    /// states out of order (a Task hop) can tell a late one from news. 0 before any publish.
+    public var revision = 0
 
     /// Remember and correct need presence, as a chat send does.
     public var canWriteMemory: Bool { connection.isLive && isActiveSurface && memoryAvailable }
@@ -1013,6 +1016,7 @@ public final class GatewayClient: @unchecked Sendable {
     }
 
     private func publish() {
+        st.revision = Revision.next()
         onChange(st)
     }
 
@@ -1022,6 +1026,19 @@ public final class GatewayClient: @unchecked Sendable {
 }
 
 /// One time pairing over the pinned LAN gateway. Blocking; call off the main thread.
+/// The process wide publish counter behind ClientState.revision.
+enum Revision {
+    private static let lock = NSLock()
+    nonisolated(unsafe) private static var value = 0
+
+    static func next() -> Int {
+        lock.withLock {
+            value += 1
+            return value
+        }
+    }
+}
+
 public enum Pairing {
     public enum Failure: Error, Equatable {
         case unreachable
