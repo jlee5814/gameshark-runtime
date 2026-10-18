@@ -34,6 +34,9 @@ final class StarkModel {
     private static let scaleKey = "avatarScale"
 
     @ObservationIgnored let client: GatewayClient
+    /// Stark's voice on this Mac: reads new replies aloud while Stark is here. Observable
+    /// on its own, so views follow what it is saying.
+    @ObservationIgnored let voice: SpeechCoordinator
     @ObservationIgnored private let draftBox = DraftBox()
     @ObservationIgnored private let defaults = UserDefaults.standard
 
@@ -42,6 +45,7 @@ final class StarkModel {
         stage = SpriteAtlas.load().map { SpriteStage(atlas: $0) }
         let saved = UserDefaults.standard.integer(forKey: Self.scaleKey)
         avatarScale = Self.scales.contains(saved) ? saved : 1
+        voice = SpeechCoordinator(engine: AVSpeechEngine(), store: DefaultsSpeechStore())
         let relay = Relay()
         client = GatewayClient(config: config, onChange: { s in relay.forward(s) })
         relay.model = self
@@ -74,6 +78,7 @@ final class StarkModel {
 
     func jackIn() {
         guard canJackIn else { return }
+        voice.stop()
         client.jack(.here)
     }
 
@@ -115,6 +120,7 @@ final class StarkModel {
             break
         }
         guard canSend else { return }
+        voice.userSent()
         client.send(text)
         draft = ""
     }
@@ -138,9 +144,23 @@ final class StarkModel {
 
     func dismissMemoryOp(_ id: String) { client.discardMemoryOp(id) }
 
+    // MARK: voice
+
+    var speaking: Bool { voice.speakingSeq != nil }
+
+    /// A tap on Stark while he talks only silences him; otherwise it does what it always did.
+    func avatarTapped() -> Bool {
+        guard speaking else { return false }
+        voice.stop()
+        return true
+    }
+
+    func replay(_ row: Row) { voice.replay(seq: row.seq) }
+
     func apply(_ s: ClientState) {
         let identityChanged = s.identity?.uuid != state.identity?.uuid
         state = s
+        voice.observe(s)
         if identityChanged, let uuid = s.identity?.uuid {
             viewedSeq = defaults.object(forKey: viewedKey(uuid)) as? Int ?? -1
         }
