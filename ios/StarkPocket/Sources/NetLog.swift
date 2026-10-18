@@ -36,6 +36,14 @@ enum NetLog {
     }
 }
 
+/// Speech diagnostics, subsystem dev.gameshark.starkpocket, category speech: SpeechDiagnostic
+/// lines only (seqs, tokens, voice identifiers, reasons, timings), never a reply's text.
+enum SpeechLog {
+    static let logger = Logger(subsystem: "dev.gameshark.starkpocket", category: "speech")
+
+    static let trace: Trace = { line in logger.notice("\(line, privacy: .public)") }
+}
+
 /// Whether the monitor has delivered a path yet; read and written on its queue only.
 final class FirstPath: @unchecked Sendable {
     var value = false

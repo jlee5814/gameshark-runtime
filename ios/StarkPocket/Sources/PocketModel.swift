@@ -88,8 +88,9 @@ final class PocketModel {
         self.makeClient = makeClient
         self.pairer = pairer
         stage = PocketAtlas.load().map { PocketStage(atlas: $0) }
-        self.voice = voice ?? SpeechCoordinator(engine: AVSpeechEngine(),
-                                                store: DefaultsSpeechStore())
+        self.voice = voice ?? SpeechCoordinator(engine: AVSpeechEngine(trace: SpeechLog.trace),
+                                                store: DefaultsSpeechStore(),
+                                                trace: SpeechLog.trace)
         if environment["STARK_RESET"] == "1" { store.wipe() }
         if let endpoint = store.loadDevice() {
             connect(endpoint)

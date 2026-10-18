@@ -45,7 +45,8 @@ final class StarkModel {
         stage = SpriteAtlas.load().map { SpriteStage(atlas: $0) }
         let saved = UserDefaults.standard.integer(forKey: Self.scaleKey)
         avatarScale = Self.scales.contains(saved) ? saved : 1
-        voice = SpeechCoordinator(engine: AVSpeechEngine(), store: DefaultsSpeechStore())
+        voice = SpeechCoordinator(engine: AVSpeechEngine(trace: SpeechLog.trace),
+                                  store: DefaultsSpeechStore(), trace: SpeechLog.trace)
         let relay = Relay()
         client = GatewayClient(config: config, onChange: { s in relay.forward(s) })
         relay.model = self
