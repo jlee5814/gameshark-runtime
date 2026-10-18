@@ -41,7 +41,10 @@ process restarts without a second prompt.
   Stark Pocket (iPhone) landed. Phase 4.1: replies come from a real OpenAI compatible
   model through the v0.3 router, with visible waiting, failure, and retry states,
   accepted by hand on a physical iPhone for the recorded scenarios
-  ([ios/StarkPocket/README.md](ios/StarkPocket/README.md)).
+  ([ios/StarkPocket/README.md](ios/StarkPocket/README.md)). Phase 4.2: facts the user
+  explicitly saves persist in the runtime, reach every reply through their own budget,
+  and can be corrected or forgotten, also accepted by hand on a physical iPhone for the
+  recorded scenarios ([architecture/stark-memory.md](architecture/stark-memory.md)).
   Design: [architecture/stark-companion.md](architecture/stark-companion.md),
   app: [mac/StarkMac/README.md](mac/StarkMac/README.md).
 

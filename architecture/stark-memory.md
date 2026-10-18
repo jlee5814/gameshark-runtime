@@ -228,3 +228,69 @@ sqlite3 ~/.gameshark/memory-check/runtime.db \
 
 Record the outcome of each step, the device and iOS version, the build, and the daemon
 log in a dated note, as Phase 4.1 did.
+
+### Phase 4.2 acceptance: physical iPhone, 2026-10-17
+
+User observed on a physical iPhone and StarkMac, by hand, on October 17, 2026 (US Eastern
+time); not CI or automated test results.
+
+Environment, as the user reported it:
+
+- Stark Pocket on a physical iPhone, StarkMac on the Mac.
+- A separate database, `~/.gameshark/memory-check/runtime.db`, never the everyday one.
+- The runtime ran with `run --lan --fake-model`; the test identity began `9696f62c`.
+
+From the repository record, not user observed: PR #36 merged into `main` as `fb1fcb7`
+earlier the same day. Which commit the runtime, StarkMac, and the iPhone build ran was
+not recorded.
+
+Not recorded: the iOS version, the iPhone model, the app build commit, the daemon log,
+and the post test evidence from `stark.py memory` and SQL (the `r2` revision in step 5,
+the zero count in step 9).
+
+Observed, checklist steps 1 to 9:
+
+1. Save: `/remember My locker is 42` sent from the iPhone appeared in Memories, apart
+   from chat history.
+2. Recall: asked on the iPhone "Which locker is mine?", the fake model reply included
+   `Saved memories: My locker is 42`.
+3. Recall elsewhere: after Jack Out, StarkMac still had the same memory, and its new
+   reply included locker 42.
+4. Fence: with Stark on the Mac, the iPhone showed "Jack In to add or correct" and
+   disabled Add and Edit. A left swipe still exposed Forget without presence on the
+   iPhone.
+5. Correct: after Jack In on the iPhone, the fact changed from locker 42 to locker 43,
+   and later fake model replies included locker 43.
+6. Restart: the test daemon was killed with SIGKILL; after the stale ownership lease
+   expired, the runtime restarted on the same database. The phone reconnected, the
+   memory remained, and a new reply included `Saved memories: My locker is 43`.
+7. Forget: a swipe forgot locker 43. Memories showed "Nothing saved yet.", and the
+   notice reported two earlier chat messages still containing the forgotten text.
+8. Recall after forget: asked "Which locker is mine now?", the new fake model reply
+   carried no `Saved memories:` block, so the persistent memory path no longer injected
+   the fact.
+9. Restart again: after another SIGKILL and restart, the saved memory list stayed empty.
+
+Not performed: step 10, revoking `memory.inject`.
+
+Restoration: the user unpaired the test iPhone, stopped the temporary runtime, and
+returned to the original database, `~/.gameshark/device-check/runtime.db`. The original
+Stark identity (`b7c180ab`), its stored conversations, the Mac connection, and the iPhone
+pairing all came back; screenshots showed the existing conversation intact and the iPhone
+live after Jack In.
+
+Phase 4.2 is accepted for these demonstrated scenarios. One run by hand is not a claim
+of production reliability or of exactly once delivery in general. The fake model proved
+retrieval and context injection; these nine steps did not test semantic reasoning by a
+real model. The genuine Qwen3 run under [What forgetting means](#what-forgetting-means)
+came from PR #36, not from this run. Forgetting removed the fact from saved memory only:
+chat rows quoting it, backups, filesystem snapshots, and provider caches stay as that
+section describes.
+
+Not yet proven on physical hardware:
+
+- Step 10: revoking `memory.inject`, then restoring it.
+- Saved memory with a real model on the device.
+- The `stark.py memory` and SQL evidence for each step.
+- A memory write resent across a phone disconnect.
+- `stark.py memory forget` from the CLI while the phone holds Stark.

@@ -227,9 +227,11 @@ presentation facts. StarkMac names the device holding Stark and offers Jack In H
 Phase 3.3 cellular and Tailscale acceptance and the Phase 4.1 live inference acceptance by
 hand; that README records what was shown and what remains unproven on hardware. Recall
 across Jack In and a restart came from the conversation history window, not from long
-term memory.
+term memory. The Phase 4.2 saved memory acceptance also passed by hand on a physical
+iPhone; see [stark-memory.md](stark-memory.md#phase-42-acceptance-physical-iphone-2026-10-17).
 
 ## Not yet built
 
-Bonjour, voice, system notifications, long term memory, a user cancel for a reply in
+Bonjour, voice, system notifications, automatic long term memory (Stark keeps only facts
+the user saves; see [stark-memory.md](stark-memory.md)), a user cancel for a reply in
 flight.
