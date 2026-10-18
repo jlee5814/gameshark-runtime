@@ -57,7 +57,8 @@ the app leaving. A revoked device drops to the pairing screen.
 A physical iPhone has passed the Phase 3.3 cellular acceptance by hand; see Over cellular
 with Tailscale. It has also passed the Phase 4.1 live inference acceptance by hand; see
 Live inference (Phase 4.1). It has also passed the Phase 4.2 saved memory acceptance by
-hand; see Saved memory (Phase 4.2). The LAN checklist below has still not run end to end on a
+hand; see Saved memory (Phase 4.2). It has also passed the Phase 4.3A persona acceptance
+by hand; see Persona (Phase 4.3A). The LAN checklist below has still not run end to end on a
 device. The
 checklist uses its own database, never `~/.gameshark/runtime.db` or the simulator's
 `~/.gameshark/demo`. Run the Mac commands from `prototype/`.
@@ -350,3 +351,20 @@ uv run python stark.py --db "$DB" memory                                # saved,
 sqlite3 "$DB" "SELECT id, state, revision, length(content), source_surface FROM memories"
 sqlite3 "$DB" "SELECT kind, surface FROM memory_ops ORDER BY created"   # remember, correct, forget
 ```
+
+### Persona (Phase 4.3A)
+
+#### Phase 4.3A acceptance: physical iPhone and StarkMac, 2026-10-18
+
+User observed by hand; not automated test results. The full record is in
+[architecture/stark-persona.md](../../architecture/stark-persona.md#phase-43a-acceptance-physical-iphone-and-starkmac-2026-10-18).
+Environment: the original identity (`b7c180ab`) on `~/.gameshark/device-check/runtime.db`,
+`mlx-community/Qwen3-4B-4bit` on the Mac, persona `stark/1`. Not recorded: the iOS
+version, the iPhone model, the build commit, and the daemon log.
+
+On the phone: Jack In continued the existing conversation without a reinstall, and Stark
+kept a friendly, concise tone. Advice for a frozen application was short but lacked
+technical precision. Asked what it remembered, Stark cited earlier network switch and
+draft recovery testing, which the conversation history holds; this does not show saved
+memory retrieval. SQLite recorded `stark/1` on the five most recent calls and on
+`call:stark:main:37` after a graceful restart.
