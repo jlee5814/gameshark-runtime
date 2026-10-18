@@ -247,7 +247,7 @@ Environment, as the user reported it: the existing database
 physical iPhone running Stark Pocket; default voice Reed on StarkMac. Not recorded: the
 iPhone model, the iOS version, the build commit, the daemon log, and the StarkMac log.
 
-Observed (checklist step in brackets; 9 and 10 go beyond the checklist):
+Observed (checklist step in brackets; 9 goes beyond the checklist):
 
 1. StarkMac spoke each new Qwen3 reply exactly once. [1]
 2. Mute prevented automatic playback. [2]
