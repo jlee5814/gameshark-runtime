@@ -50,6 +50,9 @@ final class PocketModel {
         -> DeviceCredential
 
     @ObservationIgnored let stage: PocketStage?
+    /// Stark's voice on this iPhone: reads new replies aloud while Stark is here. Observable
+    /// on its own, so views follow what it is saying.
+    @ObservationIgnored let voice: SpeechCoordinator
     @ObservationIgnored private let store: CredentialStore
     @ObservationIgnored private let makeClient: MakeClient
     @ObservationIgnored private let pairer: Pairer
@@ -77,6 +80,7 @@ final class PocketModel {
     init(store: CredentialStore = CredentialStore(),
          environment: [String: String] = ProcessInfo.processInfo.environment,
          monitorsNetwork: Bool = true,
+         voice: SpeechCoordinator? = nil,
          makeClient: @escaping MakeClient = { GatewayClient(config: $0, onChange: $1) },
          pairer: @escaping Pairer = { try Pairing.run(link: $0, name: $1, signer: $2) }) {
         self.store = store
@@ -84,6 +88,8 @@ final class PocketModel {
         self.makeClient = makeClient
         self.pairer = pairer
         stage = PocketAtlas.load().map { PocketStage(atlas: $0) }
+        self.voice = voice ?? SpeechCoordinator(engine: AVSpeechEngine(),
+                                                store: DefaultsSpeechStore())
         if environment["STARK_RESET"] == "1" { store.wipe() }
         if let endpoint = store.loadDevice() {
             connect(endpoint)
@@ -203,6 +209,7 @@ final class PocketModel {
     /// Drop the connection and the Keychain pairing at once. Only for a pairing that holds
     /// nothing: Stark is elsewhere, or the Mac already revoked this device.
     private func forget() {
+        voice.stop()
         client?.stop()
         client = nil
         isPaired = false
@@ -253,6 +260,7 @@ final class PocketModel {
 
     private func apply(_ s: ClientState) {
         state = s
+        voice.observe(s)
         if case .disconnected(let why) = s.connection, why == "untrusted runtime" {
             pairingError = s.lastError
         }
@@ -322,6 +330,7 @@ final class PocketModel {
             break
         }
         guard summary?.canSend == true else { return }
+        voice.userSent()
         client?.send(text, presenceGen: nil)
         draft = ""
     }
@@ -359,6 +368,7 @@ final class PocketModel {
     func dismissMemoryOp(_ id: String) { client?.discardMemoryOp(id) }
 
     func jack() {
+        voice.stop()                            // a jack begins: silence before presence moves
         switch summary?.control {
         case .jackIn: client?.jack(.here)
         case .jackOut: client?.jack(.home)
@@ -386,12 +396,15 @@ final class PocketModel {
         case .active:
             NetLog.trace("scene active network=\(network?.rawValue ?? "nil")")
             foreground = true
+            voice.setSuspended(false)
             stage?.setVisible(true)
             if let network { client?.setPath(network) }
             startWhenPathKnown()                // resyncs rows after the last contiguous seq
         case .background:
             NetLog.trace("scene background")
             foreground = false
+            // No background audio: Stark never talks unseen, even while a send lingers.
+            voice.setSuspended(true)
             firstPathWait?.cancel()
             firstPathWait = nil
             stage?.setVisible(false)

@@ -22,7 +22,10 @@ struct CompanionView: View {
                     .onChanged { _ in controller.dragChanged() }
                     .onEnded { _ in controller.dragEnded() })
                 .gesture(TapGesture(count: 2).onEnded { controller.openChat() }
-                    .exclusively(before: TapGesture().onEnded { controller.toggleChat() }))
+                    .exclusively(before: TapGesture().onEnded {
+                        if !model.avatarTapped() { controller.toggleChat() }
+                    }))
+                .accessibilityAction(named: "Stop Speaking") { model.voice.stop() }
                 .help("Click to talk to Stark, drag to move him, right click for options.")
         }
         .padding(PanelController.inset)
@@ -48,6 +51,7 @@ struct ChatCard: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .top) {
                 StatusView(state: model.state, badge: model.modelBadge)
+                VoiceControls(voice: model.voice)
                 if model.state.memoryAvailable {
                     Button { model.showMemories.toggle() } label: {
                         Image(systemName: "brain")
@@ -64,7 +68,7 @@ struct ChatCard: View {
                     ScrollView {
                         LazyVStack(alignment: .leading, spacing: 6) {
                             ForEach(model.visibleRows) { row in
-                                Bubble(row: row).id(row.seq)
+                                Bubble(row: row, voice: model.voice).id(row.seq)
                             }
                             ForEach(model.attention) { m in
                                 PendingBubble(message: m)
@@ -207,18 +211,55 @@ struct StatusView: View {
 
 struct Bubble: View {
     let row: Row
+    let voice: SpeechCoordinator
 
     var body: some View {
         let mine = row.role == "user"
-        HStack {
+        let saying = voice.speakingSeq == row.seq
+        HStack(alignment: .bottom, spacing: 4) {
             if mine { Spacer(minLength: 30) }
             Text(row.content)
                 .textSelection(.enabled)
                 .padding(.horizontal, 10).padding(.vertical, 6)
                 .background(mine ? Color.accentColor.opacity(0.85) : Color.secondary.opacity(0.18),
                             in: RoundedRectangle(cornerRadius: 12))
+                .overlay(RoundedRectangle(cornerRadius: 12)
+                    .stroke(Color.accentColor, lineWidth: saying ? 1.5 : 0))
                 .foregroundStyle(mine ? .white : .primary)
+            if !mine && voice.canReplay {
+                Button {
+                    if saying { voice.stop() } else { voice.replay(seq: row.seq) }
+                } label: {
+                    Image(systemName: saying ? "stop.circle" : "play.circle")
+                }
+                .buttonStyle(.borderless)
+                .foregroundStyle(.secondary)
+                .help(saying ? "Stop speaking" : "Read this reply aloud")
+                .accessibilityLabel(saying ? "Stop speaking" : "Replay this reply aloud")
+            }
             if !mine { Spacer(minLength: 30) }
+        }
+    }
+}
+
+/// Mute and Stop for Stark's voice on this Mac.
+struct VoiceControls: View {
+    let voice: SpeechCoordinator
+
+    var body: some View {
+        HStack(spacing: 6) {
+            if voice.speakingSeq != nil {
+                Button { voice.stop() } label: { Image(systemName: "stop.fill") }
+                    .buttonStyle(.borderless)
+                    .help("Stop speaking")
+                    .accessibilityLabel("Stop speaking")
+            }
+            Button { voice.toggleMute() } label: {
+                Image(systemName: voice.settings.muted ? "speaker.slash" : "speaker.wave.2")
+            }
+            .buttonStyle(.borderless)
+            .help(voice.settings.muted ? "Unmute Stark's voice" : "Mute Stark's voice")
+            .accessibilityLabel(voice.settings.muted ? "Unmute Stark's voice" : "Mute Stark's voice")
         }
     }
 }

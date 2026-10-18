@@ -10,10 +10,13 @@ import Foundation
 //   starkctl clickthrough on|off
 //   starkctl reconnect
 //   starkctl jackin            Jack In Here: pull Stark back from a paired device
+//   starkctl mute on|off       Stark's voice on this Mac
+//   starkctl hush              stop speaking now
+//   starkctl replay SEQ        read an assistant row aloud again
 //   starkctl snapshot PATH
 let args = Array(CommandLine.arguments.dropFirst())
 guard let cmd = args.first else {
-    FileHandle.standardError.write(Data("usage: starkctl move|chat|say|draft|memories|forget|clickthrough|reconnect|jackin|snapshot ...\n".utf8))
+    FileHandle.standardError.write(Data("usage: starkctl move|chat|say|draft|memories|forget|clickthrough|reconnect|jackin|mute|hush|replay|snapshot ...\n".utf8))
     exit(2)
 }
 DistributedNotificationCenter.default().postNotificationName(

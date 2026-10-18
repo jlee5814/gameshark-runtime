@@ -19,6 +19,11 @@ public enum Wire {
 public struct Identity: Codable, Equatable, Sendable {
     public var agentId: String
     public var uuid: String
+
+    public init(agentId: String, uuid: String) {
+        self.agentId = agentId
+        self.uuid = uuid
+    }
 }
 
 public struct PresenceInfo: Codable, Equatable, Sendable {
@@ -69,6 +74,12 @@ public struct Row: Codable, Equatable, Sendable, Identifiable {
     public var role: String
     public var content: String
     public var id: Int { seq }
+
+    public init(seq: Int, role: String, content: String) {
+        self.seq = seq
+        self.role = role
+        self.content = content
+    }
 }
 
 /// What the runtime is executing now: a read only projection, rebuilt from each snapshot.

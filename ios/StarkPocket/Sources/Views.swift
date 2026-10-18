@@ -75,6 +75,7 @@ struct MainView: View {
             .navigationTitle("Stark")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
+                VoiceButtons(voice: model.voice)
                 if model.memoryAvailable {
                     Button { model.showMemories = true } label: { Image(systemName: "brain") }
                         .accessibilityLabel("Saved memories")
@@ -99,6 +100,9 @@ struct HeaderView: View {
         HStack(alignment: .bottom, spacing: 16) {
             AvatarView(stage: model.stage, ghost: !active)
                 .frame(width: 98, height: 119)
+                .contentShape(Rectangle())
+                .onTapGesture { model.voice.stop() }    // tap Stark to silence him
+                .accessibilityAction(named: "Stop Speaking") { model.voice.stop() }
             VStack(alignment: .leading, spacing: 8) {
                 Label(summary?.label ?? "Connecting", systemImage: active ? "bolt.fill" : "moon.zzz")
                     .font(.headline)
@@ -182,7 +186,7 @@ struct ConversationList: View {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 8) {
                     ForEach(model.visibleRows) { r in
-                        Bubble(row: r).id(r.seq)
+                        Bubble(row: r, voice: model.voice).id(r.seq)
                     }
                     ForEach(model.pendingOutbox) { m in
                         Text(m.status == .pending ? "sending: \(m.text)" : "not sent: \(m.text)")
@@ -236,16 +240,103 @@ struct ReplyLine: View {
 
 struct Bubble: View {
     let row: Row
+    let voice: SpeechCoordinator
 
     var body: some View {
         let mine = row.role == "user"
-        Text(row.content)
-            .padding(10)
-            .background(mine ? Color.accentColor.opacity(0.85) : Color.secondary.opacity(0.18),
-                        in: RoundedRectangle(cornerRadius: 14))
-            .foregroundStyle(mine ? .white : .primary)
-            .frame(maxWidth: .infinity, alignment: mine ? .trailing : .leading)
-            .accessibilityIdentifier("row-\(row.seq)")
+        let saying = voice.speakingSeq == row.seq
+        HStack(alignment: .bottom, spacing: 6) {
+            Text(row.content)
+                .padding(10)
+                .background(mine ? Color.accentColor.opacity(0.85) : Color.secondary.opacity(0.18),
+                            in: RoundedRectangle(cornerRadius: 14))
+                .overlay(RoundedRectangle(cornerRadius: 14)
+                    .stroke(Color.accentColor, lineWidth: saying ? 2 : 0))
+                .foregroundStyle(mine ? .white : .primary)
+                .accessibilityIdentifier("row-\(row.seq)")
+                .contextMenu {
+                    if !mine && voice.canReplay {
+                        Button { voice.replay(seq: row.seq) } label: {
+                            Label("Read Aloud", systemImage: "play.circle")
+                        }
+                    }
+                }
+            if !mine && voice.canReplay {
+                Button {
+                    if saying { voice.stop() } else { voice.replay(seq: row.seq) }
+                } label: {
+                    Image(systemName: saying ? "stop.circle" : "play.circle")
+                        .imageScale(.large)
+                }
+                .buttonStyle(.borderless)
+                .foregroundStyle(.secondary)
+                .accessibilityLabel(saying ? "Stop speaking" : "Replay this reply aloud")
+                .accessibilityIdentifier(saying ? "stopReplayButton-\(row.seq)"
+                                                : "replayButton-\(row.seq)")
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: mine ? .trailing : .leading)
+    }
+}
+
+/// Mute and Stop in the toolbar.
+struct VoiceButtons: View {
+    let voice: SpeechCoordinator
+
+    var body: some View {
+        if voice.speakingSeq != nil {
+            Button { voice.stop() } label: { Image(systemName: "stop.fill") }
+                .accessibilityLabel("Stop speaking")
+                .accessibilityIdentifier("stopSpeechButton")
+        }
+        Button { voice.toggleMute() } label: {
+            Image(systemName: voice.settings.muted ? "speaker.slash" : "speaker.wave.2")
+        }
+        .accessibilityLabel(voice.settings.muted ? "Unmute Stark's voice" : "Mute Stark's voice")
+        .accessibilityIdentifier("muteButton")
+    }
+}
+
+/// This iPhone's voice settings: never part of Stark's persona, never sent to the Mac.
+struct VoiceSection: View {
+    let voice: SpeechCoordinator
+    @State private var options: [VoiceOption] = []
+    @State private var fallback: String?
+
+    var body: some View {
+        Section {
+            Toggle("Mute Stark", isOn: Binding(get: { voice.settings.muted },
+                                               set: { m in voice.setMuted(m) }))
+                .accessibilityIdentifier("muteToggle")
+            Picker("Voice", selection: Binding(
+                get: { voice.settings.voiceIdentifier ?? "" },
+                set: { id in voice.update { $0.voiceIdentifier = id.isEmpty ? nil : id } })) {
+                Text("Default" + (fallback.map { " (\($0))" } ?? "")).tag("")
+                ForEach(options) { Text($0.label).tag($0.id) }
+            }
+            .accessibilityIdentifier("voicePicker")
+            LabeledContent("Speed") {
+                Slider(value: Binding(get: { voice.settings.rate },
+                                      set: { r in voice.update { $0.rate = r } }),
+                       in: VoiceSettings.rateRange)
+                    .accessibilityLabel("Speaking speed")
+            }
+            LabeledContent("Pitch") {
+                Slider(value: Binding(get: { voice.settings.pitch },
+                                      set: { p in voice.update { $0.pitch = p } }),
+                       in: VoiceSettings.pitchRange)
+                    .accessibilityLabel("Voice pitch")
+            }
+        } header: {
+            Text("Voice")
+        } footer: {
+            Text("Stark reads his new replies aloud only while he is on this iPhone. Better "
+                 + "voices download in Settings, Accessibility, Spoken Content, Voices.")
+        }
+        .onAppear {
+            options = VoiceCatalog.options()
+            fallback = VoiceCatalog.defaultOption?.name
+        }
     }
 }
 
@@ -401,6 +492,7 @@ struct SettingsView: View {
                         LabeledContent("Presence", value: s.presence.map { "\($0.surface) gen \($0.generation)" } ?? "…")
                     }
                 }
+                VoiceSection(voice: model.voice)
                 Section("Diagnostics") {
                     LabeledContent("Build", value: NetLog.build)
                     LabeledContent("Network", value: model.networkLabel)

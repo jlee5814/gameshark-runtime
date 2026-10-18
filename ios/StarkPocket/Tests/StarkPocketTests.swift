@@ -93,8 +93,13 @@ final class FakeClient: PocketClient, @unchecked Sendable {
         state = ClientState(surface: surface)
     }
 
+    /// GatewayClient stamps each publish; so does the fake.
+    nonisolated(unsafe) private static var revision = 0
+
     func emit(_ change: (inout ClientState) -> Void) {
         change(&state)
+        Self.revision += 1
+        state.revision = Self.revision
         onChange(state)
     }
 
@@ -146,8 +151,9 @@ final class FakeClient: PocketClient, @unchecked Sendable {
     func discardMemoryOp(_ opId: String) {}
 }
 
+/// Shared setup for model tests: a stored pairing and a FakeClient per connection.
 @MainActor
-final class PocketModelTests: XCTestCase {
+class PocketHarness: XCTestCase {
     let store = CredentialStore(service: "dev.gameshark.starkpocket.modeltests")
     let surface = "pocket-aaaaaa"
     var clients: [FakeClient] = []
@@ -161,10 +167,12 @@ final class PocketModelTests: XCTestCase {
     }
 
     /// A model that finds a stored pairing and connects through a FakeClient.
-    func pairedModel() throws -> PocketModel {
+    func pairedModel(voice: SpeechCoordinator? = nil) throws -> PocketModel {
         let (_, item, blob) = try CredentialStore.newSigner()
         try store.saveDevice(credential(), keyItem: item, keyData: blob)
         let model = PocketModel(store: store, environment: [:], monitorsNetwork: false,
+                                voice: voice ?? SpeechCoordinator(engine: SilentEngine(),
+                                                                  store: MemorySpeechStore()),
                                 makeClient: { cfg, onChange in
             let c = FakeClient(surface: cfg.surface, onChange: onChange)
             self.clients.append(c)
@@ -193,6 +201,10 @@ final class PocketModelTests: XCTestCase {
         }
     }
 
+}
+
+@MainActor
+final class PocketModelTests: PocketHarness {
     // Phase 4.2: memory commands are typed, and only an explicit one saves a fact.
     func testRememberCommandSavesMemoryAndNeverSendsChat() async throws {
         let model = try pairedModel()
@@ -543,5 +555,146 @@ final class PocketModelTests: XCTestCase {
         XCTAssertFalse(model.isPaired)
         XCTAssertNil(store.loadDevice())
         XCTAssertEqual(c.jacks, [])
+    }
+}
+
+/// Records speech requests; plays nothing.
+@MainActor
+final class SilentEngine: SpeechEngine {
+    var spoken: [Int] = []
+    var playing: Utterance.ID?
+    var onFinish: ((Utterance.ID) -> Void)?
+    var onInterrupt: (() -> Void)?
+
+    func speak(_ u: Utterance) {
+        spoken.append(u.id.seq)
+        playing = u.id
+    }
+
+    func stop() { playing = nil }
+}
+
+/// Phase 4.3B: the phone reads new replies aloud only while Stark is on it, and speech
+/// never reaches the runtime.
+@MainActor
+final class PocketVoiceTests: PocketHarness {
+    var engine = SilentEngine()
+
+    func voiced() throws -> (PocketModel, FakeClient) {
+        engine = SilentEngine()
+        let model = try pairedModel(voice: SpeechCoordinator(engine: engine,
+                                                             store: MemorySpeechStore()))
+        return (model, clients[0])
+    }
+
+    func here(_ c: FakeClient, holder: String? = nil) {
+        c.emit {
+            $0.connection = .live
+            $0.identity = Identity(agentId: "stark", uuid: "uuid")
+            $0.presence = PresenceInfo(surface: holder ?? surface, home: "mac", generation: 2)
+            $0.handoff = nil
+            $0.rows = [Row(seq: 0, role: "system", content: "sys"),
+                       Row(seq: 1, role: "user", content: "earlier"),
+                       Row(seq: 2, role: "assistant", content: "history")]
+        }
+    }
+
+    func reply(_ c: FakeClient, _ text: String) {
+        c.emit { $0.rows.append(Row(seq: $0.rows.count, role: "assistant", content: text)) }
+    }
+
+    func assertNothingSent(_ c: FakeClient, file: StaticString = #filePath, line: UInt = #line) {
+        XCTAssertTrue(c.sent.isEmpty && c.jacks.isEmpty && c.retries.isEmpty
+                      && c.remembered.isEmpty && c.corrected.isEmpty && c.forgotten.isEmpty
+                      && c.confirmed.isEmpty, file: file, line: line)
+    }
+
+    func testANewReplySpeaksOnceAndHistoryStaysSilent() async throws {
+        let (model, c) = try voiced()
+        here(c)
+        await settle { model.state?.rows.count == 3 }
+        XCTAssertEqual(engine.spoken, [])
+        reply(c, "Jacked in and ready!")
+        await settle { self.engine.spoken.count == 1 }
+        XCTAssertEqual(engine.spoken, [3])
+        XCTAssertEqual(model.voice.speakingSeq, 3)
+        c.emit { _ in }                                  // republished, nothing new
+        await settle()
+        XCTAssertEqual(engine.spoken, [3])
+        assertNothingSent(c)
+    }
+
+    func testAGhostPhoneStaysSilent() async throws {
+        let (model, c) = try voiced()
+        here(c, holder: "mac")
+        reply(c, "for the Mac")
+        await settle { model.state?.rows.count == 4 }
+        XCTAssertEqual(engine.spoken, [])
+        XCTAssertFalse(model.voice.canReplay)
+    }
+
+    func testSendingAMessageStopsSpeech() async throws {
+        let (model, c) = try voiced()
+        here(c)
+        reply(c, "a long answer")
+        await settle { self.engine.playing != nil }
+        model.draft = "wait, one more thing"
+        model.send()
+        XCTAssertNil(engine.playing)
+        XCTAssertEqual(c.sent, ["wait, one more thing"])
+    }
+
+    func testJackOutStopsSpeech() async throws {
+        let (model, c) = try voiced()
+        here(c)
+        reply(c, "a long answer")
+        await settle { self.engine.playing != nil }
+        model.jack()
+        XCTAssertNil(engine.playing)
+        XCTAssertEqual(c.jacks, [.home])
+    }
+
+    func testLeavingTheForegroundStopsSpeech() async throws {
+        let (model, c) = try voiced()
+        here(c)
+        reply(c, "a long answer")
+        await settle { self.engine.playing != nil }
+        model.scenePhase(.background)
+        XCTAssertNil(engine.playing)
+    }
+
+    func testAReplyDuringTheBackgroundGraceStaysSilent() async throws {
+        let (model, c) = try voiced()
+        here(c)
+        await settle { model.state?.rows.count == 3 }
+        c.emit { $0.outbox = [OutgoingMessage(id: "m", text: "bye", status: .pending)] }
+        await settle { model.pendingOutbox.count == 1 }
+        model.scenePhase(.background)                   // the client lingers for the send
+        c.emit { s in
+            s.outbox = []
+            s.rows.append(Row(seq: 3, role: "user", content: "bye"))
+            s.rows.append(Row(seq: 4, role: "assistant", content: "see you"))
+        }
+        await settle { model.state?.rows.count == 5 }
+        XCTAssertEqual(engine.spoken, [])
+        model.scenePhase(.active)
+        c.emit { _ in }
+        await settle()
+        XCTAssertEqual(engine.spoken, [])
+    }
+
+    func testReplayAndMuteStayOnThePhone() async throws {
+        let (model, c) = try voiced()
+        here(c)
+        await settle { model.state?.rows.count == 3 }
+        model.voice.replay(seq: 2)
+        XCTAssertEqual(engine.spoken, [2])
+        model.voice.setMuted(true)
+        reply(c, "muted")
+        await settle { model.state?.rows.count == 4 }
+        model.voice.setMuted(false)
+        await settle()
+        XCTAssertEqual(engine.spoken, [2])
+        assertNothingSent(c)
     }
 }

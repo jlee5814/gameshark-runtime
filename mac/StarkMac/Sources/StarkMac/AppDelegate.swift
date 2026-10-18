@@ -14,6 +14,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         panel = PanelController(model: model)
         panel.show()
         buildStatusItem()
+        // Sleep takes the speakers away mid sentence; Stark never resumes on wake.
+        NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.willSleepNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.model.voice.interrupted() }
+        }
         model.start()
         let env = ProcessInfo.processInfo.environment
         if env["STARK_CLICK_THROUGH"] == "1" {
@@ -44,6 +49,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             _ = model.chatOpen
             _ = model.state.rows.count
             _ = model.state.presence
+            _ = model.voice.speakingSeq
+            _ = model.voice.settings.muted
         } onChange: {
             DispatchQueue.main.async { [weak self] in
                 MainActor.assumeIsolated {
@@ -62,6 +69,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             + "draft=\(model.draft.count) offer=\(model.draftOffer != nil) "
             + "memories=\(s.memories.count) mview=\(model.showMemories) "
             + "presence=\(s.presence.map { "\($0.surface)@\($0.generation)" } ?? "-") "
+            + "voice=\(model.voice.speakingSeq.map(String.init) ?? "-")"
+            + "\(model.voice.settings.muted ? "/muted" : "") "
             + "origin=\(Int(panel.panel.frame.minX)),\(Int(panel.panel.frame.minY))"
         guard line != lastShot else { return }
         lastShot = line
@@ -119,6 +128,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             model.client.reconnectNow()
         case "jackin":
             model.jackIn()
+        case "mute":
+            model.voice.setMuted(args.first != "off")
+        case "hush":
+            model.voice.stop()
+        case "replay" where args.count == 1:
+            if let seq = Int(args[0]) { model.voice.replay(seq: seq) }
         case "snapshot" where args.count == 1:
             panel.snapshot(to: URL(fileURLWithPath: args[0]))
         case "avatar" where args.count == 1:
@@ -202,6 +217,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             menu.addItem(cycle)
         }
 
+        menu.addItem(submenu("Voice", voiceMenu()))
+
         let ct = item("Click Through", #selector(toggleClickThrough), "t")
         ct.state = model.clickThrough ? .on : .off
         menu.addItem(ct)
@@ -210,6 +227,52 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(.separator())
         menu.addItem(item("Quit StarkMac", #selector(quit), "q"))
         return menu
+    }
+
+    /// Mute, Stop, the installed voices, and speed: this Mac's settings, never Stark's persona.
+    private func voiceMenu() -> NSMenu {
+        let v = model.voice
+        let m = NSMenu()
+        let mute = item("Mute", #selector(toggleMute), "")
+        mute.state = v.settings.muted ? .on : .off
+        m.addItem(mute)
+        let stop = item("Stop Speaking", #selector(stopSpeaking), ".")
+        stop.isEnabled = v.speakingSeq != nil
+        m.addItem(stop)
+        m.addItem(.separator())
+        let current = v.settings.voiceIdentifier
+        let auto = item("Default Voice" + (VoiceCatalog.defaultOption.map { " (\($0.name))" } ?? ""),
+                        #selector(pickVoice(_:)), "")
+        auto.state = current == nil ? .on : .off
+        m.addItem(auto)
+        for o in VoiceCatalog.options() {
+            let i = item(o.label, #selector(pickVoice(_:)), "")
+            i.representedObject = o.id
+            i.state = current == o.id ? .on : .off
+            m.addItem(i)
+        }
+        m.addItem(.separator())
+        for (title, rate) in [("Slower", 0.9), ("Normal Speed", 1.05), ("Faster", 1.2)] {
+            let i = item(title, #selector(pickRate(_:)), "")
+            i.representedObject = rate
+            i.state = abs(v.settings.rate - rate) < 0.01 ? .on : .off
+            m.addItem(i)
+        }
+        return m
+    }
+
+    @objc private func toggleMute() { model.voice.toggleMute() }
+
+    @objc private func stopSpeaking() { model.voice.stop() }
+
+    @objc private func pickVoice(_ sender: NSMenuItem) {
+        let id = sender.representedObject as? String
+        model.voice.update { $0.voiceIdentifier = id }
+    }
+
+    @objc private func pickRate(_ sender: NSMenuItem) {
+        guard let rate = sender.representedObject as? Double else { return }
+        model.voice.update { $0.rate = rate }
     }
 
     private func connectionText(_ c: Connection) -> String {
