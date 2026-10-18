@@ -16,6 +16,9 @@ speech). Conversation rows are rebuilt from the runtime on every connection.
 Stark reads his new replies aloud while he is on the phone: mute, stop, and replay sit in
 the toolbar and beside each bubble, and Settings picks the voice. Design, rules, and the
 physical checklist: [architecture/stark-voice-output.md](../../architecture/stark-voice-output.md).
+Accepted by hand on 2026-10-18 for the recorded scenarios only: parts of checklist steps
+2, 3, and 9 were not established, and one silent StarkMac relaunch stays open; see the
+acceptance record in that document.
 
 ## Build and test
 
@@ -62,7 +65,8 @@ A physical iPhone has passed the Phase 3.3 cellular acceptance by hand; see Over
 with Tailscale. It has also passed the Phase 4.1 live inference acceptance by hand; see
 Live inference (Phase 4.1). It has also passed the Phase 4.2 saved memory acceptance by
 hand; see Saved memory (Phase 4.2). It has also passed the Phase 4.3A persona acceptance
-by hand; see Persona (Phase 4.3A). The LAN checklist below has still not run end to end on a
+by hand; see Persona (Phase 4.3A). It has also passed the Phase 4.3B voice output
+acceptance by hand; see Voice output (Phase 4.3B). The LAN checklist below has still not run end to end on a
 device. The
 checklist uses its own database, never `~/.gameshark/runtime.db` or the simulator's
 `~/.gameshark/demo`. Run the Mac commands from `prototype/`.
@@ -372,3 +376,18 @@ technical precision. Asked what it remembered, Stark cited earlier network switc
 draft recovery testing, which the conversation history holds; this does not show saved
 memory retrieval. SQLite recorded `stark/1` on the five most recent calls and on
 `call:stark:main:37` after a graceful restart.
+
+### Voice output (Phase 4.3B)
+
+#### Phase 4.3B acceptance: physical iPhone and StarkMac, 2026-10-18
+
+User observed by hand; not automated test results. The full record is in
+[architecture/stark-voice-output.md](../../architecture/stark-voice-output.md#phase-43b-acceptance-physical-iphone-and-starkmac-2026-10-18).
+Environment: `~/.gameshark/device-check/runtime.db` and a Qwen3 model on the Mac. Not
+recorded: the iOS version, the iPhone model, the build commit, and the daemon log.
+
+On the phone: Jack In moved speech to the iPhone while StarkMac stayed silent. Jack Out
+during speech stopped audio at once, and StarkMac did not read that reply. In the
+background Stark stayed silent, and on return no missed audio played. Force quitting and
+reopening Stark Pocket replayed no earlier reply. One StarkMac relaunch was silent until
+the voice was switched; that observation stays open.
