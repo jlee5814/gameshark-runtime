@@ -1,3 +1,4 @@
+import AVFoundation
 import Foundation
 import Testing
 @testable import StarkKit
@@ -457,6 +458,221 @@ func speaker(_ store: MemorySpeechStore = MemorySpeechStore())
     }
 }
 
+/// Collects diagnostic lines the way a device log would.
+final class LineLog: @unchecked Sendable {
+    private let lock = NSLock()
+    private var all: [String] = []
+
+    var lines: [String] { lock.withLock { all } }
+    var trace: Trace { { [self] line in lock.withLock { all.append(line) } } }
+}
+
+@MainActor
+func tracedSpeaker(_ store: MemorySpeechStore = MemorySpeechStore())
+    -> (SpeechCoordinator, FakeSpeechEngine, LineLog) {
+    let engine = FakeSpeechEngine()
+    let log = LineLog()
+    return (SpeechCoordinator(engine: engine, store: store, trace: log.trace), engine, log)
+}
+
+/// Diagnostics explain silence without changing what Stark says or ever logging it.
+@MainActor @Suite struct SpeechDiagnosticsTests {
+    @Test func aSpokenReplyLogsArmSpeakAndFinishInOrder() {
+        let (voice, engine, log) = tracedSpeaker()
+        let feed = Feed(rows: history(2))
+        voice.observe(feed.next())
+        voice.observe(feed.reply("Hey there"))
+        engine.finish()
+        #expect(log.lines == [
+            "ready muted=false voice=default",
+            "armed agent=uuid-1 surface=mac gen=1 handled=2",
+            "speak seq=3 tok=1 origin=auto chars=9",
+            "finished seq=3 tok=1",
+        ])
+    }
+
+    @Test func aRejectedReplayLogsWhy() {
+        let (voice, _, log) = tracedSpeaker()
+        let feed = Feed(holder: "ios", rows: history(2))
+        voice.observe(feed.next())
+        voice.replay(seq: 2)
+        #expect(log.lines.suffix(2) == ["disarmed reason=ghost",
+                                        "replay rejected seq=2 reason=ghost"])
+        voice.observe(feed.next { $0.presence = PresenceInfo(surface: "mac", home: "mac",
+                                                             generation: 2) })
+        voice.replay(seq: 99)
+        #expect(log.lines.last == "replay rejected seq=99 reason=unknown_row")
+    }
+
+    @Test func aMutedReplyLogsTheSkip() {
+        let (voice, engine, log) = tracedSpeaker()
+        let feed = Feed()
+        voice.observe(feed.next())
+        voice.setMuted(true)
+        voice.observe(feed.reply("quiet"))
+        #expect(engine.spoken.isEmpty)
+        #expect(log.lines.suffix(2) == ["muted on", "skip seq=1 reason=muted"])
+    }
+
+    @Test func steadyStatesLogTheGateOnce() {
+        let (voice, _, log) = tracedSpeaker()
+        let feed = Feed()
+        for _ in 0..<20 { voice.observe(feed.next()) }
+        #expect(log.lines.filter { $0.hasPrefix("armed") }.count == 1)
+        #expect(log.lines.count == 2)
+    }
+
+    @Test func stopsNameTheirCauseAndWhatWasPlaying() {
+        let (voice, engine, log) = tracedSpeaker()
+        let feed = Feed()
+        voice.observe(feed.next())
+        voice.observe(feed.reply("one"))
+        voice.stop()
+        voice.stop()
+        voice.observe(feed.reply("two"))
+        voice.userSent()
+        voice.observe(feed.reply("three"))
+        engine.interrupt()
+        voice.interrupted()
+        #expect(log.lines.filter { $0.hasPrefix("stop") } == [
+            "stop by=user seq=1 tok=1", "stop by=user idle", "stop by=send seq=2 tok=2",
+            "stop by=audio seq=3 tok=3", "stop by=system idle",
+        ])
+    }
+
+    @Test func handoffAndSuspensionLogTheGate() {
+        let (voice, _, log) = tracedSpeaker()
+        let feed = Feed()
+        voice.observe(feed.next())
+        voice.observe(feed.next { $0.handoff = HandoffInfo(id: "h1", from: "mac", to: "ios",
+                                                           state: "preparing", fromGen: 1,
+                                                           toGen: nil) })
+        voice.observe(feed.next { $0.handoff = nil })
+        voice.setSuspended(true)
+        voice.setSuspended(true)
+        #expect(Array(log.lines.dropFirst(2)) == [
+            "disarmed reason=handoff",
+            "armed agent=uuid-1 surface=mac gen=1 handled=0",
+            "suspended on",
+            "disarmed reason=suspended",
+        ])
+    }
+
+    @Test func aStaleFinishIsLoggedAndChangesNothing() {
+        let (voice, engine, log) = tracedSpeaker()
+        let feed = Feed()
+        voice.observe(feed.next())
+        voice.observe(feed.reply("one"))
+        let first = engine.playing!
+        voice.observe(feed.reply("two"))
+        engine.onFinish?(first)
+        #expect(voice.speakingSeq == 2)
+        #expect(log.lines.last == "finish stale seq=1 tok=1")
+    }
+
+    @Test func noLineEverCarriesTheText() {
+        let secret = "Zebra launch code 7741 for Jae"
+        let (voice, engine, log) = tracedSpeaker()
+        let feed = Feed(rows: [Row(seq: 1, role: "user", content: secret)])
+        voice.observe(feed.next())
+        voice.observe(feed.add("user", secret))
+        voice.observe(feed.reply(secret))
+        voice.replay(seq: 3)
+        voice.stop()
+        voice.setMuted(true)
+        voice.observe(feed.reply(secret))
+        voice.setMuted(false)
+        voice.replay(seq: 4)
+        engine.interrupt()
+        voice.observe(feed.next { $0.handoff = HandoffInfo(id: "h", from: "mac", to: "ios",
+                                                           state: "preparing", fromGen: 1,
+                                                           toGen: nil) })
+        #expect(engine.seqs == [3, 3, 4])
+        #expect(!log.lines.isEmpty)
+        for word in secret.split(separator: " ") where word.count > 3 {
+            #expect(!log.lines.contains { $0.contains(word) }, "leaked \(word)")
+        }
+    }
+
+    @Test func tracingChangesNothingStarkSays() {
+        func run(_ trace: Trace?) -> ([Utterance], Int, Int?) {
+            let store = MemorySpeechStore()
+            let engine = FakeSpeechEngine()
+            let voice = SpeechCoordinator(engine: engine, store: store, trace: trace)
+            let feed = Feed(rows: history(3))
+            voice.observe(feed.next())
+            voice.observe(feed.reply("a"))
+            voice.replay(seq: 2)
+            voice.setMuted(true)
+            voice.observe(feed.reply("b"))
+            voice.setMuted(false)
+            voice.observe(feed.add("user", "c"))
+            voice.observe(feed.reply("d"))
+            engine.interrupt()
+            voice.setSuspended(true)
+            voice.observe(feed.reply("e"))
+            voice.setSuspended(false)
+            voice.observe(feed.next())
+            voice.observe(feed.reply("f"))
+            let key = SpeechLedger.key(agent: "uuid-1", conversation: Wire.conversation,
+                                       surface: "mac")
+            return (engine.spoken, engine.stops, store.integer(key))
+        }
+        let plain = run(nil)
+        let traced = run(LineLog().trace)
+        #expect(plain.0.map(\.id.seq) == traced.0.map(\.id.seq))
+        #expect(plain.0.map(\.text) == traced.0.map(\.text))
+        #expect(plain.1 == traced.1)
+        #expect(plain.2 == traced.2)
+    }
+
+    @Test func everyLineRendersStably() {
+        let id = Utterance.ID(conversation: "c", seq: 4, token: 2)
+        let cases: [(SpeechDiagnostic, String)] = [
+            (.ready(muted: true, voice: "com.apple.voice.Reed"),
+             "ready muted=true voice=com.apple.voice.Reed"),
+            (.catalog(defaultVoice: nil, offered: 0, installed: 3),
+             "catalog default=none offered=0 installed=3"),
+            (.armed(agent: "0123456789abcdef", surface: "ios", generation: 7, handled: -1),
+             "armed agent=01234567 surface=ios gen=7 handled=-1"),
+            (.disarmed(.noIdentity), "disarmed reason=no_identity"),
+            (.disarmed(.offline), "disarmed reason=offline"),
+            (.accepted(id, origin: .replay, chars: 12), "speak seq=4 tok=2 origin=replay chars=12"),
+            (.skippedMuted(seq: 4), "skip seq=4 reason=muted"),
+            (.rejected(seq: 4, .disarmed(.handoff)), "replay rejected seq=4 reason=handoff"),
+            (.stopped(.audio, playing: id), "stop by=audio seq=4 tok=2"),
+            (.suspended(false), "suspended off"),
+            (.muted(false), "muted off"),
+            (.finished(id), "finished seq=4 tok=2"),
+            (.staleFinish(id), "finish stale seq=4 tok=2"),
+            (.voice(id, requested: nil, resolved: "v.Reed", name: "Reed", quality: 1,
+                    how: .default),
+             "voice seq=4 tok=2 requested=default resolved=v.Reed name=Reed quality=1 how=default"),
+            (.voice(id, requested: "gone", resolved: nil, name: nil, quality: nil, how: .none),
+             "voice seq=4 tok=2 requested=gone resolved=none name=none quality=none how=none"),
+            (.synthStarted(id, ms: 40), "synth start seq=4 tok=2 ms=40"),
+            (.synthFinished(id, ms: 900, started: true), "synth finish seq=4 tok=2 ms=900 started=true"),
+            (.synthCancelled(id, ms: 3, started: false),
+             "synth cancel seq=4 tok=2 ms=3 started=false"),
+            (.noStart(id, afterMs: 3001, voice: "v.Reed"),
+             "synth no_start seq=4 tok=2 after_ms=3001 voice=v.Reed"),
+            (.session(.categoryFailed(code: -50)), "session category failed code=-50"),
+            (.session(.activated), "session activate ok"),
+            (.session(.activateFailed(code: 560557684)), "session activate failed code=560557684"),
+            (.session(.deactivated), "session deactivate ok"),
+            (.session(.deactivateFailed(code: 1)), "session deactivate failed code=1"),
+            (.session(.interruptionBegan), "session interruption began"),
+            (.session(.interruptionEnded), "session interruption ended"),
+            (.session(.route(reason: 2)), "session route reason=2"),
+            (.session(.mediaReset), "session media_reset"),
+            (.voicesChanged(installed: 180), "voices changed installed=180"),
+            (.lifecycle(.sleep), "system sleep"),
+            (.lifecycle(.wake), "system wake"),
+        ]
+        for (d, line) in cases { #expect(d.line == line) }
+    }
+}
+
 /// Speech is presentation: it holds no GatewayClient and must never add a request.
 @Suite(.serialized) struct SpeechWritesNothingTests {
     func client(_ rt: FakeRuntime) throws -> GatewayClient {
@@ -534,6 +750,18 @@ func speaker(_ store: MemorySpeechStore = MemorySpeechStore())
         let opts = [option("Kathy"), option("Samantha", q: 2)]
         #expect(VoiceCatalog.pickDefault(opts, language: "en-US")?.name == "Samantha")
         #expect(VoiceCatalog.pickDefault([], language: "en-US") == nil)
+    }
+
+    @MainActor @Test func resolvingAVoiceMatchesWhatIsSpokenAndSaysHow() {
+        let bogus = VoiceCatalog.resolve("dev.gameshark.no.such.voice")
+        #expect(bogus.1 != .requested)
+        #expect(bogus.0?.identifier == VoiceCatalog.voice("dev.gameshark.no.such.voice")?.identifier)
+        #expect(VoiceCatalog.resolve(nil).1 != .requested)
+        if let installed = AVSpeechSynthesisVoice.speechVoices().first {
+            let r = VoiceCatalog.resolve(installed.identifier)
+            #expect(r.1 == .requested)
+            #expect(r.0?.identifier == installed.identifier)
+        }
     }
 
     @Test func elderAndNoveltyNamesAreNeverTheDefault() {

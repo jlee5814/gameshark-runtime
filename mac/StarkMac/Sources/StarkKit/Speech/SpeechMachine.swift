@@ -38,6 +38,12 @@ public struct SpeechMachine: Sendable {
         case finished(Utterance.ID)
     }
 
+    /// Why a reply that could have been spoken was not; read only by diagnostics.
+    public enum Decision: Equatable, Sendable {
+        case skippedMuted(seq: Int)
+        case replayRejected(seq: Int, SpeechDiagnostic.Rejection)
+    }
+
     public enum Effect: Equatable, Sendable {
         case persist(key: String, seq: Int)
         case stopEngine
@@ -52,6 +58,8 @@ public struct SpeechMachine: Sendable {
     /// The ledger key of the identity last seen, and its watermark.
     public private(set) var ledgerKey: String?
     public private(set) var handled = -1
+    /// Set by the last step when it declined to speak; effects never depend on it.
+    public private(set) var lastDecision: Decision?
     private var lastRevision = Int.min
     private var assistantRows: [Int: String] = [:]
     private var token = 0
@@ -65,6 +73,7 @@ public struct SpeechMachine: Sendable {
 
     /// Apply one event; `load` reads a persisted watermark when the identity changes.
     public mutating func step(_ e: Event, load: (String) -> Int?) -> [Effect] {
+        lastDecision = nil
         switch e {
         case .state(let s):
             return observe(s, load: load)
@@ -75,7 +84,14 @@ public struct SpeechMachine: Sendable {
             suspended = hidden
             return hidden ? disarm(.suspended) : []
         case .replay(let seq):
-            guard isArmed, let text = assistantRows[seq] else { return [] }
+            guard isArmed, let text = assistantRows[seq] else {
+                if case .disarmed(let why) = gate {
+                    lastDecision = .replayRejected(seq: seq, .disarmed(why))
+                } else {
+                    lastDecision = .replayRejected(seq: seq, .unknownRow)
+                }
+                return []
+            }
             return silence() + say(seq, text)
         case .stop, .interrupted:
             return silence()
@@ -117,6 +133,8 @@ public struct SpeechMachine: Sendable {
         if fresh.contains(where: { $0.role == "user" }) { fx += silence() }
         if !muted, newest.role == "assistant" {
             fx += silence() + say(newest.seq, newest.content)
+        } else if newest.role == "assistant" {
+            lastDecision = .skippedMuted(seq: newest.seq)
         }
         return fx
     }
