@@ -235,7 +235,7 @@ iPhone; see [stark-memory.md](stark-memory.md#phase-42-acceptance-physical-iphon
 The Phase 4.3A persona acceptance passed by hand on StarkMac and a physical iPhone; see
 [stark-persona.md](stark-persona.md#phase-43a-acceptance-physical-iphone-and-starkmac-2026-10-18).
 The Phase 4.3B voice output acceptance passed by hand on StarkMac and a physical iPhone
-for the recorded scenarios only (checklist step 9 not established), with one silent
+for the recorded scenarios only (parts of steps 2, 3, and 9 not established), with one silent
 StarkMac relaunch still open; see
 [stark-voice-output.md](stark-voice-output.md#phase-43b-acceptance-physical-iphone-and-starkmac-2026-10-18).
 

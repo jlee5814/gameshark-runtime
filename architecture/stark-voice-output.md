@@ -265,6 +265,10 @@ Observed (checklist step in brackets; 9 goes beyond the checklist):
 11. StarkMac relaunch preserved the conversation and read no earlier reply; a later fresh
     reply was spoken exactly once. [8]
 
+Not established by this record: the second replay stopped with the dedicated stop
+button [2]; Jack In stopping StarkMac while it was already speaking [3]; message growth by
+only the sent turns [9].
+
 Database, run against `~/.gameshark/device-check/runtime.db` [9]: `PRAGMA quick_check`
 returned `ok`; 55 messages; 0 active memories. Zero active memories is valid for this
 database. These counts do not by themselves establish saved memory retention, and the
