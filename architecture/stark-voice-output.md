@@ -104,6 +104,7 @@ Stark's. An identity change stops speech and loads the new identity's mark.
 | state: older revision than one seen | ignored |
 | mute | stop; later rows are handled silently |
 | replay(seq) | only while armed: stop, speak that row once; watermark unchanged |
+| suspend (Stark Pocket leaves the foreground) | disarm; stop; rows that land before return stay unspoken |
 | stop (Stop button, avatar tap, user sends) | stop |
 | interrupted (audio session, route loss, sleep) | stop; never resumes |
 | finished(id) | clears speaking only when id is the current utterance |
@@ -130,8 +131,8 @@ action on both surfaces.
   Stark speaks, released with `.notifyOthersOnDeactivation`. An interruption that begins
   (a call, Siri, an alarm), a route change for `.oldDeviceUnavailable` (headphones
   unplugged), or a media services reset stops speech; nothing resumes.
-- Stark Pocket stops speech when the app leaves the foreground; there is no background
-  audio mode.
+- Stark Pocket suspends speech when the app leaves the foreground, including the up to 3 s
+  a pending send keeps the connection open; there is no background audio mode.
 - StarkMac stops speech when the Mac goes to sleep.
 - Jack In and Jack Out stop speech on the surface that starts the jack at once, and on
   every surface when the runtime reports the jack open.
@@ -186,7 +187,8 @@ no request.
 
 `ios/StarkPocket/Tests/StarkPocketTests.swift`, `PocketVoiceTests`: new reply spoken once
 with silent history, silence on a read only phone, sending stops speech, Jack Out stops
-speech, leaving the foreground stops speech, replay and mute, and no client call from
+speech, leaving the foreground stops speech, a reply during the background send grace stays
+silent, replay and mute, and no client call from
 speech.
 
 ## Physical acceptance checklist (pending)
