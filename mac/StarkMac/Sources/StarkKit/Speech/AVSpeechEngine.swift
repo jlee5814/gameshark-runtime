@@ -159,8 +159,10 @@ public final class AVSpeechEngine: NSObject, SpeechEngine {
                                         object: s, queue: .main) { [weak self] note in
             let raw = note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt
             let type = raw.flatMap(AVAudioSession.InterruptionType.init)
-            MainActor.assumeIsolated {
-                self?.log(.session(type == .began ? .interruptionBegan : .interruptionEnded))
+            if let type {
+                MainActor.assumeIsolated {
+                    self?.log(.session(type == .began ? .interruptionBegan : .interruptionEnded))
+                }
             }
             guard type == .began else { return }
             MainActor.assumeIsolated { self?.lost() }
