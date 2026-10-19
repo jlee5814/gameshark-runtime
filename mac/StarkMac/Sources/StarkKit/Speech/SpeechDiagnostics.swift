@@ -135,9 +135,12 @@ public enum SpeechDiagnostic: Equatable, Sendable {
         case .askedPermission: "permission asked"
         case .permission(let a): "permission result=\(a.name)"
         case .started(let n): "start session=\(n)"
+        case .released(let n): "release session=\(n)"
         case .captured(let n, let chars): "end session=\(n) chars=\(chars)"
         case .timedOut(let n, let chars): "end session=\(n) chars=\(chars) timed_out=true"
         case .discarded(let why, let chars): "discard reason=\(why.rawValue) chars=\(chars)"
+        case .failed(let chars, let domain, let code):
+            "discard reason=failed chars=\(chars) domain=\(domain) code=\(code)"
         case .sent(let chars): "send chars=\(chars)"
         case .inserted(let chars): "insert chars=\(chars)"
         }

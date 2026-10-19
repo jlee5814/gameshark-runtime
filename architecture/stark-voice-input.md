@@ -74,13 +74,21 @@ in any phase. During Jack In or Jack Out the button is disabled.
 | idle | ready: hold Stark, start session n. needs permission: prompt. | none | ignored | none |
 | requesting | rejected (busy) | none | ignored | answer: back to idle, nothing starts |
 | capturing(n) | rejected (busy) | finish audio, finishing(n) | session n updates the draft; final goes to review | cancel, interruption, failure, presence change |
-| finishing(n) | rejected (busy) | none | session n final goes to review | 3 s timeout keeps the partial text |
+| finishing(n) | rejected (busy) | none | session n final or recognizer error goes to review | 3 s timeout keeps the partial text |
 | reviewing | another take, appended | none | ignored | Send, Insert, Discard, presence change, background |
 
 Every result carries its session number. A partial or final from a cancelled or older
 session is dropped twice: `SFSpeechInput` forgets the session on cancel, and the machine
-applies an event only for its current session and phase. A recognizer failure or an
-interruption discards what was heard; an empty result leaves nothing to review.
+applies an event only for its current session and phase. While held, a recognizer
+failure or an interruption discards what was heard. After release the audio has ended, so
+a recognizer error (no speech, an ended request) closes the take like a final: what was
+heard waits for review, and nothing heard reads as empty. An empty result leaves nothing
+to review.
+
+Views read `CaptureCoordinator.panel` and `isListening`, both derived from the published
+`phase`, never from the machine the coordinator keeps out of observation. A final that
+repeats the last partial changes no text, so a view tracking only the draft would stay on
+Listening; the published phase moves it to review.
 
 Send submits the trimmed text through `submit`; the draft clears only when the surface
 accepted it, and a second tap finds nothing to send. A spoken `/remember` behaves exactly
@@ -118,12 +126,15 @@ composer and its Stop Listening action, also ends an open microphone.
 | Line | When |
 |---|---|
 | `capture start session=` | the microphone opens |
+| `capture release session=` | the hold ended; the final transcript is on its way |
 | `capture rejected reason=` | `not_present`, `busy`, or an availability such as `denied` or `unavailable_no_on_device` |
 | `capture permission asked`, `capture permission result=` | the first press prompt and its answer |
 | `capture end session= chars= [timed_out=true]` | a transcript is ready for review |
 | `capture discard reason= chars=` | why a draft went away |
+| `capture discard reason=failed chars= domain= code=` | the recognizer or microphone failed while held; the NSError domain and code |
+| `capture input error session= domain= code= [stale=true]` | every recognizer error as reported, including one for a session already ended |
 | `capture send chars=`, `capture insert chars=` | the explicit choices |
-| `capture input failed code=` | the microphone or recognizer could not start; the capture is discarded |
+| `capture input failed domain= code=` | the microphone or recognizer could not start; the capture is discarded |
 | `capture input rebuilt after media reset` | iOS reset its media services; the engine and recognizer were recreated |
 | `listening on`, `listening off`, `disarmed reason=listening` | Stark's voice hold |
 
@@ -161,7 +172,8 @@ composer and its Stop Listening action, also ends an open microphone.
   - A generation change discards a reviewed draft.
   - A ghost cannot listen.
   - A disconnect discards during recognition and review.
-  - Interruption and failure discard.
+  - Interruption and failure discard while held; an error after release keeps what was heard.
+  - The panel leaves Listening for review under observation when the final repeats the last partial, when a final arrives while held, and after a finish timeout; Escape leaves it at once; late or older session callbacks never open review.
   - A stale state never discards.
 - **Send and insert:** Send submits exactly once; a refused submit keeps the draft; nothing submits while listening; Insert hands over the text once.
 - **Speech:** the engine stops before the microphone starts; a reply during capture is never spoken and nothing resumes; replay returns at once; a discarded capture releases the voice.
@@ -211,7 +223,10 @@ commit.
    microphone and speech recognition access. Allow both. Confirm nothing is recording
    (no orange microphone indicator in the menu bar) until you press again.
 2. **Dictate and review, Mac.** Hold, say a sentence, release. The text appears in the
-   voice draft, editable. Confirm nothing was sent (no new user row, no reply).
+   voice draft, editable, and the microphone glyph is no longer red. Repeat five times
+   with short phrases; every release reaches the editable draft. Confirm nothing was sent
+   (no new user row, no reply). A brief tap without speech shows "Stark didn't catch
+   that." and logs `capture release` before the discard.
 3. **Edit and Send, Mac.** Change a word and press Send. Exactly one user row with the
    edited text appears, and Stark replies.
 4. **Insert, Mac.** Dictate, press Insert into Composer. The text lands in the composer;

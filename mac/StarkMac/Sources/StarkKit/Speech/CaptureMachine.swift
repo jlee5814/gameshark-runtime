@@ -17,6 +17,19 @@ public struct CaptureMachine: Sendable {
         case finishing(Int)
         /// The transcript is in the voice draft for the user to edit, send, or discard.
         case reviewing
+
+        /// Audio is flowing from the microphone; false once released, while the final
+        /// transcript is still on its way.
+        public var isMicrophoneOpen: Bool {
+            if case .capturing = self { true } else { false }
+        }
+
+        public var isListening: Bool {
+            switch self {
+            case .capturing, .finishing: true
+            default: false
+            }
+        }
     }
 
     /// Why a voice draft was thrown away.
@@ -73,9 +86,13 @@ public struct CaptureMachine: Sendable {
         case askedPermission
         case permission(InputAvailability)
         case started(Int)
+        /// The hold ended; the final transcript is on its way.
+        case released(Int)
         case captured(Int, chars: Int)
         case timedOut(Int, chars: Int)
         case discarded(Reason, chars: Int)
+        /// The recognizer or the microphone failed while held. Domain and code only.
+        case failed(chars: Int, domain: String, code: Int)
         case sent(chars: Int)
         case inserted(chars: Int)
     }
@@ -101,18 +118,9 @@ public struct CaptureMachine: Sendable {
 
     public var isPresent: Bool { key != nil }
 
-    /// Audio is flowing from the microphone; false once released, while the final
-    /// transcript is still on its way.
-    public var isMicrophoneOpen: Bool {
-        if case .capturing = phase { true } else { false }
-    }
+    public var isMicrophoneOpen: Bool { phase.isMicrophoneOpen }
 
-    public var isListening: Bool {
-        switch phase {
-        case .capturing, .finishing: true
-        default: false
-        }
-    }
+    public var isListening: Bool { phase.isListening }
 
     public mutating func step(_ e: Event) -> [Effect] {
         lastDecision = nil
@@ -134,6 +142,7 @@ public struct CaptureMachine: Sendable {
         case .release:
             guard case .capturing(let n) = phase else { return [] }
             phase = .finishing(n)
+            lastDecision = .released(n)
             return [.finishRecognizer(n)]
         case .input(let n, let event):
             return input(n, event)
@@ -198,8 +207,14 @@ public struct CaptureMachine: Sendable {
         case .final(let text):
             draft = prefix + text
             return end(n, timedOut: false)
-        case .failed:
-            return discard(.failed)
+        case .failed(let domain, let code):
+            // After release the audio has ended: an error then (no speech, an ended
+            // request) closes the take like a final, so what was heard stays for review.
+            if phase == .finishing(n) { return end(n, timedOut: false) }
+            let chars = draft.count
+            let fx = discard(.failed)
+            lastDecision = .failed(chars: chars, domain: domain, code: code)
+            return fx
         case .interrupted:
             return discard(.interrupted)
         }

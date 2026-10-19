@@ -1,4 +1,5 @@
 import Foundation
+import Observation
 import Testing
 @testable import StarkKit
 
@@ -125,6 +126,23 @@ final class Rig {
         capture.release()
         input.hear(.final(text))
     }
+}
+
+/// Whether a SwiftUI view reading `read` would rerender when `change` runs: the view
+/// tracks only what it reads through observation, not what tests read imperatively.
+@MainActor
+func rerenders(reading read: () -> Void, after change: () -> Void) -> Bool {
+    let fired = Fired()
+    withObservationTracking(read, onChange: { fired.set() })
+    change()
+    return fired.value
+}
+
+final class Fired: @unchecked Sendable {
+    private let lock = NSLock()
+    private var on = false
+    var value: Bool { lock.withLock { on } }
+    func set() { lock.withLock { on = true } }
 }
 
 @MainActor @Suite struct CaptureTests {
@@ -264,6 +282,97 @@ final class Rig {
         #expect(m.step(.finishTimeout(1)) == [])
     }
 
+    // MARK: what the view shows
+
+    /// The physical failure: the final equals the last partial, so the draft text never
+    /// changes, and the view must still leave Listening for the editable voice draft.
+    @Test func releaseWithAnUnchangedFinalLeavesListeningForReview() {
+        let rig = Rig()
+        let c = rig.capture
+        c.press()
+        rig.input.hear(.partial("Testing microphone release"))
+        c.release()
+        #expect(c.panel == .listening)
+        #expect(rerenders(reading: { _ = c.isListening }) {
+            rig.input.hear(.final("Testing microphone release"))
+        })
+        #expect(c.panel == .reviewing && !c.isListening)
+        #expect(c.draft == "Testing microphone release")
+        #expect(rig.surface.submitted.isEmpty)
+    }
+
+    @Test func theVoiceDraftPanelFollowsEveryEndOfCapture() {
+        let rig = Rig()
+        let c = rig.capture
+        c.press()
+        rig.input.hear(.partial("held words"))
+        // A final while still held, with the same text as the partial.
+        #expect(rerenders(reading: { _ = c.panel }) { rig.input.hear(.final("held words")) })
+        #expect(c.panel == .reviewing)
+        // The press transition, from review into another take.
+        #expect(rerenders(reading: { _ = c.panel }) { c.press() })
+        #expect(c.panel == .listening)
+        rig.input.hear(.partial("again"))
+        c.release()
+        // A recognizer error after release closes the take and keeps what was heard.
+        #expect(rerenders(reading: { _ = c.panel; _ = c.isListening }) {
+            rig.input.hear(.failed(domain: "kAFAssistantErrorDomain", code: 1110))
+        })
+        #expect(c.panel == .reviewing && c.draft == "held words again")
+    }
+
+    @Test func escapeLeavesListeningAtOnceAndLateCallbacksNeverOpenReview() {
+        let rig = Rig()
+        let c = rig.capture
+        c.press()
+        rig.input.hear(.partial("never mind"))
+        #expect(rerenders(reading: { _ = c.panel; _ = c.isListening }) { c.cancel(.escape) })
+        #expect(c.panel == .none && !c.isListening)
+        rig.input.hear(.final("never mind"))
+        rig.input.hear(.failed(domain: "kAFAssistantErrorDomain", code: 216))
+        #expect(c.panel == .none && c.draft.isEmpty)
+    }
+
+    @Test func anOlderSessionsFinalNeverEndsTheNewTake() {
+        let rig = Rig()
+        let c = rig.capture
+        c.press()
+        c.release()
+        c.cancel()
+        c.press()
+        rig.input.hear(.final("old take"), session: 1)
+        #expect(c.panel == .listening && c.phase == .capturing(2) && c.draft.isEmpty)
+        rig.input.hear(.partial("new take"))
+        c.release()
+        rig.input.hear(.final("new take"))
+        #expect(c.panel == .reviewing && c.draft == "new take")
+    }
+
+    @Test func aFinishTimeoutAlsoOpensReview() {
+        var m = CaptureMachine()
+        _ = m.step(.state(Feed().next()))
+        _ = m.step(.press(.ready))
+        _ = m.step(.input(1, .partial("still finalizing")))
+        _ = m.step(.release)
+        #expect(m.lastDecision == .released(1))
+        #expect(m.isListening)
+        _ = m.step(.finishTimeout(1))
+        #expect(m.phase == .reviewing && !m.isListening)
+        // The late final after the timeout changes nothing.
+        #expect(m.step(.input(1, .final("still finalizing."))) == [])
+        #expect(m.draft == "still finalizing")
+    }
+
+    @Test func anErrorAfterReleaseWithNothingHeardIsEmptyNotFailed() {
+        let rig = Rig()
+        rig.capture.press()
+        rig.capture.release()
+        rig.input.hear(.failed(domain: "kAFAssistantErrorDomain", code: 1110))
+        #expect(rig.capture.panel == .note("Stark didn't catch that."))
+        #expect(rig.lines.lines.suffix(2) == ["capture release session=1",
+                                              "capture discard reason=empty chars=0"])
+    }
+
     // MARK: discarding
 
     @Test func cancelAndEscapeDiscardAndLateCallbacksChangeNothing() {
@@ -376,7 +485,7 @@ final class Rig {
     }
 
     @Test func anInterruptionOrRecognizerFailureDiscards() {
-        for event in [InputEvent.interrupted, .failed(code: 1110)] {
+        for event in [InputEvent.interrupted, .failed(domain: "kLSRErrorDomain", code: 201)] {
             let rig = Rig()
             rig.capture.press()
             rig.input.hear(.partial("words"))
@@ -384,6 +493,15 @@ final class Rig {
             #expect(rig.capture.phase == .idle && rig.capture.draft.isEmpty)
             #expect(rig.input.cancels == 1)
         }
+    }
+
+    @Test func aFailureWhileHeldLogsItsDomainAndCode() {
+        let rig = Rig()
+        rig.capture.press()
+        rig.input.hear(.failed(domain: "kAFAssistantErrorDomain", code: 1101))
+        #expect(rig.lines.lines.contains(
+            "capture discard reason=failed chars=0 domain=kAFAssistantErrorDomain code=1101"))
+        #expect(rig.capture.notice == "Stark didn't catch that.")
     }
 
     @Test func aResetForgetsWhoHeldStarkUntilTheNextState() {
@@ -537,6 +655,9 @@ final class Rig {
             (.capture(.askedPermission), "capture permission asked"),
             (.capture(.permission(.denied)), "capture permission result=denied"),
             (.capture(.started(3)), "capture start session=3"),
+            (.capture(.released(3)), "capture release session=3"),
+            (.capture(.failed(chars: 0, domain: "kAFAssistantErrorDomain", code: 1110)),
+             "capture discard reason=failed chars=0 domain=kAFAssistantErrorDomain code=1110"),
             (.capture(.captured(3, chars: 12)), "capture end session=3 chars=12"),
             (.capture(.timedOut(3, chars: 5)), "capture end session=3 chars=5 timed_out=true"),
             (.capture(.discarded(.chatClosed, chars: 4)), "capture discard reason=chat_closed chars=4"),

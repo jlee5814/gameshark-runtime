@@ -56,7 +56,8 @@ public enum InputAvailability: Equatable, Sendable {
 public enum InputEvent: Equatable, Sendable {
     case partial(String)
     case final(String)
-    case failed(code: Int)
+    /// `domain` and `code` come from the NSError; never any text.
+    case failed(domain: String, code: Int)
     /// The system took the microphone or the audio route away.
     case interrupted
 }

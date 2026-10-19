@@ -1,3 +1,4 @@
+import Observation
 import StarkKit
 import XCTest
 @testable import StarkPocket
@@ -702,6 +703,11 @@ final class PocketVoiceTests: PocketHarness {
 }
 
 
+/// Set when an observed property changes; the change handler may run off the main actor.
+final class ObservedChange: @unchecked Sendable {
+    var on = false
+}
+
 /// A recognizer the test speaks through; never touches the microphone.
 @MainActor
 final class ScriptedInput: SpeechInput {
@@ -768,6 +774,24 @@ final class PocketVoiceInputTests: PocketHarness {
         input.hear(.final("What is on my list?"))
         model.listen.edit("What is on my list today?")
         XCTAssertEqual(model.listen.phase, .reviewing)
+        assertNothingSent(c)
+    }
+
+    /// A final equal to the last partial changes no text; the card must still leave
+    /// Listening for the editable draft, which a view sees only through observation.
+    func testReleaseShowsTheVoiceDraftWhenTheFinalMatchesThePartial() async throws {
+        let (model, c) = try listening()
+        await settle { model.listen.isPresent }
+        model.listen.press()
+        input.hear(.partial("Testing microphone release"))
+        model.listen.release()
+        XCTAssertEqual(model.listen.panel, .listening)
+        let fired = ObservedChange()
+        withObservationTracking { _ = model.listen.isListening } onChange: { fired.on = true }
+        input.hear(.final("Testing microphone release"))
+        XCTAssertTrue(fired.on)
+        XCTAssertEqual(model.listen.panel, .reviewing)
+        XCTAssertEqual(model.listen.draft, "Testing microphone release")
         assertNothingSent(c)
     }
 

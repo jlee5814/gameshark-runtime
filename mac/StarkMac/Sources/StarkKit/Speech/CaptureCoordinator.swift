@@ -38,7 +38,31 @@ public final class CaptureCoordinator {
         input.availabilityChanged = { [weak self] in self?.refresh() }
     }
 
-    public var isListening: Bool { machine.isListening }
+    /// Read from the published phase, never from the ignored machine, so a view that
+    /// reads it rerenders when listening ends even if the draft text did not change.
+    public var isListening: Bool { phase.isListening }
+
+    /// What the voice draft area shows.
+    public enum Panel: Equatable, Sendable {
+        case none
+        /// Live transcript while held or finalizing.
+        case listening
+        /// The editable voice draft.
+        case reviewing
+        /// A permission prompt is up.
+        case requesting
+        /// Why push to talk did nothing, or is off.
+        case note(String)
+    }
+
+    /// Derived only from published properties, so SwiftUI tracks every change to it.
+    public var panel: Panel {
+        if phase.isListening { return .listening }
+        if phase == .reviewing { return .reviewing }
+        if phase == .requesting { return .requesting }
+        if let note = notice ?? (isPresent ? availability.explanation : nil) { return .note(note) }
+        return .none
+    }
 
     /// Whether a press would start listening now; the control stays pressable whenever
     /// Stark is here, so a press can read access again after a change in Settings.
@@ -137,7 +161,7 @@ public final class CaptureCoordinator {
         case .permission(let a): a.explanation
         case .discarded(.presence, _): "Voice draft discarded: Stark moved or the link dropped."
         case .discarded(.interrupted, _): "Voice draft discarded: the microphone was interrupted."
-        case .discarded(.failed, _): "Stark didn't catch that."
+        case .discarded(.failed, _), .failed: "Stark didn't catch that."
         case .discarded(.empty, _): "Stark didn't catch that."
         case .discarded(.background, _), .discarded(.sleep, _), .discarded(.inactive, _):
             "Voice draft discarded when the app left the screen."

@@ -98,7 +98,8 @@ public final class SFSpeechInput: NSObject, SpeechInput {
             try engine.start()
         } catch {
             teardown()
-            fail(session, (error as NSError).code, events)
+            let e = error as NSError
+            fail(session, e.code, domain: e.domain, events)
             return
         }
         self.request = request
@@ -110,10 +111,10 @@ public final class SFSpeechInput: NSObject, SpeechInput {
 
     /// A start that could not open the microphone reports after the caller's step ends,
     /// as a recognizer would, never from inside it.
-    private func fail(_ session: Int, _ code: Int,
+    private func fail(_ session: Int, _ code: Int, domain: String = "stark",
                       _ events: @escaping @MainActor (Int, InputEvent) -> Void) {
-        trace?("capture input failed code=\(code)")
-        Task { @MainActor in events(session, .failed(code: code)) }
+        trace?("capture input failed domain=\(domain) code=\(code)")
+        Task { @MainActor in events(session, .failed(domain: domain, code: code)) }
     }
 
     public func finish() {
@@ -131,7 +132,13 @@ public final class SFSpeechInput: NSObject, SpeechInput {
     private var deliver: @Sendable (Int, InputEvent) -> Void {
         { [weak self] n, event in
             Task { @MainActor in
-                guard let self, self.active == n, let sink = self.sink else { return }
+                guard let self else { return }
+                let current = self.active == n && self.sink != nil
+                if case .failed(let domain, let code) = event {
+                    self.trace?("capture input error session=\(n) domain=\(domain) code=\(code)"
+                                + (current ? "" : " stale=true"))
+                }
+                guard current, let sink = self.sink else { return }
                 if case .final = event { self.active = nil }
                 sink(n, event)
             }
@@ -226,7 +233,8 @@ public final class SFSpeechInput: NSObject, SpeechInput {
                 let text = result.bestTranscription.formattedString
                 deliver(n, result.isFinal ? .final(text) : .partial(text))
             } else if let error {
-                deliver(n, .failed(code: (error as NSError).code))
+                let e = error as NSError
+                deliver(n, .failed(domain: e.domain, code: e.code))
             }
         }
     }

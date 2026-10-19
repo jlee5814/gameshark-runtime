@@ -182,7 +182,8 @@ struct VoiceDraftCard: View {
     var body: some View {
         let text = Binding(get: { listen.draft }, set: { listen.edit($0) })
         Group {
-            if listen.isListening {
+            switch listen.panel {
+            case .listening:
                 VStack(alignment: .leading, spacing: 4) {
                     Label("Listening. Release to review, Escape to cancel.", systemImage: "waveform")
                         .font(.caption).foregroundStyle(.secondary)
@@ -191,7 +192,7 @@ struct VoiceDraftCard: View {
                         .foregroundStyle(listen.draft.isEmpty ? .secondary : .primary)
                 }
                 .card()
-            } else if listen.phase == .reviewing {
+            case .reviewing:
                 VStack(alignment: .leading, spacing: 6) {
                     Label("Voice draft: edit, then send or insert", systemImage: "mic")
                         .font(.caption).foregroundStyle(.secondary)
@@ -207,14 +208,15 @@ struct VoiceDraftCard: View {
                     .controlSize(.small)
                 }
                 .card()
-            } else if listen.phase == .requesting {
+            case .requesting:
                 Label("Allow microphone and speech recognition, then hold the microphone again.",
                       systemImage: "lock.shield")
                     .font(.caption).foregroundStyle(.secondary)
-            } else if let note = listen.notice ?? (listen.isPresent
-                                                     ? listen.availability.explanation : nil) {
+            case .note(let note):
                 Label(note, systemImage: "mic.slash")
                     .font(.caption).foregroundStyle(.secondary)
+            case .none:
+                EmptyView()
             }
         }
     }
