@@ -17,6 +17,9 @@ public final class SpeechCoordinator {
     @ObservationIgnored private let store: any SpeechStore
     /// Diagnostic lines (SpeechDiagnostic): ids and reasons, never a row's text.
     @ObservationIgnored private let trace: Trace?
+    /// The last published state, re-applied when the microphone closes so replay returns
+    /// at once instead of on the next publish.
+    @ObservationIgnored private var lastState: ClientState?
 
     public init(engine: any SpeechEngine, store: any SpeechStore, trace: Trace? = nil) {
         self.engine = engine
@@ -32,7 +35,10 @@ public final class SpeechCoordinator {
         log(.ready(muted: v.muted, voice: v.voiceIdentifier))
     }
 
-    public func observe(_ s: ClientState) { apply(.state(s)) }
+    public func observe(_ s: ClientState) {
+        lastState = s
+        apply(.state(s))
+    }
 
     public func setMuted(_ muted: Bool) {
         update { $0.muted = muted }
@@ -44,6 +50,13 @@ public final class SpeechCoordinator {
 
     /// Off screen, Stark is silent; on return, replies that landed meanwhile stay unspoken.
     public func setSuspended(_ hidden: Bool) { apply(.setSuspended(hidden)) }
+
+    /// Push to talk holds Stark silent while the microphone is open. Replies that arrive
+    /// meanwhile are never spoken on their own afterwards; nothing resumes.
+    public func setListening(_ on: Bool) {
+        apply(.setListening(on))
+        if !on, let s = lastState { apply(.state(s)) }
+    }
 
     /// Stop button and avatar tap.
     public func stop() { apply(.stop, cause: .user) }
@@ -98,6 +111,8 @@ public final class SpeechCoordinator {
             log(.muted(m))
         case .setSuspended(let s) where s != before.suspended:
             log(.suspended(s))
+        case .setListening(let l) where l != before.listening:
+            log(.listening(l))
         case .finished(let id):
             log(before.speaking == id ? .finished(id) : .staleFinish(id))
         default:

@@ -11,6 +11,8 @@ import Foundation
 public struct SpeechMachine: Sendable {
     public enum Disarm: Equatable, Sendable {
         case noIdentity, offline, ghost, handoff, suspended
+        /// The microphone is open on this surface; Stark never talks over it.
+        case listening
     }
 
     /// Presence as this surface held it when it armed; any change re-arms.
@@ -30,6 +32,8 @@ public struct SpeechMachine: Sendable {
         case setMuted(Bool)
         /// The surface left the screen (iOS background); rows arriving meanwhile are history.
         case setSuspended(Bool)
+        /// Push to talk opened or closed the microphone; rows arriving meanwhile are history.
+        case setListening(Bool)
         case replay(Int)
         /// The user asked for silence: Stop, the avatar, or a new message.
         case stop
@@ -55,6 +59,7 @@ public struct SpeechMachine: Sendable {
     public private(set) var speaking: Utterance.ID?
     public private(set) var muted: Bool
     public private(set) var suspended = false
+    public private(set) var listening = false
     /// The ledger key of the identity last seen, and its watermark.
     public private(set) var ledgerKey: String?
     public private(set) var handled = -1
@@ -83,6 +88,9 @@ public struct SpeechMachine: Sendable {
         case .setSuspended(let hidden):
             suspended = hidden
             return hidden ? disarm(.suspended) : []
+        case .setListening(let on):
+            listening = on
+            return on ? disarm(.listening) : []
         case .replay(let seq):
             guard isArmed, let text = assistantRows[seq] else {
                 if case .disarmed(let why) = gate {
@@ -119,6 +127,7 @@ public struct SpeechMachine: Sendable {
         guard s.isActiveSurface, let p = s.presence else { return fx + disarm(.ghost) }
         guard s.handoff == nil else { return fx + disarm(.handoff) }
         guard !suspended else { return fx + disarm(.suspended) }
+        guard !listening else { return fx + disarm(.listening) }
         let head = s.rows.map(\.seq).max() ?? -1
         let arm = ArmKey(uuid: uuid, surface: s.surface, generation: p.generation)
         if gate != .armed(arm) {

@@ -95,23 +95,14 @@ public final class AVSpeechEngine: NSObject, SpeechEngine {
         if let d = probes.expire(which, id, at: .now) { log(d) }
     }
 
+    /// The session is shared with push to talk through AudioSessionClaims: speech alone
+    /// behaves as before, and releasing speech never deactivates an open microphone.
     private func activateSession() {
         #if os(iOS)
         guard !sessionActive else { return }
-        let s = AVAudioSession.sharedInstance()
-        do {
-            try s.setCategory(.playback, mode: .spokenAudio, options: [.duckOthers])
-        } catch {
-            log(.session(.categoryFailed(code: (error as NSError).code)))
-        }
-        do {
-            try s.setActive(true)
-            sessionActive = true
-            log(.session(.activated))
-        } catch {
-            sessionActive = false
-            log(.session(.activateFailed(code: (error as NSError).code)))
-        }
+        let (ok, events) = AudioSessionClaims.shared.acquire(.speech)
+        sessionActive = ok
+        for e in events { log(.session(e)) }
         #endif
     }
 
@@ -119,13 +110,7 @@ public final class AVSpeechEngine: NSObject, SpeechEngine {
         #if os(iOS)
         guard sessionActive, !synth.isSpeaking else { return }
         sessionActive = false
-        do {
-            try AVAudioSession.sharedInstance().setActive(false,
-                                                          options: .notifyOthersOnDeactivation)
-            log(.session(.deactivated))
-        } catch {
-            log(.session(.deactivateFailed(code: (error as NSError).code)))
-        }
+        for e in AudioSessionClaims.shared.release(.speech) { log(.session(e)) }
         #endif
     }
 
