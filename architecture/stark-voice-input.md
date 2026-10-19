@@ -139,6 +139,8 @@ release; a permission prompt or a reviewed draft survives it.
   closing the card always work.
 - Apple caps a single recognition request at about a minute; a longer hold ends with what
   was heard.
+- StarkMac launched by running its executable from a terminal gets the terminal's
+  microphone permission, not its own; launch it with `open`.
 - macOS has no audio session interruption notice; StarkMac ends a capture on sleep, on an
   audio device change, and on its controls.
 - The microphone may pick up other people nearby; the review step is the safeguard.
@@ -178,7 +180,30 @@ release; a permission prompt or a reviewed draft survives it.
 ## Physical acceptance checklist
 
 Not run. Each step needs StarkMac and Stark Pocket built from this branch, the runtime on
-the existing database, and the phone paired.
+the existing device check database, and the existing pairing; no reinstall or new pairing.
+
+Setup, from `prototype/` in this branch's checkout:
+
+```sh
+export DB=~/.gameshark/device-check/runtime.db
+sqlite3 "$DB" "PRAGMA quick_check; SELECT count(*) FROM messages"      # note the count
+uv run python stark.py --db "$DB" run --lan \
+  --inference-url http://127.0.0.1:30000/v1 --model mlx-community/Qwen3-4B-4bit \
+  --inference-extra '{"chat_template_kwargs": {"enable_thinking": false}}'   # terminal 1
+../mac/scripts/build-app.sh
+open -n --env STARK_SOCKET="$(dirname "$DB")/gateway/stark.sock" ../mac/build/StarkMac.app
+/usr/bin/log stream --level info \
+  --predicate 'subsystem == "dev.gameshark.starkmac" AND category == "speech"'   # terminal 2
+```
+
+Launch StarkMac with `open`, not by running its executable from a terminal: macOS
+attributes microphone access to the app that launched it, so a terminal launch asks for
+the terminal's access instead of StarkMac's.
+
+Stark Pocket: in Xcode open `ios/StarkPocket/StarkPocket.xcodeproj`, scheme StarkPocket,
+your iPhone as destination, your personal team under Signing & Capabilities, bundle
+identifier `dev.gameshark.starkpocket` unchanged, then Run. Settings shows the build
+commit.
 
 1. **First press, Mac.** With Stark on the Mac, hold the microphone. The system asks for
    microphone and speech recognition access. Allow both. Confirm nothing is recording
