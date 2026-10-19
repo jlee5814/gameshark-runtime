@@ -427,6 +427,19 @@ final class Rig {
         #expect(rig.engine.spoken == [4])
     }
 
+    @Test func aStaleStateDuringCaptureNeverBlocksTheNextReply() {
+        let rig = Rig()
+        let old = rig.feed.next()
+        rig.publish(rig.feed.next())
+        rig.capture.press()
+        rig.voice.observe(old)                          // delivered late, while listening
+        rig.capture.release()
+        rig.input.hear(.final("question"))
+        #expect(rig.voice.canReplay)
+        rig.publish(rig.feed.reply("the answer"))
+        #expect(rig.engine.spoken == [3])
+    }
+
     @Test func aDiscardedCaptureAlsoReleasesStarksVoice() {
         let rig = Rig()
         rig.capture.press()
@@ -489,8 +502,12 @@ final class Rig {
 final class FakeAudioSession: AudioSessionPort {
     var calls: [String] = []
     var failActivate = false
+    var failCategory = false
 
-    func setCategory(_ config: AudioSessionConfig) throws { calls.append("category \(config)") }
+    func setCategory(_ config: AudioSessionConfig) throws {
+        if failCategory { throw NSError(domain: "test", code: -50) }
+        calls.append("category \(config)")
+    }
 
     func setActive(_ active: Bool) throws {
         if active && failActivate { throw NSError(domain: "test", code: 561017449) }
@@ -527,6 +544,18 @@ final class FakeAudioSession: AudioSessionPort {
         #expect(r.events == [.activateFailed(code: 561017449)])
         #expect(claims.claims.isEmpty)
         #expect(claims.release(.capture).isEmpty)
+    }
+
+    @Test func captureNeverRunsWithoutTheRecordCategory() {
+        let port = FakeAudioSession()
+        port.failCategory = true
+        let claims = AudioSessionClaims(port: port)
+        let r = claims.acquire(.capture)
+        #expect(!r.ok)
+        #expect(r.events == [.categoryFailed(code: -50)])
+        #expect(!claims.active && claims.claims.isEmpty)
+        // Speech keeps its old rule: the category failure is logged and play goes on.
+        #expect(claims.acquire(.speech) == (true, [.categoryFailed(code: -50), .activated]))
     }
 
     @Test func speechAfterCaptureReturnsToPlayback() {

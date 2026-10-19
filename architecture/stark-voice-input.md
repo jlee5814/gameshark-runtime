@@ -96,7 +96,7 @@ lifts when capture ends, and the coordinator re-applies the last state, so repla
 offered again at once and the next new reply speaks as usual.
 
 On iOS, speech output and capture share one `AVAudioSession` through
-`AudioSessionClaims`. Capture uses `.record` / `.measurement`; speech alone keeps its
+`AudioSessionClaims`. Capture uses `.record` / `.measurement` (no ducking option, which `.record` rejects; a capture never runs when that category cannot be set); speech alone keeps its
 Phase 4.3B `.playback` / `.spokenAudio` session. The session deactivates only when the last
 claim releases, so a stopped utterance that reports its end late cannot shut an open
 microphone. An interruption, a lost route, a media server reset, or an audio engine

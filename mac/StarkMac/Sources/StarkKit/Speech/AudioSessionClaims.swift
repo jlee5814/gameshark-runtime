@@ -7,7 +7,8 @@ import AVFoundation
 public enum AudioSessionConfig: Equatable, Sendable {
     /// Speech alone: `.playback`, `.spokenAudio`, ducking others.
     case playback
-    /// Push to talk: `.record`, `.measurement`, ducking others.
+    /// Push to talk: `.record`, `.measurement`. Recording already silences other audio;
+    /// `.duckOthers` is not valid with `.record`.
     case record
 }
 
@@ -36,8 +37,10 @@ public final class AudioSessionClaims {
     public static let shared = AudioSessionClaims(port: SystemAudioSession())
     #endif
 
-    /// Take the session for `claim`; false when it could not be activated, in which case
-    /// the claim is not held. Returns what happened, for the speech diagnostics.
+    /// Take the session for `claim`; false when it could not be activated, or for capture
+    /// when the record category could not be set, in which case the claim is not held.
+    /// Speech keeps its Phase 4.3B rule: a category failure is logged and play goes on.
+    /// Returns what happened, for the speech diagnostics.
     public func acquire(_ claim: Claim) -> (ok: Bool, events: [SpeechDiagnostic.Session]) {
         var events: [SpeechDiagnostic.Session] = []
         let want: AudioSessionConfig = claims.contains(.capture) || claim == .capture
@@ -48,6 +51,7 @@ public final class AudioSessionClaims {
                 config = want
             } catch {
                 events.append(.categoryFailed(code: (error as NSError).code))
+                if want == .record { return (false, events) }
             }
         }
         if !active {
@@ -86,7 +90,7 @@ final class SystemAudioSession: AudioSessionPort {
         let s = AVAudioSession.sharedInstance()
         switch config {
         case .playback: try s.setCategory(.playback, mode: .spokenAudio, options: [.duckOthers])
-        case .record: try s.setCategory(.record, mode: .measurement, options: [.duckOthers])
+        case .record: try s.setCategory(.record, mode: .measurement, options: [])
         }
     }
 

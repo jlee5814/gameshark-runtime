@@ -36,7 +36,9 @@ public final class SpeechCoordinator {
     }
 
     public func observe(_ s: ClientState) {
-        lastState = s
+        // Keep the newest state only: a late, older one is ignored by the machine and must
+        // not be what re-arms speech when the microphone closes.
+        if s.revision >= lastState?.revision ?? Int.min { lastState = s }
         apply(.state(s))
     }
 
