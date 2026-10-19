@@ -672,6 +672,24 @@ func tracedSpeaker(_ store: MemorySpeechStore = MemorySpeechStore())
                 == .noStart(b, afterMs: 3000, voice: nil))
     }
 
+    @Test func anUtteranceThatNeverEndsExpiresOnItsOwn() {
+        var probes = UtteranceProbes<Int>()
+        let t0 = ContinuousClock.now
+        let a = Utterance.ID(conversation: "c", seq: 1, token: 1)
+        let b = Utterance.ID(conversation: "c", seq: 2, token: 2)
+        weak var held: NSObject?
+        do {
+            let object = NSObject()
+            held = object
+            probes.spoke(1, a, at: t0, keeping: object)
+        }
+        #expect(probes.expire(1, b, at: t0 + .seconds(600)) == nil)     // not its utterance
+        #expect(probes.expire(1, a, at: t0 + .seconds(600)) == .noEnd(a, afterMs: 600_000))
+        #expect(probes.probes.isEmpty)
+        #expect(held == nil)
+        #expect(probes.expire(1, a, at: t0 + .seconds(601)) == nil)
+    }
+
     @Test func aProbeKeepsItsUtteranceAliveUntilItEnds() {
         var probes = UtteranceProbes<ObjectIdentifier>()
         let t0 = ContinuousClock.now
@@ -724,6 +742,7 @@ func tracedSpeaker(_ store: MemorySpeechStore = MemorySpeechStore())
              "synth cancel seq=4 tok=2 ms=3 started=false"),
             (.noStart(id, afterMs: 3001, voice: "v.Reed"),
              "synth no_start seq=4 tok=2 after_ms=3001 voice=v.Reed"),
+            (.noEnd(id, afterMs: 600_000), "synth no_end seq=4 tok=2 after_ms=600000"),
             (.session(.categoryFailed(code: -50)), "session category failed code=-50"),
             (.session(.activated), "session activate ok"),
             (.session(.activateFailed(code: 560557684)), "session activate failed code=560557684"),

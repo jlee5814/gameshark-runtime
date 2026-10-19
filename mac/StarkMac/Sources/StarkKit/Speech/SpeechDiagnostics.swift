@@ -50,6 +50,8 @@ public enum SpeechDiagnostic: Equatable, Sendable {
     case synthCancelled(Utterance.ID, ms: Int, started: Bool)
     /// Speak was issued but the synthesizer never began: the silent playback signature.
     case noStart(Utterance.ID, afterMs: Int, voice: String?)
+    /// No finish or cancel ever arrived; the probe was dropped.
+    case noEnd(Utterance.ID, afterMs: Int)
     case session(Session)
     case voicesChanged(installed: Int)
     case lifecycle(Lifecycle)
@@ -94,6 +96,8 @@ public enum SpeechDiagnostic: Equatable, Sendable {
             "synth cancel \(Self.name(id)) ms=\(ms) started=\(started)"
         case .noStart(let id, let afterMs, let voice):
             "synth no_start \(Self.name(id)) after_ms=\(afterMs) voice=\(voice ?? "none")"
+        case .noEnd(let id, let afterMs):
+            "synth no_end \(Self.name(id)) after_ms=\(afterMs)"
         case .session(let s):
             "session " + Self.name(s)
         case .voicesChanged(let installed):
@@ -132,8 +136,8 @@ public enum SpeechDiagnostic: Equatable, Sendable {
 
 /// Synthesizer timing per utterance object, for diagnostics only. Kept per object rather
 /// than for the current utterance alone, because a superseded utterance reports its cancel
-/// after the next one has started. An utterance that never reports an end is dropped after
-/// `retention`. A probe keeps its utterance object alive, so while it exists no other
+/// after the next one has started. An utterance that never reports an end is dropped by
+/// `expire` after `retention`, which the engine schedules per utterance. A probe keeps its utterance object alive, so while it exists no other
 /// utterance can take the same object identifier and a late callback finds its own probe.
 struct UtteranceProbes<Key: Hashable> {
     struct Probe {
@@ -173,6 +177,14 @@ struct UtteranceProbes<Key: Hashable> {
                  at now: ContinuousClock.Instant) -> SpeechDiagnostic? {
         guard let p = probes[key], p.id == id, !p.started else { return nil }
         return .noStart(p.id, afterMs: Self.ms(now - p.at), voice: voice)
+    }
+
+    /// Drops a probe whose utterance never ended; `id` binds the call to its own utterance.
+    mutating func expire(_ key: Key, _ id: Utterance.ID,
+                         at now: ContinuousClock.Instant) -> SpeechDiagnostic? {
+        guard let p = probes[key], p.id == id else { return nil }
+        probes[key] = nil
+        return .noEnd(p.id, afterMs: Self.ms(now - p.at))
     }
 
     static func ms(_ d: Duration) -> Int {

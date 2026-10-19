@@ -58,6 +58,10 @@ public final class AVSpeechEngine: NSObject, SpeechEngine {
                 try? await Task.sleep(for: Self.startWatchdog)
                 self?.checkStarted(which, u.id, voice: voice?.identifier)
             }
+            Task { [weak self] in
+                try? await Task.sleep(for: UtteranceProbes<ObjectIdentifier>.retention)
+                self?.expire(which, u.id)
+            }
         }
         activateSession()
         synth.speak(say)
@@ -85,6 +89,10 @@ public final class AVSpeechEngine: NSObject, SpeechEngine {
 
     private func checkStarted(_ which: ObjectIdentifier, _ id: Utterance.ID, voice: String?) {
         if let d = probes.noStart(which, id, voice: voice, at: .now) { log(d) }
+    }
+
+    private func expire(_ which: ObjectIdentifier, _ id: Utterance.ID) {
+        if let d = probes.expire(which, id, at: .now) { log(d) }
     }
 
     private func activateSession() {

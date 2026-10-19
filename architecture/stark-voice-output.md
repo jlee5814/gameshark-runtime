@@ -201,6 +201,7 @@ process id.
 | `voice seq= tok= requested= resolved= name= quality= how=` | each utterance: how the setting became a voice (`requested`, `substituted` when the system returns another voice for the chosen identifier, `default`, `language`, `none`) |
 | `synth start`, `synth finish`, `synth cancel` | `AVSpeechSynthesizer` callbacks, with ms since speak and whether it started |
 | `synth no_start seq= tok= after_ms= voice=` | no start 3 s after speak; logged once, nothing retried |
+| `synth no_end seq= tok= after_ms=` | no finish or cancel 10 minutes after speak; the diagnostic record is dropped |
 | `session ...` | iOS audio session activate, deactivate, interruption, route change, media reset |
 | `voices changed installed=` | the installed voice list changed while running |
 | `system sleep`, `system wake` | StarkMac sleep and wake |
