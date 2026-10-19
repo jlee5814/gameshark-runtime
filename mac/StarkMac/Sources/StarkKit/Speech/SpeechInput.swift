@@ -66,6 +66,8 @@ public enum InputEvent: Equatable, Sendable {
 @MainActor
 public protocol SpeechInput: AnyObject {
     var availability: InputAvailability { get }
+    /// Called when availability may have changed on its own (the recognizer came back).
+    var availabilityChanged: (@MainActor () -> Void)? { get set }
     /// Ask for microphone and speech recognition access; never starts listening.
     func requestPermission(_ done: @escaping @MainActor (InputAvailability) -> Void)
     /// Open the microphone and recognize on device. Every event carries `session`, so a

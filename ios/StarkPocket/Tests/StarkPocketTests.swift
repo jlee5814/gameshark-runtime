@@ -706,6 +706,7 @@ final class PocketVoiceTests: PocketHarness {
 @MainActor
 final class ScriptedInput: SpeechInput {
     var availability: InputAvailability = .ready
+    var availabilityChanged: (@MainActor () -> Void)?
     var starts = 0
     var cancels = 0
     private var sink: (@MainActor (Int, InputEvent) -> Void)?

@@ -166,7 +166,7 @@ struct PushToTalkButton: View {
                     holding = false
                     listen.release()
                 })
-            .allowsHitTesting(listen.canPress || on)
+            .allowsHitTesting(listen.isPresent || on)
             .help(listen.availability.explanation ?? "Hold to talk to Stark")
             .accessibilityElement()
             .accessibilityLabel(on ? "Listening" : "Hold to talk")

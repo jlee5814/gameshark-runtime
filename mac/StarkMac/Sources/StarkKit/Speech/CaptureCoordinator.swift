@@ -35,11 +35,13 @@ public final class CaptureCoordinator {
         self.submit = submit
         self.insert = insert
         availability = input.availability
+        input.availabilityChanged = { [weak self] in self?.refresh() }
     }
 
     public var isListening: Bool { machine.isListening }
 
-    /// Whether the push to talk control should accept a press.
+    /// Whether a press would start listening now; the control stays pressable whenever
+    /// Stark is here, so a press can read access again after a change in Settings.
     public var canPress: Bool {
         guard isPresent else { return false }
         switch availability {

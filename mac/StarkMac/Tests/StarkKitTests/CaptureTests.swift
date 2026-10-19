@@ -36,6 +36,7 @@ final class LoggedEngine: SpeechEngine {
 final class FakeSpeechInput: SpeechInput {
     let log: CallLog
     var availability: InputAvailability = .ready
+    var availabilityChanged: (@MainActor () -> Void)?
     var permissionRequests = 0
     var starts: [Int] = []
     var finishes = 0
@@ -159,6 +160,23 @@ final class Rig {
         #expect(rig.capture.phase == .idle)
         #expect(rig.input.starts.isEmpty)
         #expect(!rig.capture.canPress)
+    }
+
+    @Test func aPressReadsAccessAgainAfterSettingsChange() {
+        let rig = Rig(availability: .denied)
+        rig.capture.press()
+        #expect(rig.input.starts.isEmpty)
+        rig.input.availability = .ready                 // turned on in Settings
+        rig.capture.press()
+        #expect(rig.input.starts == [1])
+    }
+
+    @Test func aRecognizerComingBackRefreshesAvailability() {
+        let rig = Rig(availability: .unavailable(.offline))
+        #expect(!rig.capture.canPress)
+        rig.input.availability = .ready
+        rig.input.availabilityChanged?()
+        #expect(rig.capture.canPress)
     }
 
     @Test func withoutOnDeviceRecognitionVoiceInputStaysOff() {

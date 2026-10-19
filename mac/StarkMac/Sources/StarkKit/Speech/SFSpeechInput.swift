@@ -11,7 +11,7 @@ import Speech
 /// voice output and the microphone never deactivate each other. An interruption, a lost
 /// route, or a media server reset ends the capture through `.interrupted`.
 @MainActor
-public final class SFSpeechInput: SpeechInput {
+public final class SFSpeechInput: NSObject, SpeechInput {
     /// Stark speaks English whatever the system language is.
     public static let locale = Locale(identifier: "en-US")
 
@@ -28,9 +28,12 @@ public final class SFSpeechInput: SpeechInput {
     #if os(iOS)
     private var claimed = false
     #endif
+    public var availabilityChanged: (@MainActor () -> Void)?
 
     public init(trace: Trace? = nil) {
         self.trace = trace
+        super.init()
+        recognizer?.delegate = self
         watchAudio()
     }
 
@@ -253,6 +256,13 @@ public final class SFSpeechInput: SpeechInput {
         #else
         await AVCaptureDevice.requestAccess(for: .audio)
         #endif
+    }
+}
+
+extension SFSpeechInput: SFSpeechRecognizerDelegate {
+    public nonisolated func speechRecognizer(_ r: SFSpeechRecognizer,
+                                             availabilityDidChange available: Bool) {
+        Task { @MainActor in self.availabilityChanged?() }
     }
 }
 
