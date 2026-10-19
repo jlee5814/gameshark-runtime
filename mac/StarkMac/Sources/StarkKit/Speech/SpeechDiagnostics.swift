@@ -153,7 +153,6 @@ struct UtteranceProbes<Key: Hashable> {
 
     mutating func spoke(_ key: Key, _ id: Utterance.ID, at now: ContinuousClock.Instant,
                         keeping object: AnyObject? = nil) {
-        probes = probes.filter { now - $0.value.at < Self.retention }
         probes[key] = Probe(id: id, at: now, object: object)
     }
 

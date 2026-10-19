@@ -645,7 +645,7 @@ func tracedSpeaker(_ store: MemorySpeechStore = MemorySpeechStore())
         #expect(probes.probes.isEmpty)
     }
 
-    @Test func aSpeakThatNeverStartsIsReportedOnceAndForgottenLater() {
+    @Test func aSpeakThatNeverStartsIsReportedOnceAndAStalledOneStillReportsNoEnd() {
         var probes = UtteranceProbes<Int>()
         let t0 = ContinuousClock.now
         let a = Utterance.ID(conversation: "c", seq: 1, token: 1)
@@ -654,8 +654,11 @@ func tracedSpeaker(_ store: MemorySpeechStore = MemorySpeechStore())
                 == .noStart(a, afterMs: 3000, voice: "v"))
         #expect(probes.ended(1, cancelled: false, at: t0 + .seconds(4))
                 == .synthFinished(a, ms: 4000, started: false))
+        // A late expiry, after another speak, still reports the stalled utterance.
+        let b = Utterance.ID(conversation: "c", seq: 2, token: 2)
         probes.spoke(2, a, at: t0)
-        probes.spoke(3, a, at: t0 + UtteranceProbes<Int>.retention)
+        probes.spoke(3, b, at: t0 + .seconds(900))
+        #expect(probes.expire(2, a, at: t0 + .seconds(901)) == .noEnd(a, afterMs: 901_000))
         #expect(Set(probes.probes.keys) == [3])
     }
 
