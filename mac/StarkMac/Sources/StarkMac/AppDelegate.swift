@@ -19,7 +19,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         workspace.addObserver(
             forName: NSWorkspace.willSleepNotification, object: nil, queue: .main) { [weak self] _ in
             SpeechLog.note(.lifecycle(.sleep))
-            MainActor.assumeIsolated { self?.model.voice.interrupted() }
+            MainActor.assumeIsolated {
+                self?.model.listen.cancel(.sleep)
+                self?.model.voice.interrupted()
+            }
         }
         workspace.addObserver(forName: NSWorkspace.didWakeNotification, object: nil,
                               queue: .main) { _ in SpeechLog.note(.lifecycle(.wake)) }

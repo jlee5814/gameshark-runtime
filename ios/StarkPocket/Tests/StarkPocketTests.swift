@@ -167,12 +167,14 @@ class PocketHarness: XCTestCase {
     }
 
     /// A model that finds a stored pairing and connects through a FakeClient.
-    func pairedModel(voice: SpeechCoordinator? = nil) throws -> PocketModel {
+    func pairedModel(voice: SpeechCoordinator? = nil,
+                     listener: (any SpeechInput)? = nil) throws -> PocketModel {
         let (_, item, blob) = try CredentialStore.newSigner()
         try store.saveDevice(credential(), keyItem: item, keyData: blob)
         let model = PocketModel(store: store, environment: [:], monitorsNetwork: false,
                                 voice: voice ?? SpeechCoordinator(engine: SilentEngine(),
                                                                   store: MemorySpeechStore()),
+                                listener: listener ?? ScriptedInput(),
                                 makeClient: { cfg, onChange in
             let c = FakeClient(surface: cfg.surface, onChange: onChange)
             self.clients.append(c)
@@ -696,5 +698,168 @@ final class PocketVoiceTests: PocketHarness {
         await settle()
         XCTAssertEqual(engine.spoken, [2])
         assertNothingSent(c)
+    }
+}
+
+
+/// A recognizer the test speaks through; never touches the microphone.
+@MainActor
+final class ScriptedInput: SpeechInput {
+    var availability: InputAvailability = .ready
+    var starts = 0
+    var cancels = 0
+    private var sink: (@MainActor (Int, InputEvent) -> Void)?
+    private var session = 0
+
+    func requestPermission(_ done: @escaping @MainActor (InputAvailability) -> Void) {
+        done(availability)
+    }
+    func start(session: Int, _ events: @escaping @MainActor (Int, InputEvent) -> Void) {
+        starts += 1
+        self.session = session
+        sink = events
+    }
+    func finish() {}
+    func cancel() { cancels += 1 }
+    func hear(_ event: InputEvent) { sink?(session, event) }
+}
+
+/// Phase 4.3C: push to talk on the phone. The voice draft stays on this iPhone, nothing
+/// reaches the runtime until Send, and the ordinary composer keeps its continuity.
+@MainActor
+final class PocketVoiceInputTests: PocketHarness {
+    var input = ScriptedInput()
+
+    func listening() throws -> (PocketModel, FakeClient) {
+        input = ScriptedInput()
+        let model = try pairedModel(listener: input)
+        let c = clients[0]
+        c.emit {
+            $0.connection = .live
+            $0.identity = Identity(agentId: "stark", uuid: "uuid")
+            $0.presence = PresenceInfo(surface: surface, home: "mac", generation: 2)
+            $0.handoff = nil
+            $0.rows = [Row(seq: 0, role: "system", content: "sys")]
+        }
+        return (model, c)
+    }
+
+    func dictate(_ model: PocketModel, _ text: String) {
+        model.listen.press()
+        input.hear(.partial(text))
+        model.listen.release()
+        input.hear(.final(text))
+    }
+
+    func assertNothingSent(_ c: FakeClient, file: StaticString = #filePath, line: UInt = #line) {
+        XCTAssertTrue(c.sent.isEmpty && c.jacks.isEmpty && c.retries.isEmpty
+                      && c.remembered.isEmpty && c.corrected.isEmpty && c.forgotten.isEmpty
+                      && c.confirmed.isEmpty && c.clearedSent.isEmpty, file: file, line: line)
+    }
+
+    func testCapturingAndEditingSendNothingToTheRuntime() async throws {
+        let (model, c) = try listening()
+        await settle { model.listen.isPresent }
+        model.listen.press()
+        XCTAssertEqual(input.starts, 1)
+        input.hear(.partial("what is on"))
+        model.listen.release()
+        input.hear(.final("What is on my list?"))
+        model.listen.edit("What is on my list today?")
+        XCTAssertEqual(model.listen.phase, .reviewing)
+        assertNothingSent(c)
+    }
+
+    func testSendSubmitsOnceAndLeavesTheComposerAlone() async throws {
+        let (model, c) = try listening()
+        await settle { model.listen.isPresent }
+        model.draft = "typed, not sent"
+        dictate(model, "Spoken words")
+        model.listen.send()
+        model.listen.send()
+        XCTAssertEqual(c.sent, ["Spoken words"])
+        XCTAssertEqual(model.draft, "typed, not sent")
+        XCTAssertEqual(model.listen.phase, .idle)
+    }
+
+    func testTheVoiceDraftNeverTravelsAndInsertJoinsTheComposer() async throws {
+        let (model, c) = try listening()
+        await settle { model.listen.isPresent }
+        dictate(model, "remind me later")
+        // A jack out carries the composer, never the voice draft.
+        XCTAssertNil(c.draftProvider?())
+        model.draft = "Note:"
+        XCTAssertEqual(c.draftProvider?(), "Note:")
+        model.listen.insertIntoComposer()
+        XCTAssertEqual(model.draft, "Note: remind me later")
+        XCTAssertEqual(c.draftProvider?(), "Note: remind me later")
+        assertNothingSent(c)
+    }
+
+    func testACarriedDraftStillArrivesInTheComposer() async throws {
+        let (model, c) = try listening()
+        await settle { model.listen.isPresent }
+        dictate(model, "voice text")
+        c.emit { $0.incomingDraft = CarriedDraft(handoffId: "h9", text: "from the Mac") }
+        await settle { model.draft == "from the Mac" }
+        XCTAssertEqual(model.draft, "from the Mac")
+        XCTAssertEqual(model.listen.draft, "voice text")
+    }
+
+    func testBackgroundDiscardsTheVoiceDraft() async throws {
+        let (model, _) = try listening()
+        await settle { model.listen.isPresent }
+        model.listen.press()
+        input.hear(.partial("half a thought"))
+        model.scenePhase(.background)
+        XCTAssertEqual(model.listen.phase, .idle)
+        XCTAssertEqual(model.listen.draft, "")
+        XCTAssertEqual(input.cancels, 1)
+    }
+
+    func testJackOutAndAPresenceChangeDiscard() async throws {
+        let (model, c) = try listening()
+        await settle { model.listen.isPresent }
+        dictate(model, "first")
+        model.jack()
+        XCTAssertEqual(model.listen.phase, .idle)
+        c.emit { $0.handoff = nil }
+        dictate(model, "second")
+        c.emit { $0.presence = PresenceInfo(surface: "mac", home: "mac", generation: 3) }
+        await settle { model.listen.phase == .idle }
+        XCTAssertEqual(model.listen.draft, "")
+        XCTAssertFalse(model.listen.canPress)
+    }
+
+    func testAPhoneWithoutStarkCannotListen() async throws {
+        let (model, c) = try listening()
+        c.emit { $0.presence = PresenceInfo(surface: "mac", home: "mac", generation: 3) }
+        await settle { model.state?.presence?.surface == "mac" }
+        model.listen.press()
+        XCTAssertEqual(input.starts, 0)
+        assertNothingSent(c)
+    }
+
+    func testSpeakingStopsWhenThePhoneStartsListening() async throws {
+        let engine = SilentEngine()
+        input = ScriptedInput()
+        let model = try pairedModel(voice: SpeechCoordinator(engine: engine,
+                                                             store: MemorySpeechStore()),
+                                    listener: input)
+        let c = clients[0]
+        c.emit {
+            $0.connection = .live
+            $0.identity = Identity(agentId: "stark", uuid: "uuid")
+            $0.presence = PresenceInfo(surface: surface, home: "mac", generation: 2)
+            $0.rows = [Row(seq: 0, role: "system", content: "sys")]
+        }
+        await settle { model.listen.isPresent }
+        c.emit { $0.rows.append(Row(seq: 1, role: "assistant", content: "talking")) }
+        await settle { engine.playing != nil }
+        model.listen.press()
+        XCTAssertNil(engine.playing)
+        c.emit { $0.rows.append(Row(seq: 2, role: "assistant", content: "while listening")) }
+        await settle { model.state?.rows.count == 3 }
+        XCTAssertEqual(engine.spoken, [1])
     }
 }

@@ -27,6 +27,8 @@ cat > "$app/Contents/Info.plist" <<'PLIST'
   <key>LSMinimumSystemVersion</key><string>14.0</string>
   <key>LSUIElement</key><true/>
   <key>NSHighResolutionCapable</key><true/>
+  <key>NSMicrophoneUsageDescription</key><string>Hold the microphone button to talk to Stark. Audio is recognized on this Mac and never saved.</string>
+  <key>NSSpeechRecognitionUsageDescription</key><string>Stark turns what you say into text on this Mac so you can review it before sending. Nothing is sent to a speech server.</string>
 </dict>
 </plist>
 PLIST

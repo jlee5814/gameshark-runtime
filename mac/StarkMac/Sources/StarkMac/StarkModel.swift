@@ -14,7 +14,10 @@ final class StarkModel {
     var chatOpen = false {
         didSet {
             // SwiftUI reports no focus loss when the field leaves the view with the card.
-            if !chatOpen { inputFocused = false }
+            if !chatOpen {
+                inputFocused = false
+                listen.cancel(.chatClosed)
+            }
             markViewed()
         }
     }
@@ -37,6 +40,9 @@ final class StarkModel {
     /// Stark's voice on this Mac: reads new replies aloud while Stark is here. Observable
     /// on its own, so views follow what it is saying.
     @ObservationIgnored let voice: SpeechCoordinator
+    /// Push to talk on this Mac: a voice draft the user reviews, then sends or inserts.
+    /// Observable on its own; it holds no client and never sends by itself.
+    @ObservationIgnored private(set) var listen: CaptureCoordinator!
     @ObservationIgnored private let draftBox = DraftBox()
     @ObservationIgnored private let defaults = UserDefaults.standard
 
@@ -52,6 +58,10 @@ final class StarkModel {
         relay.model = self
         let box = draftBox
         client.setDraftProvider { box.get() }
+        listen = CaptureCoordinator(
+            input: SFSpeechInput(trace: SpeechLog.trace), speech: voice, trace: SpeechLog.trace,
+            submit: { [weak self] text in self?.submit(text) ?? false },
+            insert: { [weak self] text in self?.insertIntoComposer(text) })
         followRuntime()
     }
 
@@ -79,6 +89,7 @@ final class StarkModel {
 
     func jackIn() {
         guard canJackIn else { return }
+        listen.cancel(.jack)
         voice.stop()
         client.jack(.here)
     }
@@ -103,27 +114,36 @@ final class StarkModel {
     }
 
     func send() {
-        let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { return }
+        if submit(draft) { draft = "" }
+    }
+
+    /// The one send path for typed and reviewed voice text; true when the text was taken.
+    func submit(_ raw: String) -> Bool {
+        let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return false }
         // An explicit command saves memory; it never becomes a chat row.
         switch MemoryCommand.parse(text) {
         case .show?:
             showMemories = true
-            draft = ""
-            return
+            return true
         case .remember(let fact)?:
-            guard state.canWriteMemory else { return }
+            guard state.canWriteMemory else { return false }
             client.remember(fact)
             showMemories = true
-            draft = ""
-            return
+            return true
         case nil:
             break
         }
-        guard canSend else { return }
+        guard canSend else { return false }
         voice.userSent()
         client.send(text)
-        draft = ""
+        return true
+    }
+
+    /// Insert into Composer: the reviewed voice text joins the ordinary draft, which from
+    /// here on follows draft continuity like anything typed.
+    func insertIntoComposer(_ text: String) {
+        draft = draft.isEmpty ? text : draft + " " + text
     }
 
     func addMemory(_ text: String) {
@@ -162,6 +182,7 @@ final class StarkModel {
         let identityChanged = s.identity?.uuid != state.identity?.uuid
         state = s
         voice.observe(s)
+        listen.observe(s)
         if identityChanged, let uuid = s.identity?.uuid {
             viewedSeq = defaults.object(forKey: viewedKey(uuid)) as? Int ?? -1
         }

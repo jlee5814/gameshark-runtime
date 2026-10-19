@@ -366,7 +366,9 @@ struct Composer: View {
                 .background(.quaternary, in: RoundedRectangle(cornerRadius: 10))
                 .padding(.horizontal)
             }
+            VoiceDraftCard(listen: model.listen, canSend: canSend)
             HStack {
+                PushToTalkButton(listen: model.listen)
                 TextField(canSend ? "Message Stark, or /remember a fact" : "Jack In to talk to Stark here",
                           text: $model.draft, axis: .vertical)
                     .textFieldStyle(.roundedBorder)
@@ -379,6 +381,103 @@ struct Composer: View {
             }
             .padding()
         }
+        .onAppear { model.listen.refresh() }
+    }
+}
+
+/// Hold to talk. The microphone opens on press and closes on release; nothing is sent.
+struct PushToTalkButton: View {
+    let listen: CaptureCoordinator
+    @State private var holding = false
+
+    var body: some View {
+        let on = listen.isListening
+        Image(systemName: on ? "mic.fill" : "mic")
+            .font(.title3)
+            .foregroundStyle(on ? Color.red : listen.canPress ? Color.accentColor : Color.secondary)
+            .frame(width: 36, height: 36)
+            .contentShape(Rectangle())
+            .gesture(DragGesture(minimumDistance: 0)
+                .onChanged { _ in
+                    guard !holding else { return }
+                    holding = true
+                    listen.press()
+                }
+                .onEnded { _ in
+                    holding = false
+                    listen.release()
+                })
+            .allowsHitTesting(listen.canPress || on)
+            .accessibilityElement()
+            .accessibilityLabel(on ? "Listening" : "Hold to talk")
+            .accessibilityAddTraits(.isButton)
+            .accessibilityAction(named: "Start Listening") { listen.press() }
+            .accessibilityAction(named: "Stop Listening") { listen.release() }
+            .accessibilityIdentifier("pushToTalkButton")
+    }
+}
+
+/// The voice draft: live while listening, editable in review, sent or inserted only on
+/// an explicit choice. It never enters the composer's draft or travels with Stark.
+struct VoiceDraftCard: View {
+    let listen: CaptureCoordinator
+    let canSend: Bool
+
+    var body: some View {
+        let text = Binding(get: { listen.draft }, set: { listen.edit($0) })
+        Group {
+            if listen.isListening {
+                VStack(alignment: .leading, spacing: 4) {
+                    Label("Listening. Release to review.", systemImage: "waveform")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Text(listen.draft.isEmpty ? "Speak now" : listen.draft)
+                        .foregroundStyle(listen.draft.isEmpty ? .secondary : .primary)
+                        .accessibilityIdentifier("voiceDraftLive")
+                }
+                .voiceCard()
+            } else if listen.phase == .reviewing {
+                VStack(alignment: .leading, spacing: 8) {
+                    Label("Voice draft: edit, then send or insert", systemImage: "mic")
+                        .font(.caption).foregroundStyle(.secondary)
+                    TextField("Voice draft", text: text, axis: .vertical)
+                        .textFieldStyle(.roundedBorder)
+                        .accessibilityIdentifier("voiceDraftText")
+                    HStack {
+                        Button("Send") { listen.send() }
+                            .disabled(!canSend || listen.draft.isEmpty)
+                            .accessibilityIdentifier("voiceSendButton")
+                        Button("Insert into Composer") { listen.insertIntoComposer() }
+                            .disabled(listen.draft.isEmpty)
+                            .accessibilityIdentifier("voiceInsertButton")
+                        Spacer()
+                        Button("Discard", role: .destructive) { listen.cancel(.user) }
+                            .accessibilityIdentifier("voiceDiscardButton")
+                    }
+                    .buttonStyle(.bordered)
+                }
+                .voiceCard()
+            } else if listen.phase == .requesting {
+                Label("Allow microphone and speech recognition, then hold the microphone again.",
+                      systemImage: "lock.shield")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .padding(.horizontal)
+            } else if let note = listen.notice ?? (listen.isPresent
+                                                     ? listen.availability.explanation : nil) {
+                Label(note, systemImage: "mic.slash")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .padding(.horizontal)
+                    .accessibilityIdentifier("voiceNotice")
+            }
+        }
+    }
+}
+
+private extension View {
+    func voiceCard() -> some View {
+        frame(maxWidth: .infinity, alignment: .leading)
+            .padding(10)
+            .background(.quaternary, in: RoundedRectangle(cornerRadius: 10))
+            .padding(.horizontal)
     }
 }
 
