@@ -86,6 +86,10 @@ struct MainView: View {
             }
             .sheet(isPresented: $settings) { SettingsView(model: model) }
             .sheet(isPresented: $model.showMemories) { MemoriesView(model: model) }
+            // A sheet covers the composer and its Stop Listening action: close the mic first.
+            .onChange(of: settings || model.showMemories) { _, covered in
+                if covered { model.listen.stopListening(.covered) }
+            }
             .onChange(of: focused) { _, f in model.inputFocused = f }
         }
     }
@@ -388,7 +392,9 @@ struct Composer: View {
 /// Hold to talk. The microphone opens on press and closes on release; nothing is sent.
 struct PushToTalkButton: View {
     let listen: CaptureCoordinator
-    @State private var holding = false
+    /// True while the finger or pointer is down; resets on its own when the system cancels
+    /// the gesture (a permission prompt, Control Center), which also releases.
+    @GestureState private var pressing = false
 
     var body: some View {
         let on = listen.isListening
@@ -398,15 +404,10 @@ struct PushToTalkButton: View {
             .frame(width: 36, height: 36)
             .contentShape(Rectangle())
             .gesture(DragGesture(minimumDistance: 0)
-                .onChanged { _ in
-                    guard !holding else { return }
-                    holding = true
-                    listen.press()
-                }
-                .onEnded { _ in
-                    holding = false
-                    listen.release()
-                })
+                .updating($pressing) { _, down, _ in down = true })
+            .onChange(of: pressing) { _, down in
+                if down { listen.press() } else { listen.release() }
+            }
             .allowsHitTesting(listen.isPresent || on)
             .accessibilityElement()
             .accessibilityLabel(on ? "Listening" : "Hold to talk")

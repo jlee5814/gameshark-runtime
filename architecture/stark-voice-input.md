@@ -107,7 +107,8 @@ Discarded by: Cancel or Discard, Escape (StarkMac), closing the chat card (Stark
 sleep (StarkMac), backgrounding (Stark Pocket), Jack In or Jack Out, unpairing, and any
 presence or connection change. On Stark Pocket, the scene going inactive (Control Center,
 the app switcher) ends an open microphone, since the system can end a hold without a
-release; a permission prompt or a reviewed draft survives it.
+release; a permission prompt or a reviewed draft survives it. Opening Settings or Memories, which cover the
+composer and its Stop Listening action, also ends an open microphone.
 
 ## Diagnostics
 
@@ -134,7 +135,8 @@ release; a permission prompt or a reviewed draft survives it.
 - StarkMac is ad hoc signed, so macOS may ask for microphone access again after each
   rebuild. `tccutil reset Microphone dev.gameshark.starkmac` clears a stuck denial.
 - Hold to talk needs a pointer or touch. VoiceOver users get Start and Stop Listening
-  actions instead of a hold.
+  actions instead of a hold. A hold the system cancels (a permission prompt, Control Center)
+  counts as a release, so the button never stays latched.
 - Escape reaches the chat card only while the panel has keyboard focus; Discard and
   closing the card always work.
 - Apple caps a single recognition request at about a minute; a longer hold ends with what

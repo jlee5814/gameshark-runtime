@@ -148,7 +148,9 @@ struct ChatCard: View {
 /// Hold to talk. The microphone opens on press and closes on release; nothing is sent.
 struct PushToTalkButton: View {
     let listen: CaptureCoordinator
-    @State private var holding = false
+    /// True while the finger or pointer is down; resets on its own when the system cancels
+    /// the gesture (a permission prompt, Control Center), which also releases.
+    @GestureState private var pressing = false
 
     var body: some View {
         let on = listen.isListening
@@ -157,15 +159,10 @@ struct PushToTalkButton: View {
             .frame(width: 22, height: 22)
             .contentShape(Rectangle())
             .gesture(DragGesture(minimumDistance: 0)
-                .onChanged { _ in
-                    guard !holding else { return }
-                    holding = true
-                    listen.press()
-                }
-                .onEnded { _ in
-                    holding = false
-                    listen.release()
-                })
+                .updating($pressing) { _, down, _ in down = true })
+            .onChange(of: pressing) { _, down in
+                if down { listen.press() } else { listen.release() }
+            }
             .allowsHitTesting(listen.isPresent || on)
             .help(listen.availability.explanation ?? "Hold to talk to Stark")
             .accessibilityElement()

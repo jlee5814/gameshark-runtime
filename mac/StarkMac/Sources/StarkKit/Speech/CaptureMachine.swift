@@ -24,6 +24,8 @@ public struct CaptureMachine: Sendable {
         case user, escape, background, sleep, chatClosed = "chat_closed", jack, unpaired
         /// The scene went inactive (Control Center, the app switcher) while listening.
         case inactive
+        /// A sheet covered the controls while listening.
+        case covered
         /// Presence, connection, or identity changed under the capture.
         case presence
         /// The microphone or route was taken away.
