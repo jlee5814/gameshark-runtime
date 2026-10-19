@@ -197,7 +197,7 @@ process id.
 | `skip seq= reason=muted` | a new reply arrives while muted |
 | `replay rejected seq= reason=` | replay on a disarmed surface or of an unknown row |
 | `stop by=` | Stop (`user`), a sent message (`send`), an engine interruption (`audio`), sleep (`system`) |
-| `muted`, `suspended`, `finished`, `finish stale` | the matching coordinator events |
+| `muted`, `suspended`, `listening`, `finished`, `finish stale` | the matching coordinator events (`listening` is the push to talk hold) |
 | `voice seq= tok= requested= resolved= name= quality= how=` | each utterance: how the setting became a voice (`requested`, `substituted` when the system returns another voice for the chosen identifier, `default`, `language`, `none`) |
 | `synth start`, `synth finish`, `synth cancel` | `AVSpeechSynthesizer` callbacks, with ms since speak and whether it started |
 | `synth no_start seq= tok= after_ms= voice=` | no start 3 s after speak; logged once, nothing retried |
@@ -259,9 +259,12 @@ explainable.
 
 ## Out of scope
 
-Voice input, wake words, microphone recording, background listening, server side
-synthesis, cloud TTS, and any action taken because of speech. Phase 4.3C (voice input) is
-not started.
+Wake words, background listening, server side synthesis, cloud TTS, and any action taken
+because of speech. Push to talk voice input is Phase 4.3C, in
+[stark-voice-input.md](stark-voice-input.md): while the microphone is open the gate is
+disarmed with reason `listening`, Stark stops talking, and replies that arrive meanwhile
+are never spoken on their own afterwards. On iOS both share the audio session through
+`AudioSessionClaims`, and speech alone keeps the session described above.
 
 ## Tests
 

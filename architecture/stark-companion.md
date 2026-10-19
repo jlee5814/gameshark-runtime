@@ -241,7 +241,8 @@ StarkMac relaunch still open; see
 
 ## Not yet built
 
-Bonjour, voice input (voice output is built: [stark-voice-output.md](stark-voice-output.md)), system
+Bonjour (voice output is built: [stark-voice-output.md](stark-voice-output.md); push to talk
+voice input is built and awaits physical acceptance: [stark-voice-input.md](stark-voice-input.md)), system
 notifications, automatic long term memory (Stark keeps only facts
 the user saves; see [stark-memory.md](stark-memory.md)), a user cancel for a reply in
 flight.
