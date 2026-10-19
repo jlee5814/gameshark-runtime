@@ -818,6 +818,20 @@ final class PocketVoiceInputTests: PocketHarness {
         XCTAssertEqual(input.cancels, 1)
     }
 
+    func testInactiveEndsAHoldButKeepsAReviewedDraft() async throws {
+        let (model, _) = try listening()
+        await settle { model.listen.isPresent }
+        model.listen.press()
+        input.hear(.partial("held"))
+        model.scenePhase(.inactive)
+        XCTAssertEqual(model.listen.phase, .idle)
+        XCTAssertEqual(input.cancels, 1)
+        dictate(model, "keep me")
+        model.scenePhase(.inactive)
+        XCTAssertEqual(model.listen.phase, .reviewing)
+        XCTAssertEqual(model.listen.draft, "keep me")
+    }
+
     func testJackOutAndAPresenceChangeDiscard() async throws {
         let (model, c) = try listening()
         await settle { model.listen.isPresent }

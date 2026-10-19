@@ -65,6 +65,12 @@ public final class CaptureCoordinator {
 
     public func cancel(_ why: CaptureMachine.Reason = .user) { apply(.cancel(why)) }
 
+    /// End an open microphone only; a permission prompt or a reviewed draft stays.
+    public func stopListening(_ why: CaptureMachine.Reason) {
+        guard isListening else { return }
+        apply(.cancel(why))
+    }
+
     public func edit(_ text: String) { apply(.edit(text)) }
 
     /// Submit the reviewed text once; the voice draft clears only when the surface took it.
@@ -128,7 +134,7 @@ public final class CaptureCoordinator {
         case .discarded(.interrupted, _): "Voice draft discarded: the microphone was interrupted."
         case .discarded(.failed, _): "Stark didn't catch that."
         case .discarded(.empty, _): "Stark didn't catch that."
-        case .discarded(.background, _), .discarded(.sleep, _):
+        case .discarded(.background, _), .discarded(.sleep, _), .discarded(.inactive, _):
             "Voice draft discarded when the app left the screen."
         default: nil
         }

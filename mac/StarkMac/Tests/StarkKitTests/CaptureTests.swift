@@ -308,6 +308,21 @@ final class Rig {
         }
     }
 
+    @Test func stopListeningEndsOnlyAnOpenMicrophone() {
+        let rig = Rig()
+        rig.capture.press()
+        rig.input.hear(.partial("held"))
+        rig.capture.stopListening(.inactive)
+        #expect(rig.capture.phase == .idle && rig.input.cancels == 1)
+        rig.dictate("reviewed")
+        rig.capture.stopListening(.inactive)
+        #expect(rig.capture.phase == .reviewing)
+        let asking = Rig(availability: .needsPermission)
+        asking.capture.press()
+        asking.capture.stopListening(.inactive)
+        #expect(asking.capture.phase == .requesting)
+    }
+
     @Test func aJackOpeningDuringCaptureDiscardsAndBlocksPressing() {
         let rig = Rig()
         rig.capture.press()

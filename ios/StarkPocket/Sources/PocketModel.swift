@@ -447,6 +447,11 @@ final class PocketModel {
             } else {
                 c.stop()
             }
+        case .inactive:
+            // Control Center or the app switcher can end a hold without a release. A
+            // permission prompt also makes the scene inactive, so only an open
+            // microphone ends here.
+            listen.stopListening(.inactive)
         default:
             break
         }

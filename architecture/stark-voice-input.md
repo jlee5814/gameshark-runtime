@@ -104,7 +104,9 @@ configuration change ends the capture and discards the draft.
 
 Discarded by: Cancel or Discard, Escape (StarkMac), closing the chat card (StarkMac),
 sleep (StarkMac), backgrounding (Stark Pocket), Jack In or Jack Out, unpairing, and any
-presence or connection change.
+presence or connection change. On Stark Pocket, the scene going inactive (Control Center,
+the app switcher) ends an open microphone, since the system can end a hold without a
+release; a permission prompt or a reviewed draft survives it.
 
 ## Diagnostics
 
