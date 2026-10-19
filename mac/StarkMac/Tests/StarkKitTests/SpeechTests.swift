@@ -650,13 +650,26 @@ func tracedSpeaker(_ store: MemorySpeechStore = MemorySpeechStore())
         let t0 = ContinuousClock.now
         let a = Utterance.ID(conversation: "c", seq: 1, token: 1)
         probes.spoke(1, a, at: t0)
-        #expect(probes.noStart(1, voice: "v", at: t0 + .seconds(3))
+        #expect(probes.noStart(1, a, voice: "v", at: t0 + .seconds(3))
                 == .noStart(a, afterMs: 3000, voice: "v"))
         #expect(probes.ended(1, cancelled: false, at: t0 + .seconds(4))
                 == .synthFinished(a, ms: 4000, started: false))
         probes.spoke(2, a, at: t0)
         probes.spoke(3, a, at: t0 + UtteranceProbes<Int>.retention)
         #expect(Set(probes.probes.keys) == [3])
+    }
+
+    @Test func aWatchdogNeverReportsALaterUtteranceThatReusedItsKey() {
+        var probes = UtteranceProbes<Int>()
+        let t0 = ContinuousClock.now
+        let a = Utterance.ID(conversation: "c", seq: 1, token: 1)
+        let b = Utterance.ID(conversation: "c", seq: 2, token: 2)
+        probes.spoke(7, a, at: t0)
+        _ = probes.ended(7, cancelled: false, at: t0 + .milliseconds(500))
+        probes.spoke(7, b, at: t0 + .seconds(1))        // the freed object's identifier, reused
+        #expect(probes.noStart(7, a, voice: nil, at: t0 + .seconds(3)) == nil)
+        #expect(probes.noStart(7, b, voice: nil, at: t0 + .seconds(4))
+                == .noStart(b, afterMs: 3000, voice: nil))
     }
 
     @Test func everyLineRendersStably() {

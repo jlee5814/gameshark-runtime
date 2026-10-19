@@ -56,7 +56,7 @@ public final class AVSpeechEngine: NSObject, SpeechEngine {
             probes.spoke(which, u.id, at: .now)
             Task { [weak self] in
                 try? await Task.sleep(for: Self.startWatchdog)
-                self?.checkStarted(which, voice: voice?.identifier)
+                self?.checkStarted(which, u.id, voice: voice?.identifier)
             }
         }
         activateSession()
@@ -83,8 +83,8 @@ public final class AVSpeechEngine: NSObject, SpeechEngine {
         if let d = probes.started(which, at: .now) { log(d) }
     }
 
-    private func checkStarted(_ which: ObjectIdentifier, voice: String?) {
-        if let d = probes.noStart(which, voice: voice, at: .now) { log(d) }
+    private func checkStarted(_ which: ObjectIdentifier, _ id: Utterance.ID, voice: String?) {
+        if let d = probes.noStart(which, id, voice: voice, at: .now) { log(d) }
     }
 
     private func activateSession() {

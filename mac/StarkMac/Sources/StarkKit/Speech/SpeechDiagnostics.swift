@@ -164,8 +164,11 @@ struct UtteranceProbes<Key: Hashable> {
                          : .synthFinished(p.id, ms: ms, started: p.started)
     }
 
-    func noStart(_ key: Key, voice: String?, at now: ContinuousClock.Instant) -> SpeechDiagnostic? {
-        guard let p = probes[key], !p.started else { return nil }
+    /// `id` binds a watchdog to its own utterance: an object identifier can be reused once
+    /// an earlier utterance is gone.
+    func noStart(_ key: Key, _ id: Utterance.ID, voice: String?,
+                 at now: ContinuousClock.Instant) -> SpeechDiagnostic? {
+        guard let p = probes[key], p.id == id, !p.started else { return nil }
         return .noStart(p.id, afterMs: Self.ms(now - p.at), voice: voice)
     }
 
