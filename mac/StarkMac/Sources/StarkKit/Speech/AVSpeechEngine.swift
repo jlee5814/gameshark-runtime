@@ -99,7 +99,11 @@ public final class AVSpeechEngine: NSObject, SpeechEngine {
     /// behaves as before, and releasing speech never deactivates an open microphone.
     private func activateSession() {
         #if os(iOS)
-        guard !sessionActive else { return }
+        guard !sessionActive else {
+            // Held already: make sure a capture that just ended left playback, not record.
+            for e in AudioSessionClaims.shared.refresh() { log(.session(e)) }
+            return
+        }
         let (ok, events) = AudioSessionClaims.shared.acquire(.speech)
         sessionActive = ok
         for e in events { log(.session(e)) }

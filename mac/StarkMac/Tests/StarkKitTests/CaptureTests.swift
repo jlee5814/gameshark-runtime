@@ -609,6 +609,20 @@ final class FakeAudioSession: AudioSessionPort {
         #expect(claims.release(.speech) == [.deactivated])
     }
 
+    @Test func aFailedRestoreToPlaybackIsRetriedBeforeSpeaking() {
+        let port = FakeAudioSession()
+        let claims = AudioSessionClaims(port: port)
+        _ = claims.acquire(.speech)
+        _ = claims.acquire(.capture)
+        port.failCategory = true
+        #expect(claims.release(.capture) == [.categoryFailed(code: -50)])
+        port.failCategory = false
+        #expect(claims.refresh().isEmpty)
+        #expect(port.calls.last == "category playback")
+        #expect(claims.refresh().isEmpty)               // already right: nothing to do
+        #expect(port.calls.filter { $0 == "category playback" }.count == 2)
+    }
+
     @Test func captureNeverRunsWithoutTheRecordCategory() {
         let port = FakeAudioSession()
         port.failCategory = true

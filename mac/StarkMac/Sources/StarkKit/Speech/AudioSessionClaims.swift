@@ -68,22 +68,29 @@ public final class AudioSessionClaims {
         return (true, events)
     }
 
+    /// Set the active session to what the remaining claims need, if it is not already.
+    /// After a failed attempt the configuration counts as unknown, so the next call retries:
+    /// speech calls this before each utterance it speaks on a session it already holds.
+    public func refresh() -> [SpeechDiagnostic.Session] {
+        guard active, !claims.isEmpty else { return [] }
+        let want: AudioSessionConfig = claims.contains(.capture) ? .record : .playback
+        guard want != config else { return [] }
+        do {
+            try port.setCategory(want)
+            config = want
+            return []
+        } catch {
+            config = nil
+            return [.categoryFailed(code: (error as NSError).code)]
+        }
+    }
+
     /// Give up `claim`; the session deactivates, notifying others, once no claim is left.
     /// While another claim remains, the session is set back to what that claim needs: a
     /// capture ending before a stopped utterance reports its end leaves playback, not record.
     public func release(_ claim: Claim) -> [SpeechDiagnostic.Session] {
         guard claims.remove(claim) != nil, active else { return [] }
-        guard claims.isEmpty else {
-            let want: AudioSessionConfig = claims.contains(.capture) ? .record : .playback
-            guard want != config else { return [] }
-            do {
-                try port.setCategory(want)
-                config = want
-                return []
-            } catch {
-                return [.categoryFailed(code: (error as NSError).code)]
-            }
-        }
+        guard claims.isEmpty else { return refresh() }
         active = false
         config = nil
         do {
