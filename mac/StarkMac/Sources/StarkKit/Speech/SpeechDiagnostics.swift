@@ -129,3 +129,47 @@ public enum SpeechDiagnostic: Equatable, Sendable {
         }
     }
 }
+
+/// Synthesizer timing per utterance object, for diagnostics only. Kept per object rather
+/// than for the current utterance alone, because a superseded utterance reports its cancel
+/// after the next one has started. An utterance that never reports an end is dropped after
+/// `retention`.
+struct UtteranceProbes<Key: Hashable> {
+    struct Probe {
+        var id: Utterance.ID
+        var at: ContinuousClock.Instant
+        var started = false
+    }
+
+    static var retention: Duration { .seconds(600) }
+
+    private(set) var probes: [Key: Probe] = [:]
+
+    mutating func spoke(_ key: Key, _ id: Utterance.ID, at now: ContinuousClock.Instant) {
+        probes = probes.filter { now - $0.value.at < Self.retention }
+        probes[key] = Probe(id: id, at: now)
+    }
+
+    mutating func started(_ key: Key, at now: ContinuousClock.Instant) -> SpeechDiagnostic? {
+        guard let p = probes[key], !p.started else { return nil }
+        probes[key]?.started = true
+        return .synthStarted(p.id, ms: Self.ms(now - p.at))
+    }
+
+    mutating func ended(_ key: Key, cancelled: Bool,
+                        at now: ContinuousClock.Instant) -> SpeechDiagnostic? {
+        guard let p = probes.removeValue(forKey: key) else { return nil }
+        let ms = Self.ms(now - p.at)
+        return cancelled ? .synthCancelled(p.id, ms: ms, started: p.started)
+                         : .synthFinished(p.id, ms: ms, started: p.started)
+    }
+
+    func noStart(_ key: Key, voice: String?, at now: ContinuousClock.Instant) -> SpeechDiagnostic? {
+        guard let p = probes[key], !p.started else { return nil }
+        return .noStart(p.id, afterMs: Self.ms(now - p.at), voice: voice)
+    }
+
+    static func ms(_ d: Duration) -> Int {
+        Int(d.components.seconds * 1000 + d.components.attoseconds / 1_000_000_000_000_000)
+    }
+}

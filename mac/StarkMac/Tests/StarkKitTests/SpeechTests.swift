@@ -626,6 +626,39 @@ func tracedSpeaker(_ store: MemorySpeechStore = MemorySpeechStore())
         #expect(plain.2 == traced.2)
     }
 
+    @Test func aSupersededUtteranceStillLogsItsLateCancel() {
+        var probes = UtteranceProbes<Int>()
+        let t0 = ContinuousClock.now
+        let a = Utterance.ID(conversation: "c", seq: 1, token: 1)
+        let b = Utterance.ID(conversation: "c", seq: 2, token: 2)
+        probes.spoke(1, a, at: t0)
+        #expect(probes.started(1, at: t0 + .milliseconds(40)) == .synthStarted(a, ms: 40))
+        #expect(probes.started(1, at: t0 + .milliseconds(50)) == nil)
+        probes.spoke(2, b, at: t0 + .milliseconds(100))
+        // AVFoundation reports the old utterance's cancel after the new one began.
+        #expect(probes.started(2, at: t0 + .milliseconds(130)) == .synthStarted(b, ms: 30))
+        #expect(probes.ended(1, cancelled: true, at: t0 + .milliseconds(140))
+                == .synthCancelled(a, ms: 140, started: true))
+        #expect(probes.ended(1, cancelled: true, at: t0 + .milliseconds(150)) == nil)
+        #expect(probes.ended(2, cancelled: false, at: t0 + .milliseconds(900))
+                == .synthFinished(b, ms: 800, started: true))
+        #expect(probes.probes.isEmpty)
+    }
+
+    @Test func aSpeakThatNeverStartsIsReportedOnceAndForgottenLater() {
+        var probes = UtteranceProbes<Int>()
+        let t0 = ContinuousClock.now
+        let a = Utterance.ID(conversation: "c", seq: 1, token: 1)
+        probes.spoke(1, a, at: t0)
+        #expect(probes.noStart(1, voice: "v", at: t0 + .seconds(3))
+                == .noStart(a, afterMs: 3000, voice: "v"))
+        #expect(probes.ended(1, cancelled: false, at: t0 + .seconds(4))
+                == .synthFinished(a, ms: 4000, started: false))
+        probes.spoke(2, a, at: t0)
+        probes.spoke(3, a, at: t0 + UtteranceProbes<Int>.retention)
+        #expect(Set(probes.probes.keys) == [3])
+    }
+
     @Test func everyLineRendersStably() {
         let id = Utterance.ID(conversation: "c", seq: 4, token: 2)
         let cases: [(SpeechDiagnostic, String)] = [

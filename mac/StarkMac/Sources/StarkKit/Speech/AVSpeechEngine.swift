@@ -23,8 +23,8 @@ public final class AVSpeechEngine: NSObject, SpeechEngine {
     /// The iOS audio session is ours right now; released only when it was taken.
     private var sessionActive = false
     private let trace: Trace?
-    /// When the current utterance was handed over and whether it began; diagnostics only.
-    private var probe: (id: Utterance.ID, at: ContinuousClock.Instant, started: Bool)?
+    /// When each utterance was handed over and whether it began; diagnostics only.
+    private var probes = UtteranceProbes<ObjectIdentifier>()
 
     public init(trace: Trace? = nil) {
         self.trace = trace
@@ -52,10 +52,11 @@ public final class AVSpeechEngine: NSObject, SpeechEngine {
             log(.voice(u.id, requested: v.voiceIdentifier, resolved: voice?.identifier,
                        name: voice?.name, quality: voice.map { VoiceCatalog.quality($0.quality) },
                        how: how))
-            probe = (u.id, .now, false)
+            let which = ObjectIdentifier(say)
+            probes.spoke(which, u.id, at: .now)
             Task { [weak self] in
                 try? await Task.sleep(for: Self.startWatchdog)
-                self?.checkStarted(u.id, voice: voice?.identifier)
+                self?.checkStarted(which, voice: voice?.identifier)
             }
         }
         activateSession()
@@ -71,28 +72,19 @@ public final class AVSpeechEngine: NSObject, SpeechEngine {
     }
 
     private func ended(_ which: ObjectIdentifier, cancelled: Bool) {
+        if let d = probes.ended(which, cancelled: cancelled, at: .now) { log(d) }
         guard let (obj, id) = current, obj == which else { return }
         current = nil
-        if let p = probe, p.id == id {
-            probe = nil
-            let ms = Self.ms(since: p.at)
-            log(cancelled ? .synthCancelled(id, ms: ms, started: p.started)
-                          : .synthFinished(id, ms: ms, started: p.started))
-        }
         deactivateSession()
         onFinish?(id)
     }
 
     private func began(_ which: ObjectIdentifier) {
-        guard let (obj, id) = current, obj == which, let p = probe, p.id == id,
-              !p.started else { return }
-        probe?.started = true
-        log(.synthStarted(id, ms: Self.ms(since: p.at)))
+        if let d = probes.started(which, at: .now) { log(d) }
     }
 
-    private func checkStarted(_ id: Utterance.ID, voice: String?) {
-        guard let p = probe, p.id == id, !p.started else { return }
-        log(.noStart(id, afterMs: Self.ms(since: p.at), voice: voice))
+    private func checkStarted(_ which: ObjectIdentifier, voice: String?) {
+        if let d = probes.noStart(which, voice: voice, at: .now) { log(d) }
     }
 
     private func activateSession() {
@@ -130,11 +122,6 @@ public final class AVSpeechEngine: NSObject, SpeechEngine {
     }
 
     private func log(_ d: SpeechDiagnostic) { trace?(d.line) }
-
-    private static func ms(since t: ContinuousClock.Instant) -> Int {
-        let d = ContinuousClock.now - t
-        return Int(d.components.seconds * 1000 + d.components.attoseconds / 1_000_000_000_000_000)
-    }
 
     /// Installed voices changing at run time (a download, the speech extension reloading)
     /// is a lead for a voice that resolves but never sounds.
