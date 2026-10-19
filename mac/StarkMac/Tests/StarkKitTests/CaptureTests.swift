@@ -546,6 +546,17 @@ final class FakeAudioSession: AudioSessionPort {
         #expect(claims.release(.capture).isEmpty)
     }
 
+    @Test func captureEndingBeforeALateSpeechReleaseRestoresPlayback() {
+        let port = FakeAudioSession()
+        let claims = AudioSessionClaims(port: port)
+        _ = claims.acquire(.speech)
+        _ = claims.acquire(.capture)
+        #expect(claims.release(.capture).isEmpty)       // recognition ends first
+        #expect(claims.active)
+        #expect(port.calls == ["category playback", "on", "category record", "category playback"])
+        #expect(claims.release(.speech) == [.deactivated])
+    }
+
     @Test func captureNeverRunsWithoutTheRecordCategory() {
         let port = FakeAudioSession()
         port.failCategory = true
