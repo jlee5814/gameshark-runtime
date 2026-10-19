@@ -219,7 +219,7 @@ final class PocketModel {
     /// Drop the connection and the Keychain pairing at once. Only for a pairing that holds
     /// nothing: Stark is elsewhere, or the Mac already revoked this device.
     private func forget() {
-        listen.cancel(.unpaired)
+        listen.reset(.unpaired)
         voice.stop()
         client?.stop()
         client = nil
@@ -245,6 +245,7 @@ final class PocketModel {
         client = c
         if let network { c.setPath(network) }
         isPaired = true
+        listen.reset(.unpaired)                 // presence comes from this connection only
         state = ClientState(surface: endpoint.credential.surface)
         viewedSeq = UserDefaults.standard.integer(forKey: "viewedSeq.\(endpoint.credential.agentUUID)") - 1
         watchNetwork()

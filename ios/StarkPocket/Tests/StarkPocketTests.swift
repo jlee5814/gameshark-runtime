@@ -846,6 +846,18 @@ final class PocketVoiceInputTests: PocketHarness {
         XCTAssertFalse(model.listen.canPress)
     }
 
+    func testForgettingThePairingDisablesListening() async throws {
+        let (model, _) = try listening()
+        await settle { model.listen.isPresent }
+        dictate(model, "left behind")
+        model.forgetAnyway()
+        XCTAssertFalse(model.listen.isPresent)
+        XCTAssertFalse(model.listen.canPress)
+        XCTAssertEqual(model.listen.draft, "")
+        model.listen.press()
+        XCTAssertEqual(input.starts, 1)
+    }
+
     func testAPhoneWithoutStarkCannotListen() async throws {
         let (model, c) = try listening()
         c.emit { $0.presence = PresenceInfo(surface: "mac", home: "mac", generation: 3) }

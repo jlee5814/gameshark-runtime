@@ -379,6 +379,18 @@ final class Rig {
         }
     }
 
+    @Test func aResetForgetsWhoHeldStarkUntilTheNextState() {
+        let rig = Rig()
+        rig.dictate("before unpair")
+        rig.capture.reset(.unpaired)
+        #expect(rig.capture.phase == .idle && rig.capture.draft.isEmpty)
+        #expect(!rig.capture.isPresent && !rig.capture.canPress)
+        rig.capture.press()
+        #expect(rig.input.starts == [1])
+        rig.publish(rig.feed.next())                    // the new connection reports
+        #expect(rig.capture.canPress)
+    }
+
     @Test func aStaleStateNeverDiscards() {
         let rig = Rig()
         let old = rig.feed.next { $0.connection = .disconnected("old") }

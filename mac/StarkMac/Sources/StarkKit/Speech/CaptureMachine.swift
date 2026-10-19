@@ -49,6 +49,9 @@ public struct CaptureMachine: Sendable {
         case finishTimeout(Int)
         case edit(String)
         case cancel(Reason)
+        /// The connection was replaced or forgotten: discard, and forget who held Stark
+        /// until a state from the new connection says so.
+        case reset(Reason)
         /// The reviewed text was submitted, or moved into the composer.
         case sent
         case inserted
@@ -137,6 +140,11 @@ public struct CaptureMachine: Sendable {
             return []
         case .cancel(let why):
             return discard(why)
+        case .reset(let why):
+            let fx = discard(why)
+            key = nil
+            lastRevision = Int.min
+            return fx
         case .sent:
             guard phase == .reviewing else { return [] }
             lastDecision = .sent(chars: draft.count)

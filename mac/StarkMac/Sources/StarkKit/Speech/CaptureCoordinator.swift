@@ -65,6 +65,10 @@ public final class CaptureCoordinator {
 
     public func cancel(_ why: CaptureMachine.Reason = .user) { apply(.cancel(why)) }
 
+    /// A pairing was forgotten or a new connection began: nothing may be pressed until the
+    /// new connection reports that Stark is here.
+    public func reset(_ why: CaptureMachine.Reason) { apply(.reset(why)) }
+
     /// End an open microphone only; a permission prompt or a reviewed draft stays.
     public func stopListening(_ why: CaptureMachine.Reason) {
         guard isListening else { return }
