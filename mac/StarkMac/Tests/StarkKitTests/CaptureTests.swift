@@ -317,6 +317,13 @@ final class Rig {
         rig.dictate("reviewed")
         rig.capture.stopListening(.inactive)
         #expect(rig.capture.phase == .reviewing)
+        rig.capture.press()
+        rig.input.hear(.partial("released"))
+        rig.capture.release()
+        rig.capture.stopListening(.covered)             // the mic is already closed
+        rig.input.hear(.final("released."))
+        #expect(rig.capture.phase == .reviewing)
+        #expect(rig.capture.draft == "reviewed released.")
         let asking = Rig(availability: .needsPermission)
         asking.capture.press()
         asking.capture.stopListening(.inactive)

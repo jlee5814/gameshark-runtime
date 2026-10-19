@@ -101,6 +101,12 @@ public struct CaptureMachine: Sendable {
 
     public var isPresent: Bool { key != nil }
 
+    /// Audio is flowing from the microphone; false once released, while the final
+    /// transcript is still on its way.
+    public var isMicrophoneOpen: Bool {
+        if case .capturing = phase { true } else { false }
+    }
+
     public var isListening: Bool {
         switch phase {
         case .capturing, .finishing: true

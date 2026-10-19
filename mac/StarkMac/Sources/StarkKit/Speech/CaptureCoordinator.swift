@@ -69,9 +69,10 @@ public final class CaptureCoordinator {
     /// new connection reports that Stark is here.
     public func reset(_ why: CaptureMachine.Reason) { apply(.reset(why)) }
 
-    /// End an open microphone only; a permission prompt or a reviewed draft stays.
+    /// End an open microphone only; a permission prompt, a transcript still finalizing
+    /// after release, or a reviewed draft stays.
     public func stopListening(_ why: CaptureMachine.Reason) {
-        guard isListening else { return }
+        guard machine.isMicrophoneOpen else { return }
         apply(.cancel(why))
     }
 
