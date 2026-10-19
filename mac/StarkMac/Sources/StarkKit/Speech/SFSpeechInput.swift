@@ -15,8 +15,9 @@ public final class SFSpeechInput: NSObject, SpeechInput {
     /// Stark speaks English whatever the system language is.
     public static let locale = Locale(identifier: "en-US")
 
-    private let recognizer = SFSpeechRecognizer(locale: SFSpeechInput.locale)
-    private let engine = AVAudioEngine()
+    /// Rebuilt after a media services reset, which orphans every audio object.
+    private var recognizer = SFSpeechRecognizer(locale: SFSpeechInput.locale)
+    private var engine = AVAudioEngine()
     private var request: SFSpeechAudioBufferRecognitionRequest?
     private var task: SFSpeechRecognitionTask?
     private var tapped = false
@@ -166,12 +167,28 @@ public final class SFSpeechInput: NSObject, SpeechInput {
         sink(n, .interrupted)
     }
 
+    /// End any capture, then replace the orphaned engine and recognizer so the next press
+    /// works without a relaunch.
+    private func rebuild() {
+        lost()
+        cancel()
+        engine = AVAudioEngine()
+        recognizer = SFSpeechRecognizer(locale: Self.locale)
+        recognizer?.delegate = self
+        trace?("capture input rebuilt after media reset")
+        availabilityChanged?()
+    }
+
     /// The microphone or route going away mid capture ends it; nothing restarts.
     private func watchAudio() {
         let nc = NotificationCenter.default
         observers.append(nc.addObserver(forName: .AVAudioEngineConfigurationChange,
-                                        object: engine, queue: .main) { [weak self] _ in
-            MainActor.assumeIsolated { self?.lost() }
+                                        object: nil, queue: .main) { [weak self] note in
+            let changed = (note.object as? AVAudioEngine).map(ObjectIdentifier.init)
+            MainActor.assumeIsolated {
+                guard let self, changed == ObjectIdentifier(self.engine) else { return }
+                self.lost()
+            }
         })
         #if os(iOS)
         let s = AVAudioSession.sharedInstance()
@@ -189,7 +206,7 @@ public final class SFSpeechInput: NSObject, SpeechInput {
         })
         observers.append(nc.addObserver(forName: AVAudioSession.mediaServicesWereResetNotification,
                                         object: s, queue: .main) { [weak self] _ in
-            MainActor.assumeIsolated { self?.lost() }
+            MainActor.assumeIsolated { self?.rebuild() }
         })
         #endif
     }

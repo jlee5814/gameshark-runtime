@@ -100,7 +100,8 @@ On iOS, speech output and capture share one `AVAudioSession` through
 Phase 4.3B `.playback` / `.spokenAudio` session. The session deactivates only when the last
 claim releases, so a stopped utterance that reports its end late cannot shut an open
 microphone. An interruption, a lost route, a media server reset, or an audio engine
-configuration change ends the capture and discards the draft.
+configuration change ends the capture and discards the draft. After a media server reset
+the audio engine and recognizer are recreated, so the next press works without a relaunch.
 
 Discarded by: Cancel or Discard, Escape (StarkMac), closing the chat card (StarkMac),
 sleep (StarkMac), backgrounding (Stark Pocket), Jack In or Jack Out, unpairing, and any
@@ -122,6 +123,7 @@ release; a permission prompt or a reviewed draft survives it.
 | `capture discard reason= chars=` | why a draft went away |
 | `capture send chars=`, `capture insert chars=` | the explicit choices |
 | `capture input failed code=` | the microphone or recognizer could not start; the capture is discarded |
+| `capture input rebuilt after media reset` | iOS reset its media services; the engine and recognizer were recreated |
 | `listening on`, `listening off`, `disarmed reason=listening` | Stark's voice hold |
 
 ## Known limitations
