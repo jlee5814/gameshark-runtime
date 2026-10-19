@@ -158,22 +158,20 @@ public final class AVSpeechEngine: NSObject, SpeechEngine {
         observers.append(nc.addObserver(forName: AVAudioSession.interruptionNotification,
                                         object: s, queue: .main) { [weak self] note in
             let raw = note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt
-            let type = raw.flatMap(AVAudioSession.InterruptionType.init)
-            if let type {
-                MainActor.assumeIsolated {
-                    self?.log(.session(type == .began ? .interruptionBegan : .interruptionEnded))
-                }
+            guard let type = raw.flatMap(AVAudioSession.InterruptionType.init) else { return }
+            MainActor.assumeIsolated {
+                self?.log(.session(type == .began ? .interruptionBegan : .interruptionEnded))
+                if type == .began { self?.lost() }
             }
-            guard type == .began else { return }
-            MainActor.assumeIsolated { self?.lost() }
         })
         observers.append(nc.addObserver(forName: AVAudioSession.routeChangeNotification,
                                         object: s, queue: .main) { [weak self] note in
             let raw = note.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt
-            MainActor.assumeIsolated { self?.log(.session(.route(reason: raw ?? 0))) }
-            guard raw.flatMap(AVAudioSession.RouteChangeReason.init) == .oldDeviceUnavailable
-            else { return }
-            MainActor.assumeIsolated { self?.lost() }
+            let gone = raw.flatMap(AVAudioSession.RouteChangeReason.init) == .oldDeviceUnavailable
+            MainActor.assumeIsolated {
+                self?.log(.session(.route(reason: raw ?? 0)))
+                if gone { self?.lost() }
+            }
         })
         observers.append(nc.addObserver(forName: AVAudioSession.mediaServicesWereResetNotification,
                                         object: s, queue: .main) { [weak self] _ in
@@ -287,9 +285,10 @@ public enum VoiceCatalog {
         pickDefault(options(), language: preferredLanguage)
     }
 
-    /// How a voice setting became a voice: the chosen voice, the default because none was
-    /// chosen or the chosen one is gone, the language's system voice, or nothing at all.
-    public enum How: String, Sendable { case requested, `default`, language, none }
+    /// How a voice setting became a voice: the chosen voice, another voice the system gave
+    /// for the chosen identifier, the default because none was chosen or the chosen one is
+    /// gone, the language's system voice, or nothing at all.
+    public enum How: String, Sendable { case requested, substituted, `default`, language, none }
 
     public static func voice(_ identifier: String?) -> AVSpeechSynthesisVoice? {
         resolve(identifier).0
@@ -297,7 +296,7 @@ public enum VoiceCatalog {
 
     public static func resolve(_ identifier: String?) -> (AVSpeechSynthesisVoice?, How) {
         if let id = identifier, let v = AVSpeechSynthesisVoice(identifier: id) {
-            return (v, .requested)
+            return (v, v.identifier == id ? .requested : .substituted)
         }
         if let best = pickDefault(options(), language: preferredLanguage) {
             let v = AVSpeechSynthesisVoice(identifier: best.id)

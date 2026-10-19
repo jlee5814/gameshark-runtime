@@ -198,7 +198,7 @@ process id.
 | `replay rejected seq= reason=` | replay on a disarmed surface or of an unknown row |
 | `stop by=` | Stop (`user`), a sent message (`send`), an engine interruption (`audio`), sleep (`system`) |
 | `muted`, `suspended`, `finished`, `finish stale` | the matching coordinator events |
-| `voice seq= tok= requested= resolved= name= quality= how=` | each utterance: how the setting became a voice (`requested`, `default`, `language`, `none`) |
+| `voice seq= tok= requested= resolved= name= quality= how=` | each utterance: how the setting became a voice (`requested`, `substituted` when the system returns another voice for the chosen identifier, `default`, `language`, `none`) |
 | `synth start`, `synth finish`, `synth cancel` | `AVSpeechSynthesizer` callbacks, with ms since speak and whether it started |
 | `synth no_start seq= tok= after_ms= voice=` | no start 3 s after speak; logged once, nothing retried |
 | `session ...` | iOS audio session activate, deactivate, interruption, route change, media reset |
@@ -238,7 +238,8 @@ Reading it:
   `synth finish ... started=false`: the gate passed and the engine took the utterance, but
   the synthesizer never sounded. This points at the engine or voice extension (the Kona
   lead), not the gate.
-- `voice ... how=none` or `resolved=none`: the voice did not load.
+- `voice ... how=none` or `resolved=none`: the voice did not load. `how=substituted`: the
+  system answered the chosen identifier with a different voice.
 - `skip`, `replay rejected`, or `disarmed` before the silence: the gate refused, and the
   reason says why.
 - No `speak` line for a fresh reply while armed: the reply never reached the coordinator;
