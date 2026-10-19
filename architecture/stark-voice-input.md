@@ -1,8 +1,10 @@
 # Stark voice input (Phase 4.3C)
 
-Status: built. Automated tests pass on macOS and in the iOS simulator. Physical acceptance
-has not run; the checklist is at the end. Nothing here is accepted until it passes on a
-real Mac and a real iPhone.
+Status: built. Automated tests pass on macOS and in the iOS simulator. Physically
+accepted by hand on StarkMac and a physical iPhone for the recorded scenarios on
+2026-10-19 (build c03f6e3). Several checklist steps were not exercised and stay NOT
+VERIFIED, and two observations stay open. See
+[Phase 4.3C acceptance](#phase-43c-acceptance-physical-iphone-and-starkmac-2026-10-19).
 
 ## Goal
 
@@ -157,6 +159,12 @@ composer and its Stop Listening action, also ends an open microphone.
 - macOS has no audio session interruption notice; StarkMac ends a capture on sleep, on an
   audio device change, and on its controls.
 - The microphone may pick up other people nearby; the review step is the safeguard.
+- Open observation: before c03f6e3 some captures ended almost at once with nothing
+  recognized; the cause is unknown. See
+  [Immediate empty recognition](#open-observation-immediate-empty-recognition).
+- Open observation: locking the iPhone during capture shows "Stark didn't catch that.",
+  the same text as a recognition failure. See
+  [Screen lock message](#open-observation-screen-lock-message).
 
 ## Tests
 
@@ -193,7 +201,7 @@ composer and its Stop Listening action, also ends an open microphone.
 
 ## Physical acceptance checklist
 
-Not run. Each step needs StarkMac and Stark Pocket built from this branch, the runtime on
+Run by hand on 2026-10-19; results below. Each step needs StarkMac and Stark Pocket built from this branch, the runtime on
 the existing device check database, and the existing pairing; no reinstall or new pairing.
 
 Setup, from `prototype/` in this branch's checkout:
@@ -237,7 +245,7 @@ commit.
    stops before you speak, and he does not resume after release.
 7. **Read only surface.** With Stark on the iPhone, the Mac's microphone is disabled; the
    same holds for the phone when Stark is on the Mac.
-8. **First press, iPhone.** Jack Out to the phone. Hold the microphone; allow both
+8. **First press, iPhone.** Jack In on the phone. Hold the microphone; allow both
    prompts. Confirm capture starts only on a second press.
 9. **Dictate, Send, Insert, iPhone.** Repeat steps 2 to 4 on the phone.
 10. **Background, iPhone.** Hold and speak, then swipe home. Return: no draft, and nothing
@@ -254,5 +262,109 @@ commit.
 15. **Database.** After the run, `PRAGMA quick_check` is `ok`, user rows grew only by the
     turns sent, and no audio or transcript appears in the database or the journal.
 
-Phase 4.3B checks still outstanding and not claimed here: the dedicated Stop button
-stopping a second replay, and Jack In interrupting StarkMac during active speech.
+The two Phase 4.3B checks this checklist left out, the dedicated Stop button stopping a
+second replay and Jack In interrupting StarkMac during active speech, passed in the same
+session; see the
+[Phase 4.3B follow up](stark-voice-output.md#follow-up-2026-10-19-pr-43-build-c03f6e3).
+
+## Phase 4.3C acceptance: physical iPhone and StarkMac, 2026-10-19
+
+User observed by hand on StarkMac and a physical Stark Pocket iPhone; not automated test
+results. No test was newly executed for this record.
+
+Environment, as the user reported it: the existing database
+`~/.gameshark/device-check/runtime.db`; the existing Stark identity and pairing; StarkMac
+and Stark Pocket built from this branch, the iPhone build confirmed to include commit
+c03f6e3. Not recorded: the iPhone model, the iOS version, the macOS version, the daemon
+log, and the `speech` log stream.
+
+### StarkMac, observed (checklist step in brackets)
+
+1. Microphone and speech recognition access were granted. [1]
+2. On device English recognition produced transcripts. [2]
+3. Release moved the panel from Listening to the editable voice draft, after the SwiftUI
+   observation fix in c03f6e3. [2]
+4. Five consecutive push to talk attempts reached the voice draft. [2]
+5. Editing a voice draft and pressing Send submitted exactly one message. [3]
+6. Stark replied normally and spoke the reply exactly once. [3]
+7. Insert into Composer moved the transcript into the composer without sending. [4]
+8. Escape during an active capture cancelled it at once. [5]
+9. The earlier conversation stayed intact.
+
+### Stark Pocket, observed
+
+1. The iPhone ran the expected build, including c03f6e3. [setup]
+2. The microphone was disabled while Stark was present on the Mac. [7]
+3. Jack In moved Stark to the iPhone and enabled voice input. [8]
+4. Recognition on the iPhone produced an editable transcript. [9]
+5. Send produced one message and a spoken reply on the iPhone. [9]
+6. StarkMac stayed silent while Stark was present on the iPhone.
+7. Jack Out discarded an uncommitted voice draft. [12]
+8. Sending Stark Pocket to the background discarded an uncommitted voice draft. [10]
+9. Locking the iPhone during capture stopped recording and discarded the unfinished
+   transcript; recording did not resume on return. A variant of [11], not the call or
+   alarm interruption the step names.
+10. Discard removed the voice draft without sending.
+
+### NOT VERIFIED
+
+Not exercised in this run, or not reported; automated tests cover some of them, and
+none of those tests count as physical acceptance:
+
+- [1] The first press raising the prompt and starting nothing; no microphone indicator
+  until a fresh press.
+- [2] A brief tap without speech showing "Stark didn't catch that." and logging
+  `capture release`.
+- [4] Sending an inserted transcript with Return.
+- [5] Discard on the Mac; the microphone indicator going off after Escape.
+- [6] Holding the microphone while StarkMac reads a reply stops him, and he does not
+  resume.
+- [7] The Mac's microphone disabled while Stark is on the iPhone. StarkMac staying silent
+  shows the speech gate, not the microphone gate.
+- [8] The iPhone permission prompts and the fresh press rule.
+- [9] Insert into Composer on the iPhone; repeated takes on the iPhone.
+- [11] An incoming call or timer alarm during capture.
+- [12] The Mac's composer not receiving a draft discarded by a jack; which surface began
+  the jack was not recorded.
+- [13] Denied microphone or speech recognition access; restricted access.
+- [14] On device English unavailable.
+- [15] User rows growing by only the turns sent; no audio or transcript in the database
+  or the journal.
+- Beyond the checklist: StarkMac sleep and chat card close; unpairing; the iPhone scene
+  going inactive (Control Center, the app switcher); opening Settings or Memories during
+  capture; an audio route loss or media services reset; VoiceOver Start and Stop
+  Listening; the 3 s finish timeout; the one minute recognition cap; a spoken
+  `/remember`.
+
+### Database
+
+Read only, against `~/.gameshark/device-check/runtime.db` after the run: `PRAGMA
+quick_check` returned `ok`; 101 messages; 0 active memories. An earlier record counted 79
+messages, but the count just before this run was not taken, so the 22 message difference
+is not attributed to this run alone, and growth by only the turns sent is not shown. Zero
+active memories is valid for this database and does not by itself show saved memory
+retention.
+
+### Open observation: immediate empty recognition
+
+Before c03f6e3, some captures ended almost at once with zero characters recognized. The
+Apple recognizer error behind them was not captured. The current build logs the NSError
+domain and code (`capture discard reason=failed ... domain= code=` and `capture input
+error session= domain= code=`), but the root cause of the original failures is
+unconfirmed. Later captures passed; that does not close it. If it recurs, keep the `speech`
+log stream from the checklist setup running and record the `domain=` and `code=` of the
+failing line.
+
+### Open observation: screen lock message
+
+Locking the iPhone during capture stopped and discarded the session as intended, but
+Stark Pocket showed "Stark didn't catch that." The panel uses that text for both a
+failed and an empty discard (`CaptureCoordinator.swift`, the `discarded(.failed, _)` and
+`discarded(.empty, _)` cases), so it cannot tell a lock from a recognition failure. Which
+path the lock took was not logged. Recorded as a UX observation; nothing was changed.
+
+### Verdict
+
+Phase 4.3C is physically accepted for the demonstrated scenarios on StarkMac and one
+physical iPhone. The NOT VERIFIED steps stay open, and so do both observations. One run by
+hand is not a reliability claim.
