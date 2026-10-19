@@ -133,21 +133,24 @@ public enum SpeechDiagnostic: Equatable, Sendable {
 /// Synthesizer timing per utterance object, for diagnostics only. Kept per object rather
 /// than for the current utterance alone, because a superseded utterance reports its cancel
 /// after the next one has started. An utterance that never reports an end is dropped after
-/// `retention`.
+/// `retention`. A probe keeps its utterance object alive, so while it exists no other
+/// utterance can take the same object identifier and a late callback finds its own probe.
 struct UtteranceProbes<Key: Hashable> {
     struct Probe {
         var id: Utterance.ID
         var at: ContinuousClock.Instant
         var started = false
+        var object: AnyObject?
     }
 
     static var retention: Duration { .seconds(600) }
 
     private(set) var probes: [Key: Probe] = [:]
 
-    mutating func spoke(_ key: Key, _ id: Utterance.ID, at now: ContinuousClock.Instant) {
+    mutating func spoke(_ key: Key, _ id: Utterance.ID, at now: ContinuousClock.Instant,
+                        keeping object: AnyObject? = nil) {
         probes = probes.filter { now - $0.value.at < Self.retention }
-        probes[key] = Probe(id: id, at: now)
+        probes[key] = Probe(id: id, at: now, object: object)
     }
 
     mutating func started(_ key: Key, at now: ContinuousClock.Instant) -> SpeechDiagnostic? {

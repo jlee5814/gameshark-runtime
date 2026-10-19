@@ -53,7 +53,7 @@ public final class AVSpeechEngine: NSObject, SpeechEngine {
                        name: voice?.name, quality: voice.map { VoiceCatalog.quality($0.quality) },
                        how: how))
             let which = ObjectIdentifier(say)
-            probes.spoke(which, u.id, at: .now)
+            probes.spoke(which, u.id, at: .now, keeping: say)
             Task { [weak self] in
                 try? await Task.sleep(for: Self.startWatchdog)
                 self?.checkStarted(which, u.id, voice: voice?.identifier)

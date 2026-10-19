@@ -672,6 +672,25 @@ func tracedSpeaker(_ store: MemorySpeechStore = MemorySpeechStore())
                 == .noStart(b, afterMs: 3000, voice: nil))
     }
 
+    @Test func aProbeKeepsItsUtteranceAliveUntilItEnds() {
+        var probes = UtteranceProbes<ObjectIdentifier>()
+        let t0 = ContinuousClock.now
+        let a = Utterance.ID(conversation: "c", seq: 1, token: 1)
+        weak var gone: NSObject?
+        var key: ObjectIdentifier?
+        do {
+            let object = NSObject()
+            gone = object
+            key = ObjectIdentifier(object)
+            probes.spoke(key!, a, at: t0, keeping: object)
+        }
+        // Held, so no new object can reuse its identifier before its end is logged.
+        #expect(gone != nil)
+        #expect(probes.ended(key!, cancelled: false, at: t0 + .seconds(1))
+                == .synthFinished(a, ms: 1000, started: false))
+        #expect(gone == nil)
+    }
+
     @Test func everyLineRendersStably() {
         let id = Utterance.ID(conversation: "c", seq: 4, token: 2)
         let cases: [(SpeechDiagnostic, String)] = [
