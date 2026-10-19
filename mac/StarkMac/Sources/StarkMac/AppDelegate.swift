@@ -15,10 +15,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         panel.show()
         buildStatusItem()
         // Sleep takes the speakers away mid sentence; Stark never resumes on wake.
-        NSWorkspace.shared.notificationCenter.addObserver(
+        let workspace = NSWorkspace.shared.notificationCenter
+        workspace.addObserver(
             forName: NSWorkspace.willSleepNotification, object: nil, queue: .main) { [weak self] _ in
+            SpeechLog.note(.lifecycle(.sleep))
             MainActor.assumeIsolated { self?.model.voice.interrupted() }
         }
+        workspace.addObserver(forName: NSWorkspace.didWakeNotification, object: nil,
+                              queue: .main) { _ in SpeechLog.note(.lifecycle(.wake)) }
         model.start()
         let env = ProcessInfo.processInfo.environment
         if env["STARK_CLICK_THROUGH"] == "1" {

@@ -43,6 +43,7 @@ persona remains the one source of Stark's character; the voice only reads it.
 | `SpeechCoordinator.swift` | Main actor owner of machine, engine, and store. Holds no `GatewayClient`. |
 | `SpeechEngine.swift` | Engine protocol, `Utterance`, `VoiceSettings`, the store, the ledger key. |
 | `AVSpeechEngine.swift` | AVFoundation engine, iOS audio session, voice catalogue. |
+| `SpeechDiagnostics.swift` | `SpeechDiagnostic`: the device log lines; none carries text. |
 
 `StarkModel` (StarkMac) and `PocketModel` (Stark Pocket) each own one coordinator and feed
 it every `ClientState` they apply. `ClientState.revision`, stamped by `GatewayClient` on each
@@ -171,6 +172,91 @@ bounded ranges (rate 0.85 to 1.2, pitch 0.9 to 1.2).
   silent until the voice was switched in Settings. Not reproduced and not explained; see
   [Phase 4.3B acceptance](#phase-43b-acceptance-physical-iphone-and-starkmac-2026-10-18).
 
+## Speech diagnostics
+
+The coordinator and `AVSpeechEngine` each take an optional `Trace`. StarkMac and Stark
+Pocket pass one that writes `SpeechDiagnostic` lines to the unified log, category `speech`,
+subsystem `dev.gameshark.starkmac` or `dev.gameshark.starkpocket`. Tests pass none or a
+recorder. Tracing never changes a decision: a test runs one scenario with and without it
+and compares every utterance, stop, and watermark.
+
+Privacy holds by construction. No `SpeechDiagnostic` case takes a row's text. A line
+carries the reply's `seq`, the utterance token `tok` (which reading of the reply), `chars`
+(its length), voice identifiers, reasons, error codes, and timings. A test pushes a
+sentinel through speaking, replay, mute, stop, interruption, and handoff and finds none of
+its words in any line. Speech output needs no permission, so no authorization line exists;
+the gate lines record the presence decision. The unified log supplies timestamps and the
+process id.
+
+| Line | Emitted when |
+|---|---|
+| `ready muted= voice=` | the coordinator starts with its stored settings |
+| `catalog default= offered= installed=` | the engine starts |
+| `armed agent= surface= gen= handled=`, `disarmed reason=` | the gate changes; a steady stream of states logs nothing |
+| `speak seq= tok= origin= chars=` | a reply goes to the engine, `auto` or `replay` |
+| `skip seq= reason=muted` | a new reply arrives while muted |
+| `replay rejected seq= reason=` | replay on a disarmed surface or of an unknown row |
+| `stop by=` | Stop (`user`), a sent message (`send`), an engine interruption (`audio`), sleep (`system`) |
+| `muted`, `suspended`, `finished`, `finish stale` | the matching coordinator events |
+| `voice seq= tok= requested= resolved= name= quality= how=` | each utterance: how the setting became a voice (`requested`, `substituted` when the system returns another voice for the chosen identifier, `default`, `language`, `none`) |
+| `synth start`, `synth finish`, `synth cancel` | `AVSpeechSynthesizer` callbacks, with ms since speak and whether it started |
+| `synth no_start seq= tok= after_ms= voice=` | no start 3 s after speak; logged once, nothing retried |
+| `synth no_end seq= tok= after_ms=` | no finish or cancel 10 minutes after speak; the diagnostic record is dropped |
+| `session ...` | iOS audio session activate, deactivate, interruption, route change, media reset |
+| `voices changed installed=` | the installed voice list changed while running |
+| `system sleep`, `system wake` | StarkMac sleep and wake |
+
+A spoken reply costs four to six lines. Lines are `notice` level and public, since none
+can hold content.
+
+### Capturing a silent playback
+
+If Stark goes silent again, capture before switching voices, muting, or relaunching: a
+voice switch cleared the last occurrence and may erase the evidence.
+
+1. Note the time, the reply's seq if shown, and the Voice menu choice.
+2. Save the last 15 minutes. zsh's `log` is a builtin, so give the full path:
+
+   ```sh
+   /usr/bin/log show --last 15m --info --style compact \
+     --predicate '(subsystem == "dev.gameshark.starkmac" AND category == "speech")
+       OR eventMessage CONTAINS[c] "Kona" OR subsystem CONTAINS[c] "TextToSpeech"' \
+     > ~/Desktop/stark-silent-$(date +%Y%m%d-%H%M).log
+   ```
+
+3. In a second terminal, stream while pressing replay on the reply once:
+
+   ```sh
+   /usr/bin/log stream --level info \
+     --predicate 'subsystem == "dev.gameshark.starkmac" AND category == "speech"'
+   ```
+
+4. Only then switch voices, with the stream still running.
+
+Reading it:
+
+- `speak`, then `voice ... how=requested` or `how=default`, then `synth no_start` or
+  `synth finish ... started=false`: the gate passed and the engine took the utterance, but
+  the synthesizer never sounded. This points at the engine or voice extension (the Kona
+  lead), not the gate.
+- `voice ... how=none` or `resolved=none`: the voice did not load. `how=substituted`: the
+  system answered the chosen identifier with a different voice.
+- `skip`, `replay rejected`, or `disarmed` before the silence: the gate refused, and the
+  reason says why.
+- No `speak` line for a fresh reply while armed: the reply never reached the coordinator;
+  check the chat state, not the voice.
+
+On an iPhone, collect from the Mac with the phone connected and unlocked:
+
+```sh
+sudo /usr/bin/log collect --device-udid <udid> --last 15m --output ~/Desktop/pocket.logarchive
+/usr/bin/log show ~/Desktop/pocket.logarchive --info \
+  --predicate 'subsystem == "dev.gameshark.starkpocket" AND category == "speech"'
+```
+
+Diagnostics do not resolve the open silent relaunch observation; they make a recurrence
+explainable.
+
 ## Out of scope
 
 Voice input, wake words, microphone recording, background listening, server side
@@ -186,7 +272,11 @@ speaks only later replies; six rapid handoffs with no reply spoken twice; mute w
 backlog; replay once, never on a ghost; Stop, sending, and a user row stop speech; audio
 interruption without resume; runtime restart; out of order and batched rows; a stale
 snapshot; identity change with separate ledgers; a stale finish; settings clamped and
-carried; default voice choice. `SpeechWritesNothingTests` drives `GatewayClient` against
+carried; default voice choice. `SpeechDiagnosticsTests`: line order for a spoken reply,
+rejected replay and muted skip reasons, gate lines only on change, stop causes, handoff and
+suspension, stale finish, no text in any line, identical behavior with and without a trace,
+and every line's exact rendering; `VoiceCatalogTests` checks `resolve` reports how a voice
+was chosen. `SpeechWritesNothingTests` drives `GatewayClient` against
 the fake runtime and proves speaking, muting, replaying, stopping, and interruptions add
 no request.
 
@@ -289,8 +379,8 @@ were both silent. At the time:
 Recorded as a potential intermittent speech initialization issue. It was not reproduced,
 no root cause is known, and nothing was changed for it; the passing retest does not close
 it. Unverified places to look if it recurs: the synthesizer or voice loading on first
-launch, and how the stored voice identifier resolves at startup. If it recurs, capture the
-StarkMac log and the `voice=` state line before switching voices.
+launch, and how the stored voice identifier resolves at startup. If it recurs, follow
+[Capturing a silent playback](#capturing-a-silent-playback) before switching voices.
 
 ### Verdict
 
