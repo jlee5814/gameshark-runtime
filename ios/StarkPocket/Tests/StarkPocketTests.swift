@@ -785,13 +785,59 @@ final class PocketVoiceInputTests: PocketHarness {
         model.listen.press()
         input.hear(.partial("Testing microphone release"))
         model.listen.release()
-        XCTAssertEqual(model.listen.panel, .listening)
+        XCTAssertEqual(model.listen.panel, .finishing)
         let fired = ObservedChange()
         withObservationTracking { _ = model.listen.isListening } onChange: { fired.on = true }
         input.hear(.final("Testing microphone release"))
         XCTAssertTrue(fired.on)
         XCTAssertEqual(model.listen.panel, .reviewing)
         XCTAssertEqual(model.listen.draft, "Testing microphone release")
+        assertNothingSent(c)
+    }
+
+    /// The same finishing sequence the Mac runs: release turns the red microphone off at
+    /// once, finishing never reads as recording, a press meanwhile starts nothing, and the
+    /// delayed final still opens the editable draft.
+    func testReleaseLeavesRecordingAtOnceAndFinishingIgnoresPresses() async throws {
+        let (model, c) = try listening()
+        await settle { model.listen.isPresent }
+        XCTAssertEqual(model.listen.mic, .ready)
+        model.listen.press()
+        XCTAssertEqual(model.listen.mic, .recording)
+        XCTAssertEqual(model.listen.panel, .listening)
+        input.hear(.partial("short"))
+        let fired = ObservedChange()
+        withObservationTracking { _ = model.listen.mic } onChange: { fired.on = true }
+        model.listen.release()
+        XCTAssertTrue(fired.on)
+        XCTAssertEqual(model.listen.mic, .finishing)
+        XCTAssertFalse(model.listen.isRecording)
+        XCTAssertEqual(model.listen.panel, .finishing)
+        model.listen.press()
+        model.listen.release()
+        XCTAssertEqual(input.starts, 1)
+        input.hear(.partial("short sentence"))
+        XCTAssertEqual(model.listen.mic, .finishing)
+        input.hear(.final("Short sentence."))
+        XCTAssertEqual(model.listen.panel, .reviewing)
+        XCTAssertEqual(model.listen.mic, .ready)
+        XCTAssertEqual(model.listen.draft, "Short sentence.")
+        assertNothingSent(c)
+    }
+
+    func testCancelWhileFinishingDiscardsTheDraft() async throws {
+        let (model, c) = try listening()
+        await settle { model.listen.isPresent }
+        model.listen.press()
+        input.hear(.partial("never mind"))
+        model.listen.release()
+        model.listen.cancel(.user)
+        XCTAssertEqual(model.listen.phase, .idle)
+        XCTAssertEqual(model.listen.draft, "")
+        XCTAssertEqual(input.cancels, 1)
+        input.hear(.final("never mind"))
+        XCTAssertEqual(model.listen.panel, .none)
+        XCTAssertEqual(model.listen.draft, "")
         assertNothingSent(c)
     }
 

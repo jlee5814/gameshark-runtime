@@ -292,7 +292,7 @@ final class Fired: @unchecked Sendable {
         c.press()
         rig.input.hear(.partial("Testing microphone release"))
         c.release()
-        #expect(c.panel == .listening)
+        #expect(c.panel == .finishing)
         #expect(rerenders(reading: { _ = c.isListening }) {
             rig.input.hear(.final("Testing microphone release"))
         })
@@ -319,6 +319,95 @@ final class Fired: @unchecked Sendable {
             rig.input.hear(.failed(domain: "kAFAssistantErrorDomain", code: 1110))
         })
         #expect(c.panel == .reviewing && c.draft == "held words again")
+    }
+
+    // MARK: finishing after release
+
+    /// Release closes the microphone at once: the control leaves red for finishing in the
+    /// same step, and a view reading only `mic` rerenders for it.
+    @Test func releaseClosesTheMicrophoneAtOnce() {
+        let rig = Rig()
+        let c = rig.capture
+        #expect(c.mic == .ready)
+        #expect(rerenders(reading: { _ = c.mic }) { c.press() })
+        #expect(c.mic == .recording && c.isRecording && c.panel == .listening)
+        rig.input.hear(.partial("short sentence"))
+        #expect(rerenders(reading: { _ = c.mic; _ = c.panel }) { c.release() })
+        #expect(c.mic == .finishing && !c.isRecording && c.panel == .finishing)
+        #expect(rig.input.finishes == 1)
+        #expect(c.draft == "short sentence")
+    }
+
+    /// Recognition may finish long after release; every step until then reads as
+    /// finishing, never as recording.
+    @Test func aDelayedFinalNeverShowsRecordingWhileFinishing() {
+        let rig = Rig()
+        let c = rig.capture
+        c.press()
+        rig.input.hear(.partial("slow"))
+        c.release()
+        for late in ["slow rec", "slow recognition", "slow recognition arrives"] {
+            rig.input.hear(.partial(late))
+            #expect(c.mic == .finishing && c.panel == .finishing && !c.isRecording)
+            #expect(c.draft == late)
+        }
+        rig.input.hear(.final("Slow recognition arrives."))
+        #expect(c.mic == .ready && c.panel == .reviewing)
+        #expect(c.draft == "Slow recognition arrives.")
+        #expect(rig.surface.submitted.isEmpty)
+    }
+
+    /// A press while the transcript finishes starts nothing and costs nothing: no new
+    /// session, no second recognizer, and the final still opens review.
+    @Test func aPressWhileFinishingStartsNothing() {
+        let rig = Rig()
+        let c = rig.capture
+        c.press()
+        rig.input.hear(.partial("first take"))
+        c.release()
+        c.press()
+        #expect(c.phase == .finishing(1) && c.mic == .finishing)
+        #expect(rig.input.starts == [1])
+        // The rejected gesture's own release changes nothing either.
+        c.release()
+        #expect(c.phase == .finishing(1) && rig.input.finishes == 1)
+        rig.input.hear(.final("first take"))
+        #expect(c.panel == .reviewing && c.draft == "first take")
+        #expect(rig.input.starts == [1])
+    }
+
+    /// Cancelling while finishing stops recognition, drops the draft, gives Stark his voice
+    /// back, and the abandoned session's late final or failure changes nothing.
+    @Test func cancelWhileFinishingDiscardsAndLateCallbacksChangeNothing() {
+        let rig = Rig()
+        let c = rig.capture
+        c.press()
+        rig.input.hear(.partial("never mind"))
+        c.release()
+        let cancels = rig.input.cancels
+        #expect(rerenders(reading: { _ = c.mic; _ = c.panel }) { c.cancel(.user) })
+        #expect(c.phase == .idle && c.draft.isEmpty && c.mic == .ready && c.panel == .none)
+        #expect(rig.input.cancels == cancels + 1)
+        rig.input.hear(.final("never mind"), session: 1)
+        rig.input.hear(.failed(domain: "kAFAssistantErrorDomain", code: 216), session: 1)
+        #expect(c.phase == .idle && c.draft.isEmpty && c.panel == .none)
+        #expect(rig.surface.submitted.isEmpty)
+        // Stark's voice was released: the next reply is spoken.
+        rig.publish(rig.feed.reply("after"))
+        #expect(rig.engine.spoken == [3])
+    }
+
+    /// The finish timeout path also leaves finishing for review, never for recording.
+    @Test func aFinishTimeoutLeavesFinishingForReview() {
+        var m = CaptureMachine()
+        _ = m.step(.state(Feed().next()))
+        _ = m.step(.press(.ready))
+        #expect(m.isMicrophoneOpen)
+        _ = m.step(.input(1, .partial("heard so far")))
+        _ = m.step(.release)
+        #expect(!m.isMicrophoneOpen && m.phase == .finishing(1))
+        _ = m.step(.finishTimeout(1))
+        #expect(m.phase == .reviewing && !m.isMicrophoneOpen)
     }
 
     @Test func escapeLeavesListeningAtOnceAndLateCallbacksNeverOpenReview() {

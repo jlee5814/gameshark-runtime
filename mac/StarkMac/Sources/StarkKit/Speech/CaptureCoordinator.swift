@@ -42,11 +42,36 @@ public final class CaptureCoordinator {
     /// reads it rerenders when listening ends even if the draft text did not change.
     public var isListening: Bool { phase.isListening }
 
+    /// The microphone is open: true only while held, never while the transcript finalizes.
+    public var isRecording: Bool { phase.isMicrophoneOpen }
+
+    /// What the push to talk control shows.
+    public enum Mic: Equatable, Sendable {
+        /// Nothing a press could start.
+        case off
+        case ready
+        /// The microphone is open; the only state drawn red.
+        case recording
+        /// Released and closed; recognition is still finishing and presses do nothing.
+        case finishing
+    }
+
+    /// Derived only from published properties, so SwiftUI tracks every change to it.
+    public var mic: Mic {
+        switch phase {
+        case .capturing: .recording
+        case .finishing: .finishing
+        default: canPress ? .ready : .off
+        }
+    }
+
     /// What the voice draft area shows.
     public enum Panel: Equatable, Sendable {
         case none
-        /// Live transcript while held or finalizing.
+        /// Live transcript while held.
         case listening
+        /// Released; the transcript so far while recognition finishes.
+        case finishing
         /// The editable voice draft.
         case reviewing
         /// A permission prompt is up.
@@ -57,7 +82,8 @@ public final class CaptureCoordinator {
 
     /// Derived only from published properties, so SwiftUI tracks every change to it.
     public var panel: Panel {
-        if phase.isListening { return .listening }
+        if phase.isMicrophoneOpen { return .listening }
+        if phase.isListening { return .finishing }
         if phase == .reviewing { return .reviewing }
         if phase == .requesting { return .requesting }
         if let note = notice ?? (isPresent ? availability.explanation : nil) { return .note(note) }

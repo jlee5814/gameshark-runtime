@@ -92,6 +92,13 @@ Views read `CaptureCoordinator.panel` and `isListening`, both derived from the p
 repeats the last partial changes no text, so a view tracking only the draft would stay on
 Listening; the published phase moves it to review.
 
+The control shows `CaptureCoordinator.mic`, also derived from `phase`. Only `recording`
+(capturing, microphone open) is red and reads Listening. Release moves it to `finishing`
+in the same step: the microphone is closed, the control becomes a neutral spinner that
+takes no presses, and the panel reads "Microphone off. Finishing recognition…" with the
+text heard so far. The machine already rejects a press while finishing, so the spinner
+only makes that visible. Review follows the final, a recognizer error, or the 3 s timeout.
+
 Send submits the trimmed text through `submit`; the draft clears only when the surface
 accepted it, and a second tap finds nothing to send. A spoken `/remember` behaves exactly
 as if typed. Insert appends the text to the composer, separated by a space, where draft
@@ -183,6 +190,7 @@ composer and its Stop Listening action, also ends an open microphone.
   - Interruption and failure discard while held; an error after release keeps what was heard.
   - The panel leaves Listening for review under observation when the final repeats the last partial, when a final arrives while held, and after a finish timeout; Escape leaves it at once; late or older session callbacks never open review.
   - A stale state never discards.
+  - Finishing: release closes the microphone at once and leaves red in the same step; late partials and a delayed final never show recording; a press while finishing starts no session; cancel while finishing discards, releases Stark's voice, and ignores the abandoned session. The iPhone tests repeat the sequence through `PocketModel`.
 - **Send and insert:** Send submits exactly once; a refused submit keeps the draft; nothing submits while listening; Insert hands over the text once.
 - **Speech:** the engine stops before the microphone starts; a reply during capture is never spoken and nothing resumes; replay returns at once; a discarded capture releases the voice.
 - **Privacy:** no line carries transcript words; the coordinator holds no client.
@@ -368,3 +376,11 @@ path the lock took was not logged. Recorded as a UX observation; nothing was cha
 Phase 4.3C is physically accepted for the demonstrated scenarios on StarkMac and one
 physical iPhone. The NOT VERIFIED steps stay open, and so do both observations. One run by
 hand is not a reliability claim.
+
+### Pending retest: finishing state
+
+After this acceptance, Codex found the control stayed red and read Listening for up to
+3 s after release while recognition finished. The finishing state above fixes it in code
+and tests. NOT VERIFIED on hardware: release turns red off at once on StarkMac and the
+iPhone, finishing shows the neutral spinner, the editable draft follows, and Send
+submits exactly once.

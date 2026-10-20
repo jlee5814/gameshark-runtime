@@ -397,10 +397,17 @@ struct PushToTalkButton: View {
     @GestureState private var pressing = false
 
     var body: some View {
-        let on = listen.isListening
-        Image(systemName: on ? "mic.fill" : "mic")
-            .font(.title3)
-            .foregroundStyle(on ? Color.red : listen.canPress ? Color.accentColor : Color.secondary)
+        let mic = listen.mic
+        Group {
+            if mic == .finishing {
+                ProgressView()
+            } else {
+                Image(systemName: mic == .recording ? "mic.fill" : "mic")
+                    .font(.title3)
+                    .foregroundStyle(mic == .recording ? Color.red
+                                     : mic == .ready ? Color.accentColor : Color.secondary)
+            }
+        }
             .frame(width: 36, height: 36)
             .contentShape(Rectangle())
             .gesture(DragGesture(minimumDistance: 0)
@@ -408,9 +415,11 @@ struct PushToTalkButton: View {
             .onChange(of: pressing) { _, down in
                 if down { listen.press() } else { listen.release() }
             }
-            .allowsHitTesting(listen.isPresent || on)
+            // A held press can always release; nothing lands while recognition finishes.
+            .allowsHitTesting(mic == .recording || listen.isPresent && mic != .finishing)
             .accessibilityElement()
-            .accessibilityLabel(on ? "Listening" : "Hold to talk")
+            .accessibilityLabel(mic == .recording ? "Listening"
+                                : mic == .finishing ? "Finishing recognition" : "Hold to talk")
             .accessibilityAddTraits(.isButton)
             .accessibilityAction(named: "Start Listening") { listen.press() }
             .accessibilityAction(named: "Stop Listening") { listen.release() }
@@ -435,6 +444,19 @@ struct VoiceDraftCard: View {
                     Text(listen.draft.isEmpty ? "Speak now" : listen.draft)
                         .foregroundStyle(listen.draft.isEmpty ? .secondary : .primary)
                         .accessibilityIdentifier("voiceDraftLive")
+                }
+                .voiceCard()
+            case .finishing:
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(spacing: 6) {
+                        ProgressView().controlSize(.mini)
+                        Text("Microphone off. Finishing recognition…")
+                    }
+                    .font(.caption).foregroundStyle(.secondary)
+                    .accessibilityIdentifier("voiceFinishing")
+                    if !listen.draft.isEmpty {
+                        Text(listen.draft).accessibilityIdentifier("voiceDraftLive")
+                    }
                 }
                 .voiceCard()
             case .reviewing:
