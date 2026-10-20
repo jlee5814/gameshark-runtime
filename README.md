@@ -52,6 +52,12 @@ process restarts without a second prompt.
   by hand on StarkMac and a physical iPhone for the recorded scenarios, with one silent
   relaunch observation open
   ([architecture/stark-voice-output.md](architecture/stark-voice-output.md#phase-43b-acceptance-physical-iphone-and-starkmac-2026-10-18)).
+  Phase 4.3C: the user holds a microphone, speaks, reviews the on device transcript, and
+  chooses Send or Insert into Composer, accepted by hand on StarkMac and a physical iPhone
+  for the recorded scenarios, with several steps not verified and two observations open
+  ([architecture/stark-voice-input.md](architecture/stark-voice-input.md#phase-43c-acceptance-physical-iphone-and-starkmac-2026-10-19));
+  the finishing state and the iPhone keyboard fix passed a retest by hand on 2026-10-20
+  ([retest](architecture/stark-voice-input.md#phase-43c-retest-physical-iphone-and-starkmac-2026-10-20)).
   Design: [architecture/stark-companion.md](architecture/stark-companion.md),
   app: [mac/StarkMac/README.md](mac/StarkMac/README.md).
 

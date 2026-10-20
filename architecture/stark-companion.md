@@ -235,13 +235,20 @@ iPhone; see [stark-memory.md](stark-memory.md#phase-42-acceptance-physical-iphon
 The Phase 4.3A persona acceptance passed by hand on StarkMac and a physical iPhone; see
 [stark-persona.md](stark-persona.md#phase-43a-acceptance-physical-iphone-and-starkmac-2026-10-18).
 The Phase 4.3B voice output acceptance passed by hand on StarkMac and a physical iPhone
-for the recorded scenarios only (parts of steps 2, 3, and 9 not established), with one silent
-StarkMac relaunch still open; see
+for the recorded scenarios only, with one silent StarkMac relaunch still open; steps 2 and 3
+passed in a 2026-10-19 follow up, and part of step 9 stays not established; see
 [stark-voice-output.md](stark-voice-output.md#phase-43b-acceptance-physical-iphone-and-starkmac-2026-10-18).
+The Phase 4.3C push to talk acceptance passed by hand on StarkMac and a physical iPhone on
+2026-10-19 for the recorded scenarios only; several steps stay NOT VERIFIED and two
+observations stay open; see
+[stark-voice-input.md](stark-voice-input.md#phase-43c-acceptance-physical-iphone-and-starkmac-2026-10-19).
+The finishing state and the iPhone keyboard fix passed a retest by hand on 2026-10-20; see
+[stark-voice-input.md](stark-voice-input.md#phase-43c-retest-physical-iphone-and-starkmac-2026-10-20).
 
 ## Not yet built
 
-Bonjour, voice input (voice output is built: [stark-voice-output.md](stark-voice-output.md)), system
+Bonjour (voice output is built: [stark-voice-output.md](stark-voice-output.md); push to talk
+voice input is built and accepted by hand for the recorded scenarios: [stark-voice-input.md](stark-voice-input.md)), system
 notifications, automatic long term memory (Stark keeps only facts
 the user saves; see [stark-memory.md](stark-memory.md)), a user cancel for a reply in
 flight.

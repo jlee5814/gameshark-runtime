@@ -40,6 +40,7 @@ public enum SpeechDiagnostic: Equatable, Sendable {
     case rejected(seq: Int, Rejection)
     case stopped(Cause, playing: Utterance.ID?)
     case suspended(Bool)
+    case listening(Bool)
     case muted(Bool)
     case finished(Utterance.ID)
     case staleFinish(Utterance.ID)
@@ -55,6 +56,8 @@ public enum SpeechDiagnostic: Equatable, Sendable {
     case session(Session)
     case voicesChanged(installed: Int)
     case lifecycle(Lifecycle)
+    /// A push to talk decision; lengths only, never the transcript.
+    case capture(CaptureMachine.Decision)
 
     public var line: String {
         switch self {
@@ -78,6 +81,8 @@ public enum SpeechDiagnostic: Equatable, Sendable {
             "stop by=\(cause.rawValue) \(playing.map(Self.name) ?? "idle")"
         case .suspended(let on):
             "suspended \(on ? "on" : "off")"
+        case .listening(let on):
+            "listening \(on ? "on" : "off")"
         case .muted(let on):
             "muted \(on ? "on" : "off")"
         case .finished(let id):
@@ -104,6 +109,8 @@ public enum SpeechDiagnostic: Equatable, Sendable {
             "voices changed installed=\(installed)"
         case .lifecycle(let l):
             "system \(l.rawValue)"
+        case .capture(let d):
+            "capture " + Self.name(d)
         }
     }
 
@@ -116,6 +123,26 @@ public enum SpeechDiagnostic: Equatable, Sendable {
         case .ghost: "ghost"
         case .handoff: "handoff"
         case .suspended: "suspended"
+        case .listening: "listening"
+        }
+    }
+
+    static func name(_ d: CaptureMachine.Decision) -> String {
+        switch d {
+        case .rejected(.notPresent): "rejected reason=not_present"
+        case .rejected(.busy): "rejected reason=busy"
+        case .rejected(.availability(let a)): "rejected reason=\(a.name)"
+        case .askedPermission: "permission asked"
+        case .permission(let a): "permission result=\(a.name)"
+        case .started(let n): "start session=\(n)"
+        case .released(let n): "release session=\(n)"
+        case .captured(let n, let chars): "end session=\(n) chars=\(chars)"
+        case .timedOut(let n, let chars): "end session=\(n) chars=\(chars) timed_out=true"
+        case .discarded(let why, let chars): "discard reason=\(why.rawValue) chars=\(chars)"
+        case .failed(let chars, let domain, let code):
+            "discard reason=failed chars=\(chars) domain=\(domain) code=\(code)"
+        case .sent(let chars): "send chars=\(chars)"
+        case .inserted(let chars): "insert chars=\(chars)"
         }
     }
 

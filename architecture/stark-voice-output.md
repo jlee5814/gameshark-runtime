@@ -2,7 +2,8 @@
 
 Status: built. Automated tests pass on macOS and in the iOS simulator. Physically
 accepted by hand on StarkMac and a physical iPhone for the recorded scenarios on
-2026-10-18, with one open observation: a silent first relaunch of StarkMac. See
+2026-10-18, with one open observation: a silent first relaunch of StarkMac. Two checks
+that run left out passed by hand on 2026-10-19. See
 [Phase 4.3B acceptance](#phase-43b-acceptance-physical-iphone-and-starkmac-2026-10-18).
 
 ## Goal
@@ -197,7 +198,7 @@ process id.
 | `skip seq= reason=muted` | a new reply arrives while muted |
 | `replay rejected seq= reason=` | replay on a disarmed surface or of an unknown row |
 | `stop by=` | Stop (`user`), a sent message (`send`), an engine interruption (`audio`), sleep (`system`) |
-| `muted`, `suspended`, `finished`, `finish stale` | the matching coordinator events |
+| `muted`, `suspended`, `listening`, `finished`, `finish stale` | the matching coordinator events (`listening` is the push to talk hold) |
 | `voice seq= tok= requested= resolved= name= quality= how=` | each utterance: how the setting became a voice (`requested`, `substituted` when the system returns another voice for the chosen identifier, `default`, `language`, `none`) |
 | `synth start`, `synth finish`, `synth cancel` | `AVSpeechSynthesizer` callbacks, with ms since speak and whether it started |
 | `synth no_start seq= tok= after_ms= voice=` | no start 3 s after speak; logged once, nothing retried |
@@ -259,9 +260,12 @@ explainable.
 
 ## Out of scope
 
-Voice input, wake words, microphone recording, background listening, server side
-synthesis, cloud TTS, and any action taken because of speech. Phase 4.3C (voice input) is
-not started.
+Wake words, background listening, server side synthesis, cloud TTS, and any action taken
+because of speech. Push to talk voice input is Phase 4.3C, in
+[stark-voice-input.md](stark-voice-input.md): while the microphone is open the gate is
+disarmed with reason `listening`, Stark stops talking, and replies that arrive meanwhile
+are never spoken on their own afterwards. On iOS both share the audio session through
+`AudioSessionClaims`, and speech alone keeps the session described above.
 
 ## Tests
 
@@ -357,7 +361,8 @@ Observed (checklist step in brackets; 9 goes beyond the checklist):
 
 Not established by this record: the second replay stopped with the dedicated stop
 button [2]; Jack In stopping StarkMac while it was already speaking [3]; message growth by
-only the sent turns [9].
+only the sent turns [9]. The first two passed later; see
+[Follow up, 2026-10-19](#follow-up-2026-10-19-pr-43-build-c03f6e3).
 
 Database, run against `~/.gameshark/device-check/runtime.db` [9]: `PRAGMA quick_check`
 returned `ok`; 55 messages; 0 active memories. Zero active memories is valid for this
@@ -381,6 +386,20 @@ no root cause is known, and nothing was changed for it; the passing retest does 
 it. Unverified places to look if it recurs: the synthesizer or voice loading on first
 launch, and how the stored voice identifier resolves at startup. If it recurs, follow
 [Capturing a silent playback](#capturing-a-silent-playback) before switching voices.
+
+### Follow up, 2026-10-19 (PR #43 build c03f6e3)
+
+User observed by hand during the Phase 4.3C run
+([stark-voice-input.md](stark-voice-input.md#phase-43c-acceptance-physical-iphone-and-starkmac-2026-10-19)),
+on the same database and pairing, with StarkMac and the iPhone built from PR #43 at
+c03f6e3, which also carries Phase 4.3C changes to the speech code. Not automated test
+results.
+
+1. Jack In on the iPhone stopped StarkMac speech already playing, at once. [3]
+2. The dedicated Stop button in StarkMac stopped a replay, and then stopped a second
+   replay. [2]
+
+Message growth by only the sent turns [9] stays not established.
 
 ### Verdict
 

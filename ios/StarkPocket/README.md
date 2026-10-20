@@ -16,9 +16,16 @@ speech). Conversation rows are rebuilt from the runtime on every connection.
 Stark reads his new replies aloud while he is on the phone: mute, stop, and replay sit in
 the toolbar and beside each bubble, and Settings picks the voice. Design, rules, and the
 physical checklist: [architecture/stark-voice-output.md](../../architecture/stark-voice-output.md).
-Accepted by hand on 2026-10-18 for the recorded scenarios only: parts of checklist steps
-2, 3, and 9 were not established, and one silent StarkMac relaunch stays open; see the
-acceptance record in that document.
+Accepted by hand on 2026-10-18 for the recorded scenarios only: part of checklist step 9
+was not established, and one silent StarkMac relaunch stays open; steps 2 and 3 passed in a
+2026-10-19 follow up. See the acceptance record in that document.
+
+Push to talk: hold the microphone while Stark is on the phone, speak, release, then edit
+and choose Send or Insert into Composer. Recognition runs on device only and nothing is
+sent without Send. Design and the physical checklist:
+[architecture/stark-voice-input.md](../../architecture/stark-voice-input.md). Accepted by
+hand on 2026-10-19 for the recorded scenarios only, with the finishing state and the
+keyboard fix retested on 2026-10-20; see Voice input (Phase 4.3C).
 
 ## Build and test
 
@@ -66,7 +73,9 @@ with Tailscale. It has also passed the Phase 4.1 live inference acceptance by ha
 Live inference (Phase 4.1). It has also passed the Phase 4.2 saved memory acceptance by
 hand; see Saved memory (Phase 4.2). It has also passed the Phase 4.3A persona acceptance
 by hand; see Persona (Phase 4.3A). It has also passed the Phase 4.3B voice output
-acceptance by hand; see Voice output (Phase 4.3B). The LAN checklist below has still not run end to end on a
+acceptance by hand; see Voice output (Phase 4.3B). It has also passed the Phase 4.3C
+voice input acceptance by hand for the recorded scenarios; see Voice input (Phase 4.3C).
+The LAN checklist below has still not run end to end on a
 device. The
 checklist uses its own database, never `~/.gameshark/runtime.db` or the simulator's
 `~/.gameshark/demo`. Run the Mac commands from `prototype/`.
@@ -391,3 +400,39 @@ during speech stopped audio at once, and StarkMac did not read that reply. In th
 background Stark stayed silent, and on return no missed audio played. Force quitting and
 reopening Stark Pocket replayed no earlier reply. One StarkMac relaunch was silent until
 the voice was switched; that observation stays open.
+
+### Voice input (Phase 4.3C)
+
+#### Phase 4.3C acceptance: physical iPhone and StarkMac, 2026-10-19
+
+User observed by hand; not automated test results. The full record, including every step
+NOT VERIFIED, is in
+[architecture/stark-voice-input.md](../../architecture/stark-voice-input.md#phase-43c-acceptance-physical-iphone-and-starkmac-2026-10-19).
+Environment: `~/.gameshark/device-check/runtime.db`, the existing pairing, and a build
+including c03f6e3. Not recorded: the iOS version, the iPhone model, and the logs.
+
+On the phone: the microphone stayed disabled while Stark was on the Mac. Jack In moved
+Stark to the phone and enabled voice input. Recognition produced an editable transcript,
+and Send produced one message and a spoken reply while StarkMac stayed silent. Jack Out,
+backgrounding, and Discard each removed an uncommitted voice draft without sending.
+Locking the phone during capture stopped recording, discarded the unfinished transcript,
+and did not resume on return, but showed "Stark didn't catch that."; that message stays
+open as a UX observation. Not exercised on the phone: the permission prompts, denied or
+restricted access, Insert into Composer (passed on 2026-10-20, below), and a call or alarm
+interruption.
+
+#### Phase 4.3C retest: physical iPhone and StarkMac, 2026-10-20
+
+User observed by hand on the same iPhone, rebuilt from this branch at ffe0137; not
+automated test results. Full record:
+[architecture/stark-voice-input.md](../../architecture/stark-voice-input.md#phase-43c-retest-physical-iphone-and-starkmac-2026-10-20).
+
+Release turned the red microphone indicator off at once and led to an editable voice
+draft; the finishing text may be skipped when recognition finishes at once, and nothing
+was sent automatically. With the keyboard up (the ffe0137 fix), the draft and the text
+being typed stayed visible, and dismissing the keyboard kept the full edit. Insert into
+Composer moved the edited text without sending; Send submitted the edited message
+exactly once, and Stark spoke once on the phone while StarkMac stayed silent; Discard
+sent nothing. Still not exercised on the phone: the permission prompts, denied or
+restricted access, a call or alarm interruption, and the finishing spinner itself. The
+screen lock message stays open.

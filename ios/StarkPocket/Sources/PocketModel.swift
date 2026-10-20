@@ -53,6 +53,9 @@ final class PocketModel {
     /// Stark's voice on this iPhone: reads new replies aloud while Stark is here. Observable
     /// on its own, so views follow what it is saying.
     @ObservationIgnored let voice: SpeechCoordinator
+    /// Push to talk on this iPhone: a voice draft the user reviews, then sends or inserts.
+    /// Observable on its own; it holds no client and never sends by itself.
+    @ObservationIgnored private(set) var listen: CaptureCoordinator!
     @ObservationIgnored private let store: CredentialStore
     @ObservationIgnored private let makeClient: MakeClient
     @ObservationIgnored private let pairer: Pairer
@@ -81,6 +84,7 @@ final class PocketModel {
          environment: [String: String] = ProcessInfo.processInfo.environment,
          monitorsNetwork: Bool = true,
          voice: SpeechCoordinator? = nil,
+         listener: (any SpeechInput)? = nil,
          makeClient: @escaping MakeClient = { GatewayClient(config: $0, onChange: $1) },
          pairer: @escaping Pairer = { try Pairing.run(link: $0, name: $1, signer: $2) }) {
         self.store = store
@@ -91,6 +95,11 @@ final class PocketModel {
         self.voice = voice ?? SpeechCoordinator(engine: AVSpeechEngine(trace: SpeechLog.trace),
                                                 store: DefaultsSpeechStore(),
                                                 trace: SpeechLog.trace)
+        listen = CaptureCoordinator(
+            input: listener ?? SFSpeechInput(trace: SpeechLog.trace), speech: self.voice,
+            trace: SpeechLog.trace,
+            submit: { [weak self] text in self?.submit(text) ?? false },
+            insert: { [weak self] text in self?.insertIntoComposer(text) })
         if environment["STARK_RESET"] == "1" { store.wipe() }
         if let endpoint = store.loadDevice() {
             connect(endpoint)
@@ -210,6 +219,7 @@ final class PocketModel {
     /// Drop the connection and the Keychain pairing at once. Only for a pairing that holds
     /// nothing: Stark is elsewhere, or the Mac already revoked this device.
     private func forget() {
+        listen.reset(.unpaired)
         voice.stop()
         client?.stop()
         client = nil
@@ -235,6 +245,7 @@ final class PocketModel {
         client = c
         if let network { c.setPath(network) }
         isPaired = true
+        listen.reset(.unpaired)                 // presence comes from this connection only
         state = ClientState(surface: endpoint.credential.surface)
         viewedSeq = UserDefaults.standard.integer(forKey: "viewedSeq.\(endpoint.credential.agentUUID)") - 1
         watchNetwork()
@@ -262,6 +273,7 @@ final class PocketModel {
     private func apply(_ s: ClientState) {
         state = s
         voice.observe(s)
+        listen.observe(s)
         if case .disconnected(let why) = s.connection, why == "untrusted runtime" {
             pairingError = s.lastError
         }
@@ -313,27 +325,36 @@ final class PocketModel {
     }
 
     func send() {
-        let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { return }
+        if submit(draft) { draft = "" }
+    }
+
+    /// The one send path for typed and reviewed voice text; true when the text was taken.
+    func submit(_ raw: String) -> Bool {
+        let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return false }
         // An explicit command saves memory; it never becomes a chat row.
         switch MemoryCommand.parse(text) {
         case .show?:
             showMemories = true
-            draft = ""
-            return
+            return true
         case .remember(let fact)?:
-            guard canWriteMemory else { return }
+            guard canWriteMemory else { return false }
             client?.remember(fact)
             showMemories = true
-            draft = ""
-            return
+            return true
         case nil:
             break
         }
-        guard summary?.canSend == true else { return }
+        guard summary?.canSend == true else { return false }
         voice.userSent()
         client?.send(text, presenceGen: nil)
-        draft = ""
+        return true
+    }
+
+    /// Insert into Composer: the reviewed voice text joins the ordinary draft, which from
+    /// here on follows draft continuity like anything typed.
+    func insertIntoComposer(_ text: String) {
+        draft = draft.isEmpty ? text : draft + " " + text
     }
 
     // MARK: memory
@@ -369,6 +390,7 @@ final class PocketModel {
     func dismissMemoryOp(_ id: String) { client?.discardMemoryOp(id) }
 
     func jack() {
+        listen.cancel(.jack)
         voice.stop()                            // a jack begins: silence before presence moves
         switch summary?.control {
         case .jackIn: client?.jack(.here)
@@ -397,6 +419,7 @@ final class PocketModel {
         case .active:
             NetLog.trace("scene active network=\(network?.rawValue ?? "nil")")
             foreground = true
+            listen.refresh()                    // access may have changed in Settings
             voice.setSuspended(false)
             stage?.setVisible(true)
             if let network { client?.setPath(network) }
@@ -404,7 +427,9 @@ final class PocketModel {
         case .background:
             NetLog.trace("scene background")
             foreground = false
-            // No background audio: Stark never talks unseen, even while a send lingers.
+            // No background audio: Stark never talks unseen, even while a send lingers,
+            // and never listens unseen.
+            listen.cancel(.background)
             voice.setSuspended(true)
             firstPathWait?.cancel()
             firstPathWait = nil
@@ -423,6 +448,11 @@ final class PocketModel {
             } else {
                 c.stop()
             }
+        case .inactive:
+            // Control Center or the app switcher can end a hold without a release. A
+            // permission prompt also makes the scene inactive, so only an open
+            // microphone ends here.
+            listen.stopListening(.inactive)
         default:
             break
         }

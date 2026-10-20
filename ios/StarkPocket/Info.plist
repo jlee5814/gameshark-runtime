@@ -31,6 +31,10 @@
 	</array>
 	<key>CFBundleVersion</key>
 	<string>1</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Hold the microphone button to talk to Stark. Audio is recognized on this iPhone and never saved.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>Stark turns what you say into text on this iPhone so you can review it before sending. Nothing is sent to a speech server.</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Stark Pocket talks to the GameShark runtime on your Mac over your local network.</string>
 	<key>UILaunchScreen</key>

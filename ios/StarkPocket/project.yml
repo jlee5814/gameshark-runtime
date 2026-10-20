@@ -35,6 +35,10 @@ targets:
         CFBundleDisplayName: Stark Pocket
         UILaunchScreen: {}
         UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
+        NSMicrophoneUsageDescription: >-
+          Hold the microphone button to talk to Stark. Audio is recognized on this iPhone and never saved.
+        NSSpeechRecognitionUsageDescription: >-
+          Stark turns what you say into text on this iPhone so you can review it before sending. Nothing is sent to a speech server.
         NSLocalNetworkUsageDescription: >-
           Stark Pocket talks to the GameShark runtime on your Mac over your local network.
         CFBundleURLTypes:
