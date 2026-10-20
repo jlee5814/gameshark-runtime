@@ -33,6 +33,9 @@ from tests.test_inference_journal import CRASH_POINTS, EXPECT
 
 TTL = 1.0
 INTERVAL = 0.05
+# A lease no test expires on purpose. The heartbeat starts only after start() returns, so a
+# 1.0 s lease can lapse during a successor's startup recovery on a slow runner.
+PRODUCTION_TTL = 30.0
 
 pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="POSIX signals")
 
@@ -56,11 +59,12 @@ def env(tmp_path):
 class Owner:
     """One daemon process; stdout drained on a thread so waits never block."""
 
-    def __init__(self, env, token: str, deadline: float = 5.0, **extra: str) -> None:
+    def __init__(self, env, token: str, deadline: float = 5.0, ttl: float = TTL,
+                 **extra: str) -> None:
         self.token = token
         self.proc = subprocess.Popen(
             [sys.executable, str(ROOT / "tests" / "inference_daemon_worker.py"),
-             str(env["db"]), token, str(TTL), str(INTERVAL), str(deadline)],
+             str(env["db"]), token, str(ttl), str(INTERVAL), str(deadline)],
             env={**env["env"], **extra}, cwd=ROOT, stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT, text=True)
         self.lines: list[str] = []
@@ -111,8 +115,9 @@ def owners():
         o.kill()
 
 
-def spawn(env, owners, token: str = "host-a", deadline: float = 5.0, **extra) -> Owner:
-    o = Owner(env, token, deadline, **extra)
+def spawn(env, owners, token: str = "host-a", deadline: float = 5.0, ttl: float = TTL,
+          **extra) -> Owner:
+    o = Owner(env, token, deadline, ttl, **extra)
     owners.append(o)
     return o
 
@@ -334,16 +339,20 @@ def test_stale_owner_completion_after_takeover_writes_nothing(env, owners):
     pause_outside_txn(env, a)
     wait_for(lambda: query(env, "SELECT expires_at FROM lease")[0]["expires_at"] < time.time())
 
-    b = spawn(env, owners, token="host-b", INFERENCE_GATES="open")
+    # Only host-a's lease expires on purpose. host-b holds a production length lease, so
+    # its own startup recovery can never outlast it on a slow runner and fence itself.
+    b = spawn(env, owners, token="host-b", ttl=PRODUCTION_TTL, INFERENCE_GATES="open")
     assert b.generation == a.generation + 1
     wait_for(lambda: event(env, "t1") == "acked")
     open_gate(env, "t1")                          # the stale call can now answer
     a.proc.send_signal(signal.SIGCONT)
     assert a.finish() == 4
+    a.expect("lost ownership")
     answered_once(env, call)
     assert ledger(env, call) == [(1, "lost"), (2, "settled")]
     assert query(env, "SELECT generation FROM messages WHERE call_id=?",
                  call)[0]["generation"] == b.generation
     b.proc.send_signal(signal.SIGTERM)
     assert b.finish() == 0
+    assert not [line for line in b.lines if "lost ownership" in line]
     no_leaks(b)

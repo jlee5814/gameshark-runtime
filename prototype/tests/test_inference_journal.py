@@ -471,6 +471,35 @@ def test_expired_owner_with_no_successor_cannot_commit(tmp_path, clock):
     sup.close()
 
 
+def test_successor_whose_lease_lapses_during_recovery_settles_nothing(tmp_path, clock):
+    # The daemon stale owner flake: the successor's own lease ran out between acquire and
+    # recovery, before its heartbeat started. Recovery must fence rather than settle the
+    # abandoned reservation under a lapsed lease.
+    old = boot(tmp_path, clock, ttl=TTL)
+    seed_conversation(old.inference)
+    old.inference.reserve(CALL, CONV, "fake", FakeProvider().capabilities(), SPEC)
+    clock.advance(TTL)                                        # old lapsed
+    before: dict = {}
+
+    class SlowStart(AgentSupervisor):
+        def recover(self) -> dict:
+            clock.advance(TTL)                                # startup outlasts its lease
+            before.update(snapshot(self.conn))
+            return super().recover()
+
+    new = SlowStart(db_path=tmp_path / "runtime.db", agent_id=AGENT, owner_token="host-b",
+                    clock=clock, lease_ttl_s=TTL)
+    new.add_adapter(AssistantAdapter(FakeProvider(), GameSimulator(tmp_path / "game.db")))
+    with pytest.raises(FencedError, match="expired"):
+        new.start()
+    assert new.generation == old.generation + 1
+    assert not new.conn.in_transaction
+    assert snapshot(new.conn) == before
+    assert ledger(new.conn) == [(1, "reserved")]              # still owed to recovery
+    old.close()
+    new.close()
+
+
 def test_same_generation_zombie_cannot_commit_a_settled_attempt(tmp_path, clock):
     # A same owner restart on a live lease keeps the generation, so the guard alone cannot
     # stop the old incarnation. Recovery settled its reservation lost; the commit refuses.
