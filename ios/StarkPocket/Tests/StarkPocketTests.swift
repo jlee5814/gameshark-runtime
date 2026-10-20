@@ -1,5 +1,6 @@
 import Observation
 import StarkKit
+import SwiftUI
 import XCTest
 @testable import StarkPocket
 
@@ -958,5 +959,101 @@ final class PocketVoiceInputTests: PocketHarness {
         c.emit { $0.rows.append(Row(seq: 2, role: "assistant", content: "while listening")) }
         await settle { model.state?.rows.count == 3 }
         XCTAssertEqual(engine.spoken, [1])
+    }
+}
+
+/// The reviewed voice draft on screen: SwiftUI hosted in a window the size of an iPhone 18
+/// Pro, with the keyboard and its QuickType bar simulated by the height they take away.
+@MainActor
+final class PocketVoiceDraftLayoutTests: PocketHarness {
+    var input = ScriptedInput()
+    let transcript = "Stark, remind me to review the pull request after lunch, then check "
+        + "whether the continuous integration run passed, and finally draft a note to the "
+        + "team about the release schedule for next week."
+
+    func reviewing() async throws -> (PocketModel, FakeClient, UIWindow) {
+        input = ScriptedInput()
+        let model = try pairedModel(listener: input)
+        let c = clients[0]
+        c.emit {
+            $0.connection = .live
+            $0.identity = Identity(agentId: "stark", uuid: "uuid")
+            $0.presence = PresenceInfo(surface: surface, home: "mac", generation: 2)
+            $0.handoff = nil
+            $0.rows = [Row(seq: 0, role: "system", content: "sys")]
+        }
+        await settle { model.listen.isPresent }
+        model.listen.press()
+        input.hear(.partial(transcript))
+        model.listen.release()
+        input.hear(.final(transcript))
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 402, height: 874))
+        window.rootViewController = UIHostingController(rootView: MainView(model: model))
+        window.makeKeyAndVisible()
+        await layout(window)
+        return (model, c, window)
+    }
+
+    func layout(_ window: UIWindow) async {
+        window.layoutIfNeeded()
+        await settle()
+    }
+
+    func textViews(in view: UIView) -> [UITextView] {
+        (view as? UITextView).map { [$0] } ?? view.subviews.flatMap { textViews(in: $0) }
+    }
+
+    /// The voice card sits above the composer: the first field is the voice draft.
+    func fields(_ window: UIWindow) throws -> (voice: UITextView, composer: UITextView) {
+        let all = textViews(in: window)
+        XCTAssertEqual(all.count, 2)
+        return (try XCTUnwrap(all.first), try XCTUnwrap(all.last))
+    }
+
+    /// The keyboard squeezed the vertical voice field to zero height (a thin white strip)
+    /// while the text stayed in the draft; both fields now keep their lines.
+    func testTheVoiceDraftStaysLegibleWhileTheKeyboardIsUp() async throws {
+        let (model, c, window) = try await reviewing()
+        let open = try fields(window)
+        XCTAssertGreaterThan(open.voice.frame.height, 60)
+        open.voice.becomeFirstResponder()
+        window.frame.size.height = 874 - 380
+        await layout(window)
+        let squeezed = try fields(window)
+        XCTAssertTrue(squeezed.voice === open.voice)
+        XCTAssertGreaterThan(squeezed.voice.frame.height, 60)
+        XCTAssertGreaterThan(squeezed.composer.frame.height, 20)
+        XCTAssertLessThanOrEqual(squeezed.composer.convert(squeezed.composer.bounds, to: nil).maxY,
+                                 window.bounds.maxY)
+        squeezed.voice.insertText(" Thanks")
+        await settle()
+        XCTAssertEqual(model.listen.draft, transcript + " Thanks")
+        XCTAssertEqual(squeezed.voice.text, model.listen.draft)
+        squeezed.voice.resignFirstResponder()
+        window.frame.size.height = 874
+        await layout(window)
+        let closed = try fields(window)
+        XCTAssertGreaterThan(closed.voice.frame.height, 60)
+        XCTAssertEqual(closed.voice.text, transcript + " Thanks")
+        XCTAssertEqual(model.listen.phase, .reviewing)
+        XCTAssertTrue(c.sent.isEmpty)
+    }
+
+    func testAnEditReachesSendAndInsert() async throws {
+        let (model, c, window) = try await reviewing()
+        try fields(window).voice.insertText(" Thanks")
+        await settle()
+        XCTAssertTrue(c.sent.isEmpty)
+        model.listen.send()
+        XCTAssertEqual(c.sent, [transcript + " Thanks"])
+        XCTAssertEqual(model.draft, "")
+        model.listen.press()
+        input.hear(.final("Second take"))
+        await layout(window)
+        try fields(window).voice.insertText(", edited")
+        await settle()
+        model.listen.insertIntoComposer()
+        XCTAssertEqual(model.draft, "Second take, edited")
+        XCTAssertEqual(c.sent, [transcript + " Thanks"])
     }
 }

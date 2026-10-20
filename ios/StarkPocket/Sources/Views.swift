@@ -375,6 +375,8 @@ struct Composer: View {
                 PushToTalkButton(listen: model.listen)
                 TextField(canSend ? "Message Stark, or /remember a fact" : "Jack In to talk to Stark here",
                           text: $model.draft, axis: .vertical)
+                    .lineLimit(1...5)
+                    .fixedSize(horizontal: false, vertical: true)
                     .textFieldStyle(.roundedBorder)
                     .focused(focused)
                     .disabled(!canSend)
@@ -463,7 +465,11 @@ struct VoiceDraftCard: View {
                 VStack(alignment: .leading, spacing: 8) {
                     Label("Voice draft: edit, then send or insert", systemImage: "mic")
                         .font(.caption).foregroundStyle(.secondary)
+                    // A vertical field yields height before anything else in the stack, so
+                    // the keyboard squeezed it to nothing; cap it and keep it at that size.
                     TextField("Voice draft", text: text, axis: .vertical)
+                        .lineLimit(1...5)
+                        .fixedSize(horizontal: false, vertical: true)
                         .textFieldStyle(.roundedBorder)
                         .accessibilityIdentifier("voiceDraftText")
                     HStack {
