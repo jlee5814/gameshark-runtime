@@ -24,7 +24,8 @@ Push to talk: hold the microphone while Stark is on the phone, speak, release, t
 and choose Send or Insert into Composer. Recognition runs on device only and nothing is
 sent without Send. Design and the physical checklist:
 [architecture/stark-voice-input.md](../../architecture/stark-voice-input.md). Accepted by
-hand on 2026-10-19 for the recorded scenarios only; see Voice input (Phase 4.3C).
+hand on 2026-10-19 for the recorded scenarios only, with the finishing state and the
+keyboard fix retested on 2026-10-20; see Voice input (Phase 4.3C).
 
 ## Build and test
 
@@ -417,4 +418,21 @@ backgrounding, and Discard each removed an uncommitted voice draft without sendi
 Locking the phone during capture stopped recording, discarded the unfinished transcript,
 and did not resume on return, but showed "Stark didn't catch that."; that message stays
 open as a UX observation. Not exercised on the phone: the permission prompts, denied or
-restricted access, Insert into Composer, and a call or alarm interruption.
+restricted access, Insert into Composer (passed on 2026-10-20, below), and a call or alarm
+interruption.
+
+#### Phase 4.3C retest: physical iPhone and StarkMac, 2026-10-20
+
+User observed by hand on the same iPhone, rebuilt from this branch at ffe0137; not
+automated test results. Full record:
+[architecture/stark-voice-input.md](../../architecture/stark-voice-input.md#phase-43c-retest-physical-iphone-and-starkmac-2026-10-20).
+
+Release turned the red microphone indicator off at once and led to an editable voice
+draft; the finishing text may be skipped when recognition finishes at once, and nothing
+was sent automatically. With the keyboard up (the ffe0137 fix), the draft and the text
+being typed stayed visible, and dismissing the keyboard kept the full edit. Insert into
+Composer moved the edited text without sending; Send submitted the edited message
+exactly once, and Stark spoke once on the phone while StarkMac stayed silent; Discard
+sent nothing. Still not exercised on the phone: the permission prompts, denied or
+restricted access, a call or alarm interruption, and the finishing spinner itself. The
+screen lock message stays open.

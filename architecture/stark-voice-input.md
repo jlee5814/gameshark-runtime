@@ -172,6 +172,8 @@ composer and its Stop Listening action, also ends an open microphone.
 - Open observation: locking the iPhone during capture shows "Stark didn't catch that.",
   the same text as a recognition failure. See
   [Screen lock message](#open-observation-screen-lock-message).
+- Both observations stayed open after the
+  [2026-10-20 retest](#phase-43c-retest-physical-iphone-and-starkmac-2026-10-20).
 
 ## Tests
 
@@ -330,7 +332,9 @@ none of those tests count as physical acceptance:
 - [7] The Mac's microphone disabled while Stark is on the iPhone. StarkMac staying silent
   shows the speech gate, not the microphone gate.
 - [8] The iPhone permission prompts and the fresh press rule.
-- [9] Insert into Composer on the iPhone; repeated takes on the iPhone.
+- [9] Insert into Composer on the iPhone; repeated takes on the iPhone. (Insert on the
+  iPhone passed on 2026-10-20; see the
+  [retest](#phase-43c-retest-physical-iphone-and-starkmac-2026-10-20).)
 - [11] An incoming call or timer alarm during capture.
 - [12] The Mac's composer not receiving a draft discarded by a jack; which surface began
   the jack was not recorded.
@@ -377,10 +381,87 @@ Phase 4.3C is physically accepted for the demonstrated scenarios on StarkMac and
 physical iPhone. The NOT VERIFIED steps stay open, and so do both observations. One run by
 hand is not a reliability claim.
 
-### Pending retest: finishing state
+### Retest requested: finishing state
 
 After this acceptance, Codex found the control stayed red and read Listening for up to
 3 s after release while recognition finished. The finishing state above fixes it in code
-and tests. NOT VERIFIED on hardware: release turns red off at once on StarkMac and the
-iPhone, finishing shows the neutral spinner, the editable draft follows, and Send
-submits exactly once.
+and tests. As of this record, NOT VERIFIED on hardware: release turns red off at once on
+StarkMac and the iPhone, finishing shows the neutral spinner, the editable draft follows,
+and Send submits exactly once. Retested on 2026-10-20; see the
+[retest](#phase-43c-retest-physical-iphone-and-starkmac-2026-10-20).
+
+## Phase 4.3C retest: physical iPhone and StarkMac, 2026-10-20
+
+User observed by hand on StarkMac and the same physical iPhone; not automated test
+results. No test was newly executed for this record, and the 2026-10-19 record above
+stands unchanged.
+
+Environment, as the user reported it: the same database, identity, and pairing; the
+iPhone rebuilt from this branch with the finishing state (6f51dec) and the keyboard fix
+(ffe0137), ffe0137 being the latest implementation tested. Not recorded: the StarkMac
+build commit, the iPhone model, the iOS and macOS versions, and the logs. No database
+check ran on this day.
+
+### StarkMac, observed
+
+1. The red microphone indicator went off at once on release.
+2. Recognition moved to an editable voice draft.
+3. Nothing was sent automatically.
+4. "Microphone off. Finishing recognition…" may not appear when recognition finishes at
+   once; it was skipped, not observed.
+
+### Stark Pocket, finishing state, observed
+
+1. The red microphone indicator went off at once on release.
+2. An editable voice draft appeared.
+3. Nothing was sent automatically.
+4. The finishing state may be skipped when recognition finishes at once; it was skipped,
+   not observed.
+
+### Stark Pocket, keyboard regression, observed
+
+Before ffe0137 the voice draft editor collapsed to zero height when the keyboard
+appeared. On the rebuilt iPhone (checklist step in brackets):
+
+1. Transcription produced an editable draft. [9]
+2. The draft stayed visible when the keyboard opened.
+3. Text typed while editing stayed visible.
+4. Dismissing the keyboard kept the complete edited transcript.
+5. Insert into Composer moved the edited transcript into the composer. [9]
+6. Insert sent nothing. [9]
+7. Editing and pressing Send submitted the edited message exactly once. [9]
+8. Stark replied and spoke exactly once on the iPhone; StarkMac stayed silent.
+9. Discard removed the draft without sending.
+10. No unintended submission was observed.
+
+### Still NOT VERIFIED
+
+- The neutral spinner and the finishing text, on either surface; recognition finished at
+  once, so the state was skipped.
+- The 3 s finish timeout keeping the partial text.
+- Send on StarkMac with the finishing state; Send on the Mac passed only at c03f6e3.
+- StarkMac discarding a capture on a screen lock or a user switch (a5626bd).
+- Repeated takes on the iPhone.
+- Every other item in the 2026-10-19 [NOT VERIFIED](#not-verified) list, including the
+  permission prompts and the fresh press rule, denied and restricted access, on device
+  English unavailable, and call or alarm interruptions.
+
+### Open after the retest
+
+1. **Immediate empty recognition:** root cause unconfirmed; see
+   [Immediate empty recognition](#open-observation-immediate-empty-recognition).
+2. **Screen lock message:** locking the iPhone during capture still reads "Stark didn't
+   catch that."; see [Screen lock message](#open-observation-screen-lock-message).
+3. **Permission and interruption scenarios:** denied, restricted, and interrupted
+   captures remain untested on hardware.
+4. **Persistence:** `PRAGMA quick_check` passed on 2026-10-19, but no run independently
+   showed that no audio or transcript was stored in the database or the journal.
+5. **Memory:** zero active saved memories is valid for this database and does not
+   validate memory retention.
+
+### Retest verdict
+
+The finishing state on StarkMac and the iPhone, and the iPhone keyboard fix, are
+physically accepted for the scenarios observed above. Phase 4.3C stays accepted for the
+demonstrated scenarios only; the NOT VERIFIED items and the open observations stay open.
+Two runs by hand are not a reliability claim.

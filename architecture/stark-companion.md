@@ -242,6 +242,8 @@ The Phase 4.3C push to talk acceptance passed by hand on StarkMac and a physical
 2026-10-19 for the recorded scenarios only; several steps stay NOT VERIFIED and two
 observations stay open; see
 [stark-voice-input.md](stark-voice-input.md#phase-43c-acceptance-physical-iphone-and-starkmac-2026-10-19).
+The finishing state and the iPhone keyboard fix passed a retest by hand on 2026-10-20; see
+[stark-voice-input.md](stark-voice-input.md#phase-43c-retest-physical-iphone-and-starkmac-2026-10-20).
 
 ## Not yet built
 
