@@ -26,6 +26,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         workspace.addObserver(forName: NSWorkspace.didWakeNotification, object: nil,
                               queue: .main) { _ in SpeechLog.note(.lifecycle(.wake)) }
+        // A lock or a user switch need not sleep, and a VoiceOver Start Listening holds no
+        // gesture that could release: never keep the microphone open behind either.
+        let leave: @Sendable (Notification) -> Void = { [weak self] _ in
+            MainActor.assumeIsolated { self?.model.listen.cancel(.background) }
+        }
+        workspace.addObserver(forName: NSWorkspace.sessionDidResignActiveNotification,
+                              object: nil, queue: .main, using: leave)
+        DistributedNotificationCenter.default().addObserver(
+            forName: .init("com.apple.screenIsLocked"), object: nil, queue: .main, using: leave)
         model.start()
         let env = ProcessInfo.processInfo.environment
         if env["STARK_CLICK_THROUGH"] == "1" {

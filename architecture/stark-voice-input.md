@@ -121,7 +121,7 @@ configuration change ends the capture and discards the draft. After a media serv
 the audio engine and recognizer are recreated, so the next press works without a relaunch.
 
 Discarded by: Cancel or Discard, Escape (StarkMac), closing the chat card (StarkMac),
-sleep (StarkMac), backgrounding (Stark Pocket), Jack In or Jack Out, unpairing, and any
+sleep, a screen lock or a user switch (StarkMac), backgrounding (Stark Pocket), Jack In or Jack Out, unpairing, and any
 presence or connection change. On Stark Pocket, the scene going inactive (Control Center,
 the app switcher) ends an open microphone, since the system can end a hold without a
 release; a permission prompt or a reviewed draft survives it. Opening Settings or Memories, which cover the
@@ -163,7 +163,7 @@ composer and its Stop Listening action, also ends an open microphone.
   was heard.
 - StarkMac launched by running its executable from a terminal gets the terminal's
   microphone permission, not its own; launch it with `open`.
-- macOS has no audio session interruption notice; StarkMac ends a capture on sleep, on an
+- macOS has no audio session interruption notice; StarkMac ends a capture on sleep, a screen lock, a user switch, an
   audio device change, and on its controls.
 - The microphone may pick up other people nearby; the review step is the safeguard.
 - Open observation: before c03f6e3 some captures ended almost at once with nothing
