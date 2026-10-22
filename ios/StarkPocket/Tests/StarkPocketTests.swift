@@ -1071,12 +1071,6 @@ final class PocketConversationLayoutTests: PocketHarness {
     var input = ScriptedInput()
     var windows: [UIWindow] = []
 
-    override func tearDown() {
-        windows.forEach { $0.isHidden = true; $0.rootViewController = nil }
-        windows = []
-        super.tearDown()
-    }
-
     func row(_ seq: Int) -> Row {
         Row(seq: seq, role: seq % 2 == 1 ? "user" : "assistant",
             content: "Message \(seq): a line long enough to wrap onto a second line on the "
@@ -1106,6 +1100,9 @@ final class PocketConversationLayoutTests: PocketHarness {
     func host(_ model: PocketModel, _ c: FakeClient, _ size: CGSize,
               arrive: Bool = true) async -> UIWindow {
         await settle { !model.visibleRows.isEmpty && model.summary?.canSend == true }
+        // Not in tearDown: on Xcode 16.4 it is nonisolated and cannot touch a window.
+        windows.forEach { $0.isHidden = true; $0.rootViewController = nil }
+        windows = []
         center = NotificationCenter()
         keyboard = KeyboardObserver(center: center, screenHeight: { _ in size.height })
         let scene = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first
