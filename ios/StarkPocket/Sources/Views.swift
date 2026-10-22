@@ -63,11 +63,17 @@ struct MainView: View {
     @Bindable var model: PocketModel
     @FocusState private var focused: Bool
     @State private var settings = false
+    @State private var keyboard: KeyboardObserver
+
+    init(model: PocketModel, keyboard: KeyboardObserver = KeyboardObserver()) {
+        self.model = model
+        _keyboard = State(initialValue: keyboard)
+    }
 
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
-                HeaderView(model: model)
+                HeaderView(model: model, mode: keyboard.mode)
                 Divider()
                 ConversationList(model: model)
                 Composer(model: model, focused: $focused)
@@ -95,18 +101,86 @@ struct MainView: View {
     }
 }
 
+/// Which header the conversation gets: Stark in full, or a single compact bar while a
+/// software keyboard covers the bottom of the screen.
+enum HeaderMode: Equatable {
+    case full, compact
+}
+
+enum KeyboardLayout {
+    /// A software keyboard is well over this; a hardware keyboard's shortcut bar is under it.
+    static let collapseOverlap: CGFloat = 120
+
+    /// How much of the screen the keyboard's end frame covers; zero once it has left.
+    static func overlap(of keyboard: CGRect, screenHeight: CGFloat) -> CGFloat {
+        guard !keyboard.isEmpty else { return 0 }
+        return max(0, screenHeight - keyboard.minY)
+    }
+
+    static func mode(overlap: CGFloat) -> HeaderMode {
+        overlap >= collapseOverlap ? .compact : .full
+    }
+}
+
+/// Follows the keyboard's frame and picks the header mode, animated with the keyboard.
+@MainActor @Observable
+final class KeyboardObserver {
+    private(set) var mode: HeaderMode = .full
+    @ObservationIgnored private let screenHeight: @MainActor (Notification) -> CGFloat
+    @ObservationIgnored nonisolated(unsafe) private var tokens: [any NSObjectProtocol] = []
+    @ObservationIgnored private let center: NotificationCenter
+
+    /// The keyboard's frame is in screen coordinates; the notification names its screen.
+    init(center: NotificationCenter = .default,
+         screenHeight: @escaping @MainActor (Notification) -> CGFloat = KeyboardObserver.screenHeight) {
+        self.center = center
+        self.screenHeight = screenHeight
+        for name in [UIResponder.keyboardWillChangeFrameNotification,
+                     UIResponder.keyboardWillHideNotification] {
+            tokens.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] note in
+                // Delivered on the main queue, so the notification never leaves this thread.
+                nonisolated(unsafe) let note = note
+                MainActor.assumeIsolated { self?.keyboardWill(note) }
+            })
+        }
+    }
+
+    deinit { tokens.forEach(center.removeObserver) }
+
+    static func screenHeight(_ note: Notification) -> CGFloat {
+        let screen = note.object as? UIScreen ?? UIApplication.shared.connectedScenes
+            .compactMap { ($0 as? UIWindowScene)?.screen }.first
+        return screen?.bounds.height ?? 0
+    }
+
+    private func keyboardWill(_ note: Notification) {
+        let end = (note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect) ?? .zero
+        let overlap = note.name == UIResponder.keyboardWillHideNotification
+            ? 0 : KeyboardLayout.overlap(of: end, screenHeight: screenHeight(note))
+        let next = KeyboardLayout.mode(overlap: overlap)
+        guard next != mode else { return }
+        let duration = note.userInfo?[UIResponder.keyboardAnimationDurationUserInfoKey] as? Double
+        withAnimation(.easeOut(duration: duration ?? 0.25)) { mode = next }
+    }
+}
+
 struct HeaderView: View {
     let model: PocketModel
+    var mode: HeaderMode = .full
 
     var body: some View {
+        switch mode {
+        case .full: full
+        case .compact: compact
+        }
+    }
+
+    private var full: some View {
         let summary = model.summary
         let active = model.state?.isActiveSurface ?? false
-        HStack(alignment: .bottom, spacing: 16) {
-            AvatarView(stage: model.stage, ghost: !active)
+        return HStack(alignment: .bottom, spacing: 16) {
+            avatar(active: active)
                 .frame(width: 98, height: 119)
-                .contentShape(Rectangle())
-                .onTapGesture { model.voice.stop() }    // tap Stark to silence him
-                .accessibilityAction(named: "Stop Speaking") { model.voice.stop() }
             VStack(alignment: .leading, spacing: 8) {
                 Label(summary?.label ?? "Connecting", systemImage: active ? "bolt.fill" : "moon.zzz")
                     .font(.headline)
@@ -114,32 +188,83 @@ struct HeaderView: View {
                     .accessibilityIdentifier("presenceLabel")
                 HStack(spacing: 6) {
                     ConnectionChip(state: model.state)
-                    if let badge = model.modelBadge {
-                        Text(badge).font(.caption2.weight(.semibold))
-                            .padding(.horizontal, 6).padding(.vertical, 2)
-                            .background(.orange.opacity(0.3), in: Capsule())
-                            .accessibilityIdentifier("modelBadge")
-                    }
+                    ModelBadge(model: model)
                 }
-                switch summary?.control ?? .none {
-                case .jackIn:
-                    Button("Jack In") { model.jack() }
-                        .buttonStyle(.borderedProminent)
-                        .accessibilityIdentifier("jackButton")
-                case .jackOut:
-                    Button("Jack Out") { model.jack() }
-                        .buttonStyle(.bordered)
-                        .accessibilityIdentifier("jackButton")
-                case .none:
-                    Button("Jack In") {}
-                        .buttonStyle(.bordered)
-                        .disabled(true)
-                        .accessibilityIdentifier("jackButton")
-                }
+                JackControl(model: model)
             }
             Spacer()
         }
         .padding()
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("headerFull")
+    }
+
+    /// One row while the keyboard is up: the conversation gets the height Stark gave up.
+    private var compact: some View {
+        let summary = model.summary
+        let active = model.state?.isActiveSurface ?? false
+        return HStack(spacing: 8) {
+            avatar(active: active)
+                .frame(width: 28, height: 34)
+            Label(summary?.label ?? "Connecting", systemImage: active ? "bolt.fill" : "moon.zzz")
+                .font(.subheadline.weight(.semibold))
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+                .accessibilityElement(children: .combine)
+                .accessibilityIdentifier("presenceLabel")
+            ConnectionChip(state: model.state)
+            ModelBadge(model: model)
+            Spacer(minLength: 0)
+            JackControl(model: model)
+                .controlSize(.small)
+        }
+        .padding(.horizontal)
+        .padding(.vertical, 6)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("headerCompact")
+    }
+
+    private func avatar(active: Bool) -> some View {
+        AvatarView(stage: model.stage, ghost: !active)
+            .contentShape(Rectangle())
+            .onTapGesture { model.voice.stop() }    // tap Stark to silence him
+            .accessibilityAction(named: "Stop Speaking") { model.voice.stop() }
+    }
+}
+
+struct ModelBadge: View {
+    let model: PocketModel
+
+    var body: some View {
+        if let badge = model.modelBadge {
+            Text(badge).font(.caption2.weight(.semibold))
+                .padding(.horizontal, 6).padding(.vertical, 2)
+                .background(.orange.opacity(0.3), in: Capsule())
+                .accessibilityIdentifier("modelBadge")
+        }
+    }
+}
+
+/// Jack In or Out: the same control in both headers, so neither can lose it.
+struct JackControl: View {
+    let model: PocketModel
+
+    var body: some View {
+        switch model.summary?.control ?? .none {
+        case .jackIn:
+            Button("Jack In") { model.jack() }
+                .buttonStyle(.borderedProminent)
+                .accessibilityIdentifier("jackButton")
+        case .jackOut:
+            Button("Jack Out") { model.jack() }
+                .buttonStyle(.bordered)
+                .accessibilityIdentifier("jackButton")
+        case .none:
+            Button("Jack In") {}
+                .buttonStyle(.bordered)
+                .disabled(true)
+                .accessibilityIdentifier("jackButton")
+        }
     }
 }
 
@@ -184,6 +309,10 @@ struct AvatarView: View {
 
 struct ConversationList: View {
     let model: PocketModel
+    /// Where the newest bubble ends in the visible list, and the list's height:
+    /// together they say whether the user is at the newest message or reading history.
+    @State private var endY: CGFloat = .infinity
+    @State private var height: CGFloat = 0
 
     var body: some View {
         ScrollViewReader { proxy in
@@ -191,6 +320,14 @@ struct ConversationList: View {
                 LazyVStack(alignment: .leading, spacing: 8) {
                     ForEach(model.visibleRows) { r in
                         Bubble(row: r, voice: model.voice).id(r.seq)
+                            .onGeometryChange(for: CGFloat.self) {
+                                $0.frame(in: .named("conversation")).maxY
+                            } action: { y in
+                                if r.seq == model.visibleRows.last?.seq { endY = y }
+                            }
+                            .onDisappear {    // unloaded: far from the end
+                                if r.seq == model.visibleRows.last?.seq { endY = .infinity }
+                            }
                     }
                     ForEach(model.pendingOutbox) { m in
                         Text(m.status == .pending ? "sending: \(m.text)" : "not sent: \(m.text)")
@@ -203,6 +340,7 @@ struct ConversationList: View {
                 }
                 .padding()
             }
+            .coordinateSpace(.named("conversation"))
             .onChange(of: model.visibleRows.last?.seq) { _, seq in
                 if let seq { withAnimation { proxy.scrollTo(seq, anchor: .bottom) } }
                 model.markViewed()
@@ -211,6 +349,17 @@ struct ConversationList: View {
             // it, and its Retry button, in view.
             .onChange(of: model.replyLine) { _, line in
                 if line != nil { withAnimation { proxy.scrollTo("reply", anchor: .bottom) } }
+            }
+            // The keyboard and the header collapse shrink the list from below; keep the newest
+            // reply in view unless the user is reading older history.
+            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { new in
+                defer { height = new }
+                guard new < height, endY <= height + 24 else { return }
+                if model.replyLine != nil {
+                    proxy.scrollTo("reply", anchor: .bottom)
+                } else if let seq = model.visibleRows.last?.seq {
+                    proxy.scrollTo(seq, anchor: .bottom)
+                }
             }
             .onAppear { model.markViewed() }
         }
