@@ -14,8 +14,11 @@ public enum StarkAnimation: String, CaseIterable, Sendable {
     /// Working outranks thinking: a poll is short and a reply is long, so the reverse order
     /// would hide every poll behind a reply. workingHeld keeps a brief poll on screen for
     /// WorkingHold.minimum (view state only).
+    ///
+    /// At the gym Stark never dozes: the resting pose stays awake (Outfit.covers draws it).
     public static func base(for s: ClientState, listening: Bool, viewedSeq: Int,
-                            idleFor: TimeInterval, workingHeld: Bool = false) -> StarkAnimation {
+                            idleFor: TimeInterval, workingHeld: Bool = false,
+                            outfit: Outfit = .standard) -> StarkAnimation {
         if !s.connection.isLive { return .sleep }
         if !s.isActiveSurface { return .idle }          // ghost: drawn dimmed by the view
         if s.responsibilities.contains(where: { $0.state == "blocked" }) { return .error }
@@ -26,7 +29,7 @@ public enum StarkAnimation: String, CaseIterable, Sendable {
         if listening { return .listening }
         let newest = s.rows.last { $0.role == "assistant" }?.seq ?? -1
         if newest > viewedSeq { return .notify }
-        if idleFor >= dozeAfter { return .sleep }
+        if idleFor >= dozeAfter && outfit != .gym { return .sleep }
         return .idle
     }
 }

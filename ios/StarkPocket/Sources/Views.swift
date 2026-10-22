@@ -171,7 +171,8 @@ struct AvatarView: View {
                     .interpolation(.none)
                     .resizable()
                     .aspectRatio(contentMode: .fit)
-                    .accessibilityLabel("Stark, \(stage.animation.rawValue)")
+                    .accessibilityLabel(stage.showsGym ? "Stark, gym"
+                                                       : "Stark, \(stage.animation.rawValue)")
             } else {
                 Image(systemName: "person.crop.circle").resizable().aspectRatio(contentMode: .fit)
             }

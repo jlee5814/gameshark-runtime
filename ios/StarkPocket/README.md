@@ -436,3 +436,21 @@ exactly once, and Stark spoke once on the phone while StarkMac stayed silent; Di
 sent nothing. Still not exercised on the phone: the permission prompts, denied or
 restricted access, a call or alarm interruption, and the finishing spinner itself. The
 screen lock message stays open.
+
+### Gym form
+
+When your newest clear message says you are at the gym or working out ("I'm at the gym",
+"I'm working out", "I'm lifting", "about to train", "I'm exercising"), Stark wears his
+cap and AirPods and stops dozing; a later clear exit ("done working out", "left the
+gym", "not at the gym") returns him to his usual look. StarkMac does the same. It is a
+read of committed messages on each surface (`Outfit.derive` in StarkKit): no memory
+write, no tool call, no extra model request, no change to speech or presence. The still
+covers resting poses (idle, blink, look around, listening, notify); thinking, working,
+errors, walking, and a dead link keep their usual animations. The art is one still,
+`mac/StarkMac/Assets/stark/stark-gym.png`, cut from
+`Assets/stark/source/stark-gym-source.png` by `mac/tools/extract_gym.py`.
+
+Manual check: Jack In, send "I'm at the gym", read Stark's reply: the cap and AirPods
+show (VoiceOver reads "Stark, gym"). Send "I'm training a new model": no change. Send
+"done working out": the usual Stark returns. Relaunch while in gym form: it comes back
+from history.

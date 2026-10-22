@@ -1057,3 +1057,95 @@ final class PocketVoiceDraftLayoutTests: PocketHarness {
         XCTAssertEqual(c.sent, [transcript + " Thanks"])
     }
 }
+
+/// Gym form: Stark wears his cap and AirPods once the user says they are at the gym. A
+/// read of committed rows on the phone; nothing reaches the runtime or the voice.
+@MainActor
+final class PocketGymTests: PocketHarness {
+    var engine = SilentEngine()
+    /// Held here: the model hops client states to itself weakly, so a dropped model
+    /// would silently stop following.
+    var model: PocketModel?
+
+    func here() throws -> (PocketModel, FakeClient, PocketStage) {
+        engine = SilentEngine()
+        let model = try pairedModel(voice: SpeechCoordinator(engine: engine,
+                                                             store: MemorySpeechStore()))
+        self.model = model
+        let c = clients[0]
+        c.emit {
+            $0.connection = .live
+            $0.identity = Identity(agentId: "stark", uuid: "uuid")
+            $0.presence = PresenceInfo(surface: surface, home: "mac", generation: 2)
+            $0.handoff = nil
+            $0.rows = [Row(seq: 0, role: "system", content: "sys"),
+                       Row(seq: 1, role: "user", content: "earlier"),
+                       Row(seq: 2, role: "assistant", content: "history")]
+        }
+        return (model, c, try XCTUnwrap(model.stage))
+    }
+
+    /// The runtime commits what the phone sent, as it does for every message.
+    func commit(_ c: FakeClient, _ text: String, role: String = "user") {
+        c.emit { $0.rows.append(Row(seq: $0.rows.count, role: role, content: text)) }
+    }
+
+    func testTheGymStillIsBundled() throws {
+        let atlas = try XCTUnwrap(PocketAtlas.load(bundle: Bundle(for: PocketModel.self)))
+        let gym = try XCTUnwrap(atlas.gym)
+        XCTAssertEqual(gym.width, atlas.manifest.canvas.width)
+        XCTAssertEqual(gym.height, atlas.manifest.canvas.height)
+    }
+
+    func testSayingImAtTheGymDressesStarkForTheGym() async throws {
+        let (model, c, stage) = try here()
+        await settle { model.summary?.canSend == true }
+        XCTAssertEqual(stage.outfit, .standard)
+        model.draft = "I'm at the gym"
+        model.send()
+        XCTAssertEqual(stage.outfit, .standard)            // only committed words count
+        commit(c, "I'm at the gym")
+        await settle { stage.outfit == .gym }
+        XCTAssertEqual(stage.outfit, .gym)
+        XCTAssertTrue(stage.showsGym)
+        XCTAssertTrue(stage.image === stage.atlas.gym)
+        // The message went out once, as typed; nothing else reached the runtime.
+        XCTAssertEqual(c.sent, ["I'm at the gym"])
+        XCTAssertTrue(c.remembered.isEmpty && c.corrected.isEmpty && c.forgotten.isEmpty
+                      && c.retries.isEmpty && c.jacks.isEmpty && c.confirmed.isEmpty)
+        XCTAssertTrue(engine.spoken.isEmpty)
+    }
+
+    func testWorkingOutAlsoSwitches() async throws {
+        let (_, c, stage) = try here()
+        commit(c, "I’m working out, back in an hour")
+        await settle { stage.outfit == .gym }
+        XCTAssertEqual(stage.outfit, .gym)
+        XCTAssertTrue(c.sent.isEmpty)
+    }
+
+    func testUnrelatedMessagesKeepTheStandardForm() async throws {
+        let (_, c, stage) = try here()
+        commit(c, "I'm training a new model tonight")
+        commit(c, "Have fun at the gym!", role: "assistant")
+        await settle()
+        XCTAssertEqual(stage.outfit, .standard)
+        XCTAssertFalse(stage.showsGym)
+        XCTAssertTrue(stage.image === stage.atlas.frames[stage.frame])
+    }
+
+    func testStatusAnimationsStillPlayAndAnExitReturns() async throws {
+        let (_, c, stage) = try here()
+        commit(c, "at the gym")
+        await settle { stage.outfit == .gym }
+        c.emit { $0.working = true }                       // a reply on its way
+        await settle { stage.animation == .thinking }
+        XCTAssertEqual(stage.animation, .thinking)
+        XCTAssertFalse(stage.showsGym)
+        c.emit { $0.working = false }
+        commit(c, "done working out")
+        await settle { stage.outfit == .standard }
+        XCTAssertEqual(stage.outfit, .standard)
+        XCTAssertFalse(stage.showsGym)
+    }
+}

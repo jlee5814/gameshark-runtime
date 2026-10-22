@@ -10,9 +10,10 @@ app="$here/../build/StarkMac.app"
 rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources/stark"
 cp "$bin" "$app/Contents/MacOS/StarkMac"
-# Stark's body: the extracted atlas and its manifest (mac/tools/extract_sprites.py).
+# Stark's body: the extracted atlas and its manifest (mac/tools/extract_sprites.py), and
+# his gym still (mac/tools/extract_gym.py).
 cp "$here/../StarkMac/Assets/stark/manifest.json" "$here/../StarkMac/Assets/stark/stark-atlas.png" \
-  "$app/Contents/Resources/stark/"
+  "$here/../StarkMac/Assets/stark/stark-gym.png" "$app/Contents/Resources/stark/"
 cat > "$app/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">

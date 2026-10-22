@@ -26,6 +26,8 @@ targets:
         buildPhase: resources
       - path: ../../mac/StarkMac/Assets/stark/stark-atlas.png
         buildPhase: resources
+      - path: ../../mac/StarkMac/Assets/stark/stark-gym.png
+        buildPhase: resources
     dependencies:
       - package: StarkKit
         product: StarkKit

@@ -175,9 +175,20 @@ final class Dice: @unchecked Sendable {
     let reply = [Row(seq: 1, role: "user", content: "hi"), Row(seq: 2, role: "assistant", content: "yo")]
 
     func base(_ s: ClientState, listening: Bool = false, viewed: Int = -1, idle: TimeInterval = 0,
-              held: Bool = false) -> StarkAnimation {
+              held: Bool = false, outfit: Outfit = .standard) -> StarkAnimation {
         StarkAnimation.base(for: s, listening: listening, viewedSeq: viewed, idleFor: idle,
-                            workingHeld: held)
+                            workingHeld: held, outfit: outfit)
+    }
+
+    /// At the gym Stark stays awake; every other signal keeps its meaning.
+    @Test func theGymFormNeverDozes() {
+        #expect(base(state(), idle: StarkAnimation.dozeAfter, outfit: .gym) == .idle)
+        #expect(base(state(live: false), outfit: .gym) == .sleep)
+        #expect(base(state(work: 1), held: true, outfit: .gym) == .working)
+        #expect(base(state(working: true), outfit: .gym) == base(state(working: true)))
+        #expect(base(state(working: true, blocked: true), outfit: .gym) == .error)
+        #expect(base(state(rows: reply), viewed: 1, outfit: .gym) == .notify)
+        #expect(base(state(rows: reply), listening: true, outfit: .gym) == .listening)
     }
 
     @Test func mapsOnlyExistingSignals() {
@@ -328,5 +339,64 @@ final class FakeTimer: Cancellable {
         #expect(!d.hasPendingTimer && timers.allSatisfy(\.cancelled))
         d.setPaused(false)
         #expect(d.hasPendingTimer)
+    }
+}
+
+/// Gym form: a presentation read of the user's own committed messages, newest first.
+@Suite struct OutfitTests {
+    func rows(_ texts: String..., role: String = "user") -> [Row] {
+        texts.enumerated().map { Row(seq: $0.offset + 1, role: role, content: $0.element) }
+    }
+
+    @Test(arguments: ["I'm at the gym", "I’m at the gym", "im in the gym rn",
+                      "Heading to the gym now", "I'm working out", "Working out, back later",
+                      "I'm lifting", "lifting weights tonight", "I'm about to train",
+                      "about to work out", "I'm exercising", "Doing a workout"])
+    func aGymMessageSwitchesToTheGymForm(_ text: String) {
+        #expect(Outfit.derive(rows(text)) == .gym)
+    }
+
+    @Test(arguments: ["I'm training a new model", "they should lift the ban",
+                      "watching gymnastics on TV", "what's the weather", "", "I work at Gymshark",
+                      "my workout app crashed"])
+    func unrelatedMessagesKeepTheStandardForm(_ text: String) {
+        #expect(Outfit.derive(rows(text)) == .standard)
+    }
+
+    @Test(arguments: ["Done working out", "Left the gym", "back from the gym",
+                      "finished my workout", "I'm not at the gym", "skipping the gym today",
+                      "I'm not working out today"])
+    func aClearExitReturnsToTheStandardForm(_ text: String) {
+        #expect(Outfit.derive(rows("I'm at the gym", text)) == .standard)
+    }
+
+    @Test func theNewestClearMessageWins() {
+        #expect(Outfit.derive(rows("done working out", "ok", "I'm at the gym", "brb")) == .gym)
+        #expect(Outfit.derive(rows("I'm at the gym", "what's for dinner")) == .gym)
+        #expect(Outfit.derive([]) == .standard)
+    }
+
+    @Test func onlyTheUsersOwnWordsCount() {
+        #expect(Outfit.derive(rows("Have fun at the gym!", role: "assistant")) == .standard)
+        #expect(Outfit.derive(rows("I'm at the gym") + [Row(seq: 9, role: "assistant",
+                                                             content: "Done working out?")]) == .gym)
+    }
+
+    @Test func theStillCoversOnlyRestingStates() {
+        for a in [StarkAnimation.idle, .blink, .lookAround, .listening, .notify] {
+            #expect(Outfit.covers(a))
+        }
+        for a in [StarkAnimation.working, .thinking, .error, .sleep, .walkLeft, .walkRight] {
+            #expect(!Outfit.covers(a))
+        }
+    }
+
+    @Test func theGymStillMatchesTheCanvasAndAnchor() throws {
+        let m = try manifest()
+        let url = assets.appendingPathComponent(Outfit.gymFile)
+        let src = try #require(CGImageSourceCreateWithURL(url as CFURL, nil))
+        let img = try #require(CGImageSourceCreateImageAtIndex(src, 0, nil))
+        #expect(img.width == m.canvas.width && img.height == m.canvas.height)
+        #expect(img.alphaInfo != .none && img.alphaInfo != .noneSkipLast)
     }
 }

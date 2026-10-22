@@ -8,6 +8,8 @@ import StarkKit
 struct SpriteAtlas {
     let manifest: SpriteManifest
     let frames: [CGImage]
+    /// Stark's gym still (Outfit.gymFile), when it is present and fits the canvas.
+    var gym: CGImage?
 
     /// Contents/Resources/stark in the app, else STARK_SPRITES, else the package's Assets
     /// directory (swift run during development).
@@ -43,7 +45,11 @@ struct SpriteAtlas {
             guard let img = atlas.cropping(to: r) else { throw CocoaError(.fileReadCorruptFile) }
             return img
         }
-        return SpriteAtlas(manifest: m, frames: frames)
+        let gymURL = dir.appendingPathComponent(Outfit.gymFile)
+        let gym = CGImageSourceCreateWithURL(gymURL as CFURL, nil)
+            .flatMap { CGImageSourceCreateImageAtIndex($0, 0, nil) }
+            .flatMap { $0.width == m.canvas.width && $0.height == m.canvas.height ? $0 : nil }
+        return SpriteAtlas(manifest: m, frames: frames, gym: gym)
     }
 }
 
@@ -70,6 +76,8 @@ final class SpriteStage {
     private(set) var frame: Int
     private(set) var animation: StarkAnimation = .idle
     private(set) var cycling = false
+    /// Presentation only, from the user's own messages (Outfit.derive).
+    private(set) var outfit: Outfit = .standard
 
     @ObservationIgnored private let controller: StarkAnimationController
     @ObservationIgnored private let driver: AnimationDriver
@@ -122,8 +130,11 @@ final class SpriteStage {
                 self.follow(f.0, listening: f.1, viewedSeq: f.2)
             }
         }
+        let outfit = Outfit.derive(s.rows)
+        if outfit != self.outfit { self.outfit = outfit }
         let base = StarkAnimation.base(for: s, listening: listening, viewedSeq: viewedSeq,
-                                       idleFor: now - lastActivity, workingHeld: held)
+                                       idleFor: now - lastActivity, workingHeld: held,
+                                       outfit: outfit)
         controller.setBase(base, at: now)
         update()
     }
@@ -194,7 +205,13 @@ final class SpriteStage {
         }
     }
 
-    var image: CGImage { atlas.frames[frame] }
+    /// The gym still stands in for resting poses; the gallery always shows the real clip.
+    var showsGym: Bool {
+        outfit == .gym && atlas.gym != nil && !cycling && controller.overriding == nil
+            && Outfit.covers(animation)
+    }
+
+    var image: CGImage { showsGym ? atlas.gym! : atlas.frames[frame] }
 
     /// Point size for an integer number of device pixels per sheet pixel.
     func size(scale: Int, backing: CGFloat) -> CGSize {

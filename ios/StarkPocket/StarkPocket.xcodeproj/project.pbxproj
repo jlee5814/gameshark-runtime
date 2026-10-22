@@ -10,6 +10,7 @@
 		141AF45E64556DB3D46385C0 /* Views.swift in Sources */ = {isa = PBXBuildFile; fileRef = A914E09BBDFE62551407CD29 /* Views.swift */; };
 		221637BD0988AC04A95FA491 /* CredentialStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = C28D8EC3961803EDEDAF02A0 /* CredentialStore.swift */; };
 		311B85F0BBE44CFFF27406C3 /* stark-atlas.png in Resources */ = {isa = PBXBuildFile; fileRef = 4C418BD42BECEFABC849EC5D /* stark-atlas.png */; };
+		C800EF2A30593E20257CAA56 /* stark-gym.png in Resources */ = {isa = PBXBuildFile; fileRef = 5C7C2F36ECD398CBB60539F7 /* stark-gym.png */; };
 		393E068475B6453FC978C9F4 /* StarkPocketApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = FC5DD75DDA61B8B6088280DA /* StarkPocketApp.swift */; };
 		43542E31CD93E03E6428CFAE /* PocketModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 997A7751A077753A832111E4 /* PocketModel.swift */; };
 		5CB0ADB3BA0542A1F740F36B /* NetLog.swift in Sources */ = {isa = PBXBuildFile; fileRef = A598C251F479EECDA5B0E5BB /* NetLog.swift */; };
@@ -44,6 +45,7 @@
 		3BB0A9DA5F1B604C4F8F4ED1 /* manifest.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = manifest.json; sourceTree = "<group>"; };
 		478CE09FB466FDC749007054 /* PocketHandoffUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PocketHandoffUITests.swift; sourceTree = "<group>"; };
 		4C418BD42BECEFABC849EC5D /* stark-atlas.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "stark-atlas.png"; sourceTree = "<group>"; };
+		5C7C2F36ECD398CBB60539F7 /* stark-gym.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "stark-gym.png"; sourceTree = "<group>"; };
 		5CBB4DAAF0DD3FFE975063C7 /* PresenceSummary.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PresenceSummary.swift; sourceTree = "<group>"; };
 		62C53BA124010B81ED1F187A /* StarkPocketUITests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = StarkPocketUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		729BA8D248ABDDBFD3C478E8 /* StarkMac */ = {isa = PBXFileReference; lastKnownFileType = folder; name = StarkMac; path = ../../mac/StarkMac; sourceTree = SOURCE_ROOT; };
@@ -127,6 +129,7 @@
 			children = (
 				3BB0A9DA5F1B604C4F8F4ED1 /* manifest.json */,
 				4C418BD42BECEFABC849EC5D /* stark-atlas.png */,
+				5C7C2F36ECD398CBB60539F7 /* stark-gym.png */,
 			);
 			path = stark;
 			sourceTree = "<group>";
@@ -282,6 +285,7 @@
 			files = (
 				713756CCD0341938CAD1B10F /* manifest.json in Resources */,
 				311B85F0BBE44CFFF27406C3 /* stark-atlas.png in Resources */,
+				C800EF2A30593E20257CAA56 /* stark-gym.png in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

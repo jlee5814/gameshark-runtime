@@ -8,6 +8,8 @@ import StarkKit
 struct PocketAtlas {
     let manifest: SpriteManifest
     let frames: [CGImage]
+    /// Stark's gym still (Outfit.gymFile), when it is bundled and fits the canvas.
+    var gym: CGImage?
 
     static func load(bundle: Bundle = .main) -> PocketAtlas? {
         guard let url = bundle.url(forResource: "manifest", withExtension: "json"),
@@ -24,7 +26,12 @@ struct PocketAtlas {
             guard let img = atlas.cropping(to: r) else { return nil }
             frames.append(img)
         }
-        return PocketAtlas(manifest: m, frames: frames)
+        let name = Outfit.gymFile as NSString
+        let gym = bundle.url(forResource: name.deletingPathExtension, withExtension: name.pathExtension)
+            .flatMap { CGImageSourceCreateWithURL($0 as CFURL, nil) }
+            .flatMap { CGImageSourceCreateImageAtIndex($0, 0, nil) }
+            .flatMap { $0.width == m.canvas.width && $0.height == m.canvas.height ? $0 : nil }
+        return PocketAtlas(manifest: m, frames: frames, gym: gym)
     }
 }
 
@@ -49,6 +56,8 @@ final class PocketStage {
     let atlas: PocketAtlas
     private(set) var frame: Int
     private(set) var animation: StarkAnimation = .idle
+    /// Presentation only, from the user's own messages (Outfit.derive).
+    private(set) var outfit: Outfit = .standard
 
     @ObservationIgnored private let controller: StarkAnimationController
     @ObservationIgnored private let driver: AnimationDriver
@@ -93,8 +102,11 @@ final class PocketStage {
                 self.follow(l.0, listening: l.1, viewedSeq: l.2)
             }
         }
+        let outfit = Outfit.derive(s.rows)
+        if outfit != self.outfit { self.outfit = outfit }
         controller.setBase(StarkAnimation.base(for: s, listening: listening, viewedSeq: viewedSeq,
-                                               idleFor: now - lastActivity, workingHeld: held),
+                                               idleFor: now - lastActivity, workingHeld: held,
+                                               outfit: outfit),
                            at: now)
         driver.refresh()
         frame = driver.frame
@@ -104,5 +116,8 @@ final class PocketStage {
     /// Off screen (app in background): no timers at all.
     func setVisible(_ visible: Bool) { driver.setPaused(!visible) }
 
-    var image: CGImage { atlas.frames[frame] }
+    /// The gym still stands in for resting poses; status animations keep their own frames.
+    var showsGym: Bool { outfit == .gym && atlas.gym != nil && Outfit.covers(animation) }
+
+    var image: CGImage { showsGym ? atlas.gym! : atlas.frames[frame] }
 }
