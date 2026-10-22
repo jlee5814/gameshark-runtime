@@ -1057,3 +1057,255 @@ final class PocketVoiceDraftLayoutTests: PocketHarness {
         XCTAssertEqual(c.sent, [transcript + " Thanks"])
     }
 }
+
+/// Phase 4.4A: the header collapses to one row while a software keyboard is up. MainView is
+/// hosted in a window the size of each iPhone class; the keyboard is a posted notification
+/// plus the height it takes away, as PocketVoiceDraftLayoutTests simulates it.
+@MainActor
+final class PocketConversationLayoutTests: PocketHarness {
+    /// iPhone SE class (the smallest height), 17e, 18 Pro, 18 Pro Max.
+    let screens: [CGSize] = [CGSize(width: 375, height: 667), CGSize(width: 390, height: 844),
+                             CGSize(width: 402, height: 874), CGSize(width: 440, height: 956)]
+    var center = NotificationCenter()
+    var keyboard: KeyboardObserver!
+    var input = ScriptedInput()
+    var windows: [UIWindow] = []
+
+    override func tearDown() {
+        windows.forEach { $0.isHidden = true; $0.rootViewController = nil }
+        windows = []
+        super.tearDown()
+    }
+
+    func row(_ seq: Int) -> Row {
+        Row(seq: seq, role: seq % 2 == 1 ? "user" : "assistant",
+            content: "Message \(seq): a line long enough to wrap onto a second line on the "
+                + "narrowest iPhone.")
+    }
+
+    /// Stark is here and the runtime has `count` rows of conversation.
+    func conversation(_ count: Int) throws -> (PocketModel, FakeClient) {
+        store.wipe()
+        clients = []
+        input = ScriptedInput()
+        let model = try pairedModel(listener: input)
+        let c = clients[0]
+        c.emit {
+            $0.connection = .live
+            $0.identity = Identity(agentId: "stark", uuid: "uuid")
+            $0.presence = PresenceInfo(surface: surface, home: "mac", generation: 2)
+            $0.handoff = nil
+            $0.rows = [Row(seq: 0, role: "system", content: "sys")] + (1...count).map(row)
+        }
+        return (model, c)
+    }
+
+    /// MainView in a window of the host app's scene, so SwiftUI keeps rendering changes.
+    /// The newest row then arrives while the view is up and scrolls into view, as it does in
+    /// the app; without it the list stays at the oldest rows, as if reading history.
+    func host(_ model: PocketModel, _ c: FakeClient, _ size: CGSize,
+              arrive: Bool = true) async -> UIWindow {
+        await settle { !model.visibleRows.isEmpty && model.summary?.canSend == true }
+        center = NotificationCenter()
+        keyboard = KeyboardObserver(center: center, screenHeight: { _ in size.height })
+        let scene = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first
+        let window = scene.map(UIWindow.init(windowScene:)) ?? UIWindow()
+        window.frame = CGRect(origin: .zero, size: size)
+        window.rootViewController = UIHostingController(rootView: MainView(model: model,
+                                                                           keyboard: keyboard))
+        window.makeKeyAndVisible()
+        windows.append(window)
+        await layout(window)
+        if arrive {
+            let next = model.visibleRows.count + 1
+            c.emit { $0.rows.append(row(next)) }
+            await layout(window)
+        }
+        return window
+    }
+
+    func layout(_ window: UIWindow) async {
+        window.layoutIfNeeded()
+        await settle()
+        window.layoutIfNeeded()
+    }
+
+    func openKeyboard(_ height: CGFloat, screen: CGSize, _ window: UIWindow) async {
+        center.post(name: UIResponder.keyboardWillChangeFrameNotification, object: nil, userInfo: [
+            UIResponder.keyboardFrameEndUserInfoKey: CGRect(x: 0, y: screen.height - height,
+                                                            width: screen.width, height: height),
+            UIResponder.keyboardAnimationDurationUserInfoKey: 0.0,
+        ])
+        window.frame.size.height = screen.height - height
+        await layout(window)
+    }
+
+    func closeKeyboard(screen: CGSize, _ window: UIWindow) async {
+        center.post(name: UIResponder.keyboardWillHideNotification, object: nil, userInfo: [
+            UIResponder.keyboardFrameEndUserInfoKey: CGRect(x: 0, y: screen.height,
+                                                            width: screen.width, height: 336),
+        ])
+        window.frame.size.height = screen.height
+        await layout(window)
+    }
+
+    func views<T: UIView>(_ type: T.Type, in view: UIView) -> [T] {
+        ((view as? T).map { [$0] } ?? []) + view.subviews.flatMap { views(type, in: $0) }
+    }
+
+    /// The conversation: the one scroll view that is not a text field.
+    func conversationView(_ window: UIWindow) throws -> UIScrollView {
+        try XCTUnwrap(views(UIScrollView.self, in: window).first { !($0 is UITextView) })
+    }
+
+    func frame(_ view: UIView) -> CGRect { view.convert(view.bounds, to: nil) }
+
+    func metrics(_ list: UIScrollView) -> String {
+        "offset \(list.contentOffset.y) height \(list.bounds.height) content \(list.contentSize.height)"
+    }
+
+    func atNewest(_ list: UIScrollView) -> Bool {
+        // The newest bubble is in view. Below it sits the stack's padding (16); scrollTo in
+        // a lazy stack also lands on an estimated row height, so allow one text line more.
+        list.contentOffset.y + list.bounds.height - list.adjustedContentInset.bottom
+            >= list.contentSize.height - 40
+    }
+
+    func snapshot(_ window: UIWindow, _ name: String) {
+        let image = UIGraphicsImageRenderer(bounds: window.bounds).image { ctx in
+            window.layer.render(in: ctx.cgContext)
+        }
+        let a = XCTAttachment(image: image)
+        a.name = name
+        a.lifetime = .keepAlways
+        add(a)
+    }
+
+    func testOnlyASoftwareKeyboardCollapsesTheHeader() {
+        XCTAssertEqual(KeyboardLayout.mode(overlap: 0), .full)
+        XCTAssertEqual(KeyboardLayout.mode(overlap: 55), .full)      // hardware shortcut bar
+        XCTAssertEqual(KeyboardLayout.mode(overlap: 119), .full)
+        XCTAssertEqual(KeyboardLayout.mode(overlap: 120), .compact)
+        XCTAssertEqual(KeyboardLayout.mode(overlap: 336), .compact)
+        let gone = CGRect(x: 0, y: 874, width: 402, height: 336)
+        XCTAssertEqual(KeyboardLayout.overlap(of: gone, screenHeight: 874), 0)
+        XCTAssertEqual(KeyboardLayout.overlap(of: .zero, screenHeight: 874), 0)
+        XCTAssertEqual(KeyboardLayout.overlap(of: CGRect(x: 0, y: 538, width: 402, height: 336),
+                                              screenHeight: 874), 336)
+    }
+
+    func testTheObserverFollowsTheKeyboardFrame() {
+        let center = NotificationCenter()
+        let keyboard = KeyboardObserver(center: center, screenHeight: { _ in 874 })
+        func change(_ height: CGFloat) {
+            center.post(name: UIResponder.keyboardWillChangeFrameNotification, object: nil,
+                        userInfo: [UIResponder.keyboardFrameEndUserInfoKey:
+                                    CGRect(x: 0, y: 874 - height, width: 402, height: height)])
+        }
+        XCTAssertEqual(keyboard.mode, .full)
+        change(336)
+        XCTAssertEqual(keyboard.mode, .compact)
+        change(380)                                     // QuickType bar appears: still compact
+        XCTAssertEqual(keyboard.mode, .compact)
+        change(55)                                      // a hardware keyboard takes over
+        XCTAssertEqual(keyboard.mode, .full)
+        change(336)
+        center.post(name: UIResponder.keyboardWillHideNotification, object: nil, userInfo: [:])
+        XCTAssertEqual(keyboard.mode, .full)
+    }
+
+    func testTheHeaderCollapsesWhileTheKeyboardIsUpOnEveryScreen() async throws {
+        // The SE class keyboard with QuickType is 260 points; Face ID iPhones add more.
+        let cases: [(CGSize, CGFloat)] = [(screens[0], 260), (screens[0], 216), (screens[1], 336),
+                                          (screens[2], 336), (screens[2], 291), (screens[3], 346)]
+        for (screen, keyboardHeight) in cases {
+            let (model, c) = try conversation(12)
+            model.draft = "Half typed"
+            let window = await host(model, c, screen)
+            let tag = "\(Int(screen.width))x\(Int(screen.height)) keyboard \(Int(keyboardHeight))"
+            let closed = try conversationView(window)
+            let closedTop = frame(closed).minY
+            XCTAssertEqual(keyboard.mode, .full, tag)
+            XCTAssertTrue(atNewest(closed), "\(tag) \(metrics(closed))")
+            snapshot(window, "\(tag) closed")
+
+            await openKeyboard(keyboardHeight, screen: screen, window)
+            let open = try conversationView(window)
+            XCTAssertEqual(keyboard.mode, .compact, tag)
+            // The header gave up at least 90 points to the conversation.
+            XCTAssertLessThanOrEqual(frame(open).minY, closedTop - 90, tag)
+            XCTAssertGreaterThan(open.bounds.height, 90, tag)
+            XCTAssertTrue(atNewest(open), "\(tag) \(metrics(open))")
+            let composer = try XCTUnwrap(views(UITextView.self, in: window).last)
+            XCTAssertGreaterThan(composer.bounds.height, 20, tag)
+            XCTAssertGreaterThanOrEqual(frame(composer).minY, frame(open).maxY, tag)
+            XCTAssertLessThanOrEqual(frame(composer).maxY, window.bounds.maxY, tag)
+            snapshot(window, "\(tag) open")
+
+            await closeKeyboard(screen: screen, window)
+            XCTAssertEqual(keyboard.mode, .full, tag)
+            XCTAssertEqual(frame(try conversationView(window)).minY, closedTop, accuracy: 1, tag)
+            XCTAssertEqual(model.draft, "Half typed", tag)
+            XCTAssertTrue(c.sent.isEmpty, tag)
+            XCTAssertTrue(c.jacks.isEmpty, tag)
+            window.isHidden = true
+        }
+    }
+
+    func testReadingHistoryKeepsItsPlaceWhenTheKeyboardOpens() async throws {
+        let screen = screens[0]
+        let (model, c) = try conversation(40)
+        let window = await host(model, c, screen, arrive: false)
+        let list = try conversationView(window)
+        let top = list.contentOffset.y
+        XCTAssertFalse(atNewest(list), metrics(list))
+        await openKeyboard(260, screen: screen, window)
+        let open = try conversationView(window)
+        XCTAssertEqual(keyboard.mode, .compact)
+        XCTAssertEqual(open.contentOffset.y, top, accuracy: 1, metrics(open))
+        XCTAssertFalse(atNewest(open), metrics(open))
+        // A new reply still brings the newest message into view with the keyboard up.
+        c.emit { $0.rows.append(self.row(41)) }
+        await layout(window)
+        XCTAssertTrue(atNewest(open), metrics(open))
+        await closeKeyboard(screen: screen, window)
+        XCTAssertEqual(keyboard.mode, .full)
+        XCTAssertTrue(atNewest(try conversationView(window)))
+    }
+
+    /// The reviewed voice draft keeps its five line field beside the compact header.
+    func testTheVoiceDraftKeepsItsLinesUnderTheCompactHeader() async throws {
+        let transcript = "Stark, remind me to review the pull request after lunch, then check "
+            + "whether the continuous integration run passed, and finally draft a note to the "
+            + "team about the release schedule for next week."
+        for screen in [screens[0], screens[2]] {
+            let (model, c) = try conversation(12)
+            await settle { model.listen.isPresent }
+            model.listen.press()
+            input.hear(.partial(transcript))
+            model.listen.release()
+            input.hear(.final(transcript))
+            let window = await host(model, c, screen)
+            let tag = "\(Int(screen.width))x\(Int(screen.height))"
+            await openKeyboard(screen == screens[0] ? 260 : 336, screen: screen, window)
+            XCTAssertEqual(keyboard.mode, .compact, tag)
+            let fields = views(UITextView.self, in: window)
+            XCTAssertEqual(fields.count, 2, tag)
+            let voice = try XCTUnwrap(fields.first), composer = try XCTUnwrap(fields.last)
+            XCTAssertGreaterThan(voice.bounds.height, 60, tag)
+            XCTAssertGreaterThan(composer.bounds.height, 20, tag)
+            XCTAssertLessThanOrEqual(frame(composer).maxY, window.bounds.maxY, tag)
+            snapshot(window, "\(tag) voice draft open")
+            voice.insertText(" Thanks")
+            await settle()
+            XCTAssertEqual(model.listen.draft, transcript + " Thanks", tag)
+            XCTAssertEqual(model.listen.phase, .reviewing, tag)
+            await closeKeyboard(screen: screen, window)
+            XCTAssertEqual(keyboard.mode, .full, tag)
+            XCTAssertGreaterThan(views(UITextView.self, in: window).first?.bounds.height ?? 0, 60, tag)
+            XCTAssertEqual(model.listen.draft, transcript + " Thanks", tag)
+            XCTAssertTrue(c.sent.isEmpty, tag)
+            window.isHidden = true
+        }
+    }
+}
