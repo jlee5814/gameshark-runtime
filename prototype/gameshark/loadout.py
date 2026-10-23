@@ -38,7 +38,9 @@ DEFAULT, GYM = "default", "gym"
 LOADOUTS = (DEFAULT, GYM)
 
 _FOLD = str.maketrans({"’": "'", "‘": "'", "“": '"', "”": '"'})
-_QUOTED = re.compile(r'"[^"]*"|`[^`]*`')
+# Quoted speech: double quotes, backticks, and single quotes that open after a non word
+# character and close before one, so the apostrophes in I'm and boys' never delimit.
+_QUOTED = re.compile(r"""("[^"]*"|`[^`]*`|(?<!\w)'(?=\S).*?(?<=\S)'(?!\w))""")
 # Clause boundaries keep the delimiter so a clause knows it was a question.
 _CLAUSE = re.compile(r"[^.!?;,\n]+[.!?;,\n]*")
 _BUT = re.compile(r"\b(?:but|though|although)\b")

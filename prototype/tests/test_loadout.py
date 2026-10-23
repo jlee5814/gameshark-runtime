@@ -35,6 +35,8 @@ ENTER = [
     "Leg day. I'm at the gym",
     "I'm at the gym but my legs are sore",
     "I'm at the gym after work",
+    "'Sup, I'm at the gym",
+    "I'm at the gym, the boys' locker room is packed",
 ]
 EXIT = [
     "I'm leaving the gym",
@@ -95,6 +97,10 @@ NEVER = [
     "My brother is at the gym",
     'He texted "I\'m at the gym"',
     "Type `I'm at the gym` to test",
+    "He texted \u2018I am at the gym\u2019",
+    "She said 'I just left the gym'",
+    "He texted 'I'm at the gym'",
+    "Reply with 'I\u2019m leaving the gym' when you're done",
     # unrelated words
     "Gymshark has a sale",
     "I'm at gymnastics",
