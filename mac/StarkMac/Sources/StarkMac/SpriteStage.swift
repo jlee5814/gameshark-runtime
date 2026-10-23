@@ -8,6 +8,8 @@ import StarkKit
 struct SpriteAtlas {
     let manifest: SpriteManifest
     let frames: [CGImage]
+    /// The same frames with the gym loadout baked in; nil when not shipped.
+    var gymFrames: [CGImage]? = nil
 
     /// Contents/Resources/stark in the app, else STARK_SPRITES, else the package's Assets
     /// directory (swift run during development).
@@ -43,7 +45,10 @@ struct SpriteAtlas {
             guard let img = atlas.cropping(to: r) else { throw CocoaError(.fileReadCorruptFile) }
             return img
         }
-        return SpriteAtlas(manifest: m, frames: frames)
+        let gym = AtlasCrop.frames(at: dir.appendingPathComponent(Loadout.gym.atlasFile),
+                                   manifest: m)
+        if gym == nil { NSLog("StarkMac: no gym atlas in %@; the gym loadout draws standard", dir.path) }
+        return SpriteAtlas(manifest: m, frames: frames, gymFrames: gym)
     }
 }
 
@@ -70,6 +75,12 @@ final class SpriteStage {
     private(set) var frame: Int
     private(set) var animation: StarkAnimation = .idle
     private(set) var cycling = false
+    /// What Stark wears, from the runtime (ClientState.shownLoadout), or the gallery's pick.
+    private(set) var loadout: Loadout = .standard
+    /// Gallery: preview a loadout regardless of the runtime, until released with nil.
+    private(set) var previewLoadout: Loadout?
+    @ObservationIgnored private lazy var sheets = LoadoutFrames(standard: atlas.frames,
+                                                                 gym: atlas.gymFrames)
 
     @ObservationIgnored private let controller: StarkAnimationController
     @ObservationIgnored private let driver: AnimationDriver
@@ -103,6 +114,8 @@ final class SpriteStage {
     /// and when the chat field gains or loses focus.
     func follow(_ s: ClientState, listening: Bool, viewedSeq: Int) {
         follow = (s, listening, viewedSeq)
+        let shown = previewLoadout ?? s.shownLoadout
+        if loadout != shown { loadout = shown }
         let inputs: [AnyHashable] = [s.connection.isLive, s.isActiveSurface, s.working,
                                      s.isWorking, s.isThinking, listening, s.rows.count,
                                      viewedSeq, s.responsibilities.map(\.state)]
@@ -156,6 +169,14 @@ final class SpriteStage {
 
     var overriding: StarkAnimation? { controller.overriding }
 
+    /// Gallery: draw a loadout without asking the runtime; nil follows the runtime again.
+    func preview(_ l: Loadout?) {
+        previewLoadout = l
+        if let f = follow { follow(f.0, listening: f.1, viewedSeq: f.2) } else { loadout = l ?? .standard }
+    }
+
+    var hasGymAtlas: Bool { sheets.gym != nil }
+
     func setCycle(_ on: Bool) {
         cycleTimer?.cancel()
         cycleTimer = nil
@@ -194,7 +215,7 @@ final class SpriteStage {
         }
     }
 
-    var image: CGImage { atlas.frames[frame] }
+    var image: CGImage { sheets.frames(for: loadout)[frame] }
 
     /// Point size for an integer number of device pixels per sheet pixel.
     func size(scale: Int, backing: CGFloat) -> CGSize {

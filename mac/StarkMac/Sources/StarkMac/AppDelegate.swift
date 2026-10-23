@@ -156,7 +156,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             switch args[0] {
             case "follow": model.stage?.show(nil)
             case "cycle": model.stage?.setCycle(true)
+            case "gym": model.stage?.preview(.gym)
+            case "standard": model.stage?.preview(.standard)
+            case "runtime": model.stage?.preview(nil)
             default: model.stage?.show(StarkAnimation(rawValue: args[0]))
+            }
+        case "loadout" where args.count == 1:
+            switch args[0] {
+            case "auto": model.setLoadout(nil)
+            default:
+                if let l = Loadout(rawValue: args[0]) { model.setLoadout(l) }
             }
         case "scale" where args.count == 1:
             panel.setScale(Int(args[0]) ?? 0)
@@ -231,6 +240,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let cycle = item("Cycle Demo", #selector(toggleCycle), "")
             cycle.state = model.stage?.cycling == true ? .on : .off
             menu.addItem(cycle)
+            if model.stage?.hasGymAtlas == true {
+                let preview = item("Preview Gym Loadout", #selector(togglePreviewGym), "")
+                preview.state = model.stage?.previewLoadout == .gym ? .on : .off
+                menu.addItem(preview)
+            }
+        }
+        if s.loadoutAvailable {
+            menu.addItem(submenu("Loadout", loadoutMenu(s)))
         }
 
         menu.addItem(submenu("Voice", voiceMenu()))
@@ -243,6 +260,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(.separator())
         menu.addItem(item("Quit StarkMac", #selector(quit), "q"))
         return menu
+    }
+
+    /// Auto follows what the user said in chat; Gym and Default pin until Auto. The runtime
+    /// owns the choice, so every surface shows the same loadout.
+    private func loadoutMenu(_ s: ClientState) -> NSMenu {
+        let m = NSMenu()
+        let pending = s.loadoutOp
+        let pin = pending.map { $0.pin } ?? s.loadout.pinned
+        let auto = item("Auto (from chat: \(LoadoutText.name(s.loadout.inferred)))",
+                        #selector(pickLoadout(_:)), "")
+        auto.representedObject = nil
+        auto.state = pin == nil ? .on : .off
+        m.addItem(auto)
+        m.addItem(.separator())
+        for l in Loadout.allCases {
+            let i = item(LoadoutText.name(l), #selector(pickLoadout(_:)), "")
+            i.representedObject = l.rawValue
+            i.state = pin == l ? .on : .off
+            m.addItem(i)
+        }
+        let enabled = s.connection.isLive || pending != nil
+        for i in m.items { i.isEnabled = enabled || i.isSeparatorItem }
+        return m
     }
 
     /// Mute, Stop, the installed voices, and speed: this Mac's settings, never Stark's persona.
@@ -319,6 +359,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func pickAnimation(_ sender: NSMenuItem) {
         model.stage?.show((sender.representedObject as? String).flatMap(StarkAnimation.init(rawValue:)))
+    }
+
+    @objc private func pickLoadout(_ sender: NSMenuItem) {
+        model.setLoadout((sender.representedObject as? String).flatMap(Loadout.init(rawValue:)))
+    }
+
+    @objc private func togglePreviewGym() {
+        model.stage?.preview(model.stage?.previewLoadout == .gym ? nil : .gym)
     }
 
     @objc private func toggleCycle() { model.stage?.setCycle(!(model.stage?.cycling ?? false)) }

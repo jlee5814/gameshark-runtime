@@ -1,0 +1,1096 @@
+{
+ "approved": true,
+ "approved_by": "Jae, 2026-10-23, PR #47 gallery",
+ "atlas": "stark-atlas-gym.png",
+ "atlas_sha256": "9c37ceaf1619bcf44ac2c72c4e18c913c740d0b401c0be99446c7fabd5862724",
+ "block": 3,
+ "frames": {
+  "r0c0": {
+   "buds": [
+    "left",
+    "right"
+   ],
+   "crown_cx": 87,
+   "face": [
+    45,
+    100,
+    125,
+    125
+   ],
+   "facing": "front",
+   "head_top": 11
+  },
+  "r0c1": {
+   "buds": [
+    "left",
+    "right"
+   ],
+   "crown_cx": 87,
+   "face": [
+    46,
+    98,
+    124,
+    122
+   ],
+   "facing": "front",
+   "head_top": 11
+  },
+  "r0c2": {
+   "buds": [
+    "left",
+    "right"
+   ],
+   "crown_cx": 88,
+   "face": [
+    47,
+    100,
+    125,
+    125
+   ],
+   "facing": "front",
+   "head_top": 11
+  },
+  "r0c3": {
+   "buds": [
+    "left",
+    "right"
+   ],
+   "crown_cx": 88,
+   "face": [
+    45,
+    94,
+    125,
+    125
+   ],
+   "facing": "front",
+   "head_top": 11
+  },
+  "r0c4": {
+   "buds": [
+    "left",
+    "right"
+   ],
+   "crown_cx": 88,
+   "face": [
+    47,
+    94,
+    125,
+    125
+   ],
+   "facing": "front",
+   "head_top": 11
+  },
+  "r0c5": {
+   "buds": [
+    "left",
+    "right"
+   ],
+   "crown_cx": 88,
+   "face": [
+    45,
+    98,
+    125,
+    125
+   ],
+   "facing": "front",
+   "head_top": 11
+  },
+  "r0c6": {
+   "buds": [
+    "left",
+    "right"
+   ],
+   "crown_cx": 87,
+   "face": [
+    45,
+    100,
+    125,
+    125
+   ],
+   "facing": "front",
+   "head_top": 11
+  },
+  "r10c0": {
+   "buds": [
+    "left",
+    "right"
+   ],
+   "crown_cx": 81,
+   "face": [
+    47,
+    121,
+    109,
+    133
+   ],
+   "facing": "front",
+   "head_top": 12
+  },
+  "r10c1": {
+   "buds": [
+    "left",
+    "right"
+   ],
+   "crown_cx": 79,
+   "face": [
+    46,
+    118,
+    103,
+    131
+   ],
+   "facing": "front",
+   "head_top": 9
+  },
+  "r10c2": {
+   "buds": [
+    "left",
+    "right"
+   ],
+   "crown_cx": 74,
+   "face": [
+    42,
+    118,
+    112,
+    131
+   ],
+   "facing": "front",
+   "head_top": 12
+  },
+  "r10c3": {
+   "buds": [
+    "left",
+    "right"
+   ],
+   "crown_cx": 74,
+   "face": [
+    40,
+    112,
+    107,
+    129
+   ],
+   "facing": "front",
+   "head_top": 9
+  },
+  "r10c4": {
+   "buds": [
+    "right"
+   ],
+   "crown_cx": 86,
+   "face": [
+    38,
+    106,
+    92,
+    129
+   ],
+   "facing": "left",
+   "head_top": 9
+  },
+  "r10c5": {
+   "buds": [
+    "right"
+   ],
+   "crown_cx": 89,
+   "face": [
+    35,
+    101,
+    94,
+    126
+   ],
+   "facing": "left",
+   "head_top": 9
+  },
+  "r10c6": {
+   "buds": [
+    "right"
+   ],
+   "crown_cx": 88,
+   "face": [
+    34,
+    96,
+    103,
+    127
+   ],
+   "facing": "left",
+   "head_top": 6
+  },
+  "r10c7": {
+   "buds": [
+    "right"
+   ],
+   "crown_cx": 95,
+   "face": [
+    34,
+    89,
+    104,
+    126
+   ],
+   "facing": "left",
+   "head_top": 6
+  },
+  "r1c0": {
+   "buds": [
+    "left"
+   ],
+   "crown_cx": 104,
+   "face": [
+    79,
+    92,
+    127,
+    116
+   ],
+   "facing": "right",
+   "head_top": 12
+  },
+  "r1c1": {
+   "buds": [
+    "left"
+   ],
+   "crown_cx": 101,
+   "face": [
+    77,
+    92,
+    124,
+    115
+   ],
+   "facing": "right",
+   "head_top": 11
+  },
+  "r1c2": {
+   "buds": [
+    "left"
+   ],
+   "crown_cx": 103,
+   "face": [
+    78,
+    91,
+    125,
+    113
+   ],
+   "facing": "right",
+   "head_top": 10
+  },
+  "r1c3": {
+   "buds": [
+    "left"
+   ],
+   "crown_cx": 105,
+   "face": [
+    81,
+    95,
+    128,
+    118
+   ],
+   "facing": "right",
+   "head_top": 14
+  },
+  "r1c4": {
+   "buds": [
+    "left"
+   ],
+   "crown_cx": 102,
+   "face": [
+    78,
+    91,
+    125,
+    114
+   ],
+   "facing": "right",
+   "head_top": 11
+  },
+  "r1c5": {
+   "buds": [
+    "left"
+   ],
+   "crown_cx": 102,
+   "face": [
+    77,
+    91,
+    124,
+    114
+   ],
+   "facing": "right",
+   "head_top": 10
+  },
+  "r1c6": {
+   "buds": [
+    "left"
+   ],
+   "crown_cx": 103,
+   "face": [
+    78,
+    91,
+    125,
+    113
+   ],
+   "facing": "right",
+   "head_top": 10
+  },
+  "r1c7": {
+   "buds": [
+    "left"
+   ],
+   "crown_cx": 104,
+   "face": [
+    80,
+    95,
+    128,
+    118
+   ],
+   "facing": "right",
+   "head_top": 14
+  },
+  "r2c0": {
+   "buds": [
+    "right"
+   ],
+   "crown_cx": 55,
+   "face": [
+    29,
+    93,
+    76,
+    113
+   ],
+   "facing": "left",
+   "head_top": 13
+  },
+  "r2c1": {
+   "buds": [
+    "right"
+   ],
+   "crown_cx": 62,
+   "face": [
+    37,
+    91,
+    85,
+    112
+   ],
+   "facing": "left",
+   "head_top": 11
+  },
+  "r2c2": {
+   "buds": [
+    "right"
+   ],
+   "crown_cx": 51,
+   "face": [
+    27,
+    92,
+    74,
+    113
+   ],
+   "facing": "left",
+   "head_top": 12
+  },
+  "r2c3": {
+   "buds": [
+    "right"
+   ],
+   "crown_cx": 58,
+   "face": [
+    33,
+    92,
+    81,
+    113
+   ],
+   "facing": "left",
+   "head_top": 11
+  },
+  "r2c4": {
+   "buds": [
+    "right"
+   ],
+   "crown_cx": 52,
+   "face": [
+    26,
+    91,
+    75,
+    112
+   ],
+   "facing": "left",
+   "head_top": 10
+  },
+  "r2c5": {
+   "buds": [
+    "right"
+   ],
+   "crown_cx": 62,
+   "face": [
+    36,
+    90,
+    83,
+    111
+   ],
+   "facing": "left",
+   "head_top": 10
+  },
+  "r2c6": {
+   "buds": [
+    "right"
+   ],
+   "crown_cx": 55,
+   "face": [
+    29,
+    93,
+    76,
+    114
+   ],
+   "facing": "left",
+   "head_top": 13
+  },
+  "r2c7": {
+   "buds": [
+    "right"
+   ],
+   "crown_cx": 57,
+   "face": [
+    31,
+    91,
+    80,
+    111
+   ],
+   "facing": "left",
+   "head_top": 11
+  },
+  "r3c0": {
+   "buds": [
+    "left",
+    "right"
+   ],
+   "crown_cx": 90,
+   "face": [
+    44,
+    103,
+    127,
+    126
+   ],
+   "facing": "front",
+   "head_top": 7
+  },
+  "r3c1": {
+   "buds": [
+    "left",
+    "right"
+   ],
+   "crown_cx": 90,
+   "face": [
+    32,
+    103,
+    127,
+    126
+   ],
+   "facing": "front",
+   "head_top": 7
+  },
+  "r3c2": {
+   "buds": [
+    "left",
+    "right"
+   ],
+   "crown_cx": 87,
+   "face": [
+    42,
+    103,
+    130,
+    126
+   ],
+   "facing": "front",
+   "head_top": 7
+  },
+  "r3c3": {
+   "buds": [
+    "left",
+    "right"
+   ],
+   "crown_cx": 91,
+   "face": [
+    45,
+    103,
+    127,
+    126
+   ],
+   "facing": "front",
+   "head_top": 7
+  },
+  "r4c0": {
+   "buds": [
+    "left",
+    "right"
+   ],
+   "crown_cx": 85,
+   "face": [
+    36,
+    138,
+    123,
+    157
+   ],
+   "facing": "front",
+   "head_top": 40
+  },
+  "r4c1": {
+   "buds": [
+    "left",
+    "right"
+   ],
+   "crown_cx": 99,
+   "face": [
+    52,
+    110,
+    135,
+    132
+   ],
+   "facing": "front",
+   "head_top": 17
+  },
+  "r4c2": {
+   "buds": [
+    "left",
+    "right"
+   ],
+   "crown_cx": 88,
+   "face": [
+    27,
+    87,
+    132,
+    112
+   ],
+   "facing": "front",
+   "head_top": 4
+  },
+  "r4c3": {
+   "buds": [
+    "left",
+    "right"
+   ],
+   "crown_cx": 87,
+   "face": [
+    35,
+    102,
+    122,
+    125
+   ],
+   "facing": "front",
+   "head_top": 10
+  },
+  "r4c4": {
+   "buds": [
+    "left",
+    "right"
+   ],
+   "crown_cx": 90,
+   "face": [
+    44,
+    117,
+    125,
+    141
+   ],
+   "facing": "front",
+   "head_top": 26
+  },
+  "r5c0": {
+   "buds": [
+    "left",
+    "right"
+   ],
+   "crown_cx": 83,
+   "face": [
+    44,
+    102,
+    123,
+    132
+   ],
+   "facing": "front",
+   "head_top": 14
+  },
+  "r5c1": {
+   "buds": [
+    "left",
+    "right"
+   ],
+   "crown_cx": 74,
+   "face": [
+    42,
+    108,
+    117,
+    133
+   ],
+   "facing": "front",
+   "head_top": 18
+  },
+  "r5c2": {
+   "buds": [
+    "left",
+    "right"
+   ],
+   "crown_cx": 75,
+   "face": [
+    41,
+    115,
+    117,
+    139
+   ],
+   "facing": "front",
+   "head_top": 22
+  },
+  "r5c3": {
+   "buds": [
+    "left",
+    "right"
+   ],
+   "crown_cx": 80,
+   "face": [
+    48,
+    134,
+    121,
+    158
+   ],
+   "facing": "front",
+   "head_top": 40
+  },
+  "r5c4": {
+   "buds": [
+    "left",
+    "right"
+   ],
+   "crown_cx": 71,
+   "face": [
+    44,
+    120,
+    120,
+    145
+   ],
+   "facing": "front",
+   "head_top": 29
+  },
+  "r5c5": {
+   "buds": [
+    "left",
+    "right"
+   ],
+   "crown_cx": 78,
+   "face": [
+    45,
+    108,
+    119,
+    136
+   ],
+   "facing": "front",
+   "head_top": 21
+  },
+  "r5c6": {
+   "buds": [
+    "left",
+    "right"
+   ],
+   "crown_cx": 79,
+   "face": [
+    44,
+    108,
+    124,
+    132
+   ],
+   "facing": "front",
+   "head_top": 17
+  },
+  "r5c7": {
+   "buds": [
+    "left",
+    "right"
+   ],
+   "crown_cx": 84,
+   "face": [
+    47,
+    108,
+    123,
+    132
+   ],
+   "facing": "front",
+   "head_top": 14
+  },
+  "r6c0": {
+   "buds": [
+    "left",
+    "right"
+   ],
+   "crown_cx": 86,
+   "face": [
+    47,
+    107,
+    125,
+    132
+   ],
+   "facing": "front",
+   "head_top": 13
+  },
+  "r6c1": {
+   "buds": [
+    "left",
+    "right"
+   ],
+   "crown_cx": 87,
+   "face": [
+    45,
+    107,
+    121,
+    132
+   ],
+   "facing": "front",
+   "head_top": 17
+  },
+  "r6c2": {
+   "buds": [
+    "left",
+    "right"
+   ],
+   "crown_cx": 86,
+   "face": [
+    48,
+    107,
+    125,
+    132
+   ],
+   "facing": "front",
+   "head_top": 13
+  },
+  "r6c3": {
+   "buds": [
+    "left",
+    "right"
+   ],
+   "crown_cx": 90,
+   "face": [
+    51,
+    107,
+    126,
+    132
+   ],
+   "facing": "front",
+   "head_top": 17
+  },
+  "r6c4": {
+   "buds": [
+    "left",
+    "right"
+   ],
+   "crown_cx": 86,
+   "face": [
+    48,
+    107,
+    124,
+    132
+   ],
+   "facing": "front",
+   "head_top": 13
+  },
+  "r6c5": {
+   "buds": [
+    "left",
+    "right"
+   ],
+   "crown_cx": 83,
+   "face": [
+    45,
+    107,
+    121,
+    132
+   ],
+   "facing": "front",
+   "head_top": 13
+  },
+  "r7c0": {
+   "buds": [
+    "left",
+    "right"
+   ],
+   "crown_cx": 82,
+   "face": [
+    48,
+    107,
+    124,
+    140
+   ],
+   "facing": "front",
+   "head_top": 11
+  },
+  "r7c1": {
+   "buds": [
+    "left",
+    "right"
+   ],
+   "crown_cx": 81,
+   "face": [
+    50,
+    114,
+    122,
+    132
+   ],
+   "facing": "front",
+   "head_top": 13
+  },
+  "r7c2": {
+   "buds": [
+    "left",
+    "right"
+   ],
+   "crown_cx": 78,
+   "face": [
+    34,
+    108,
+    125,
+    131
+   ],
+   "facing": "front",
+   "head_top": 10
+  },
+  "r7c3": {
+   "buds": [
+    "left",
+    "right"
+   ],
+   "crown_cx": 82,
+   "face": [
+    52,
+    112,
+    125,
+    131
+   ],
+   "facing": "front",
+   "head_top": 13
+  },
+  "r7c4": {
+   "buds": [
+    "left",
+    "right"
+   ],
+   "crown_cx": 76,
+   "face": [
+    25,
+    103,
+    114,
+    130
+   ],
+   "facing": "front",
+   "head_top": 14
+  },
+  "r7c5": {
+   "buds": [
+    "left",
+    "right"
+   ],
+   "crown_cx": 83,
+   "face": [
+    51,
+    112,
+    124,
+    131
+   ],
+   "facing": "front",
+   "head_top": 11
+  },
+  "r8c0": {
+   "buds": [
+    "left",
+    "right"
+   ],
+   "crown_cx": 87,
+   "face": [
+    44,
+    108,
+    127,
+    132
+   ],
+   "facing": "front",
+   "head_top": 14
+  },
+  "r8c1": {
+   "buds": [
+    "left",
+    "right"
+   ],
+   "crown_cx": 84,
+   "face": [
+    46,
+    105,
+    126,
+    130
+   ],
+   "facing": "front",
+   "head_top": 14
+  },
+  "r8c2": {
+   "buds": [
+    "left",
+    "right"
+   ],
+   "crown_cx": 87,
+   "face": [
+    47,
+    105,
+    127,
+    131
+   ],
+   "facing": "front",
+   "head_top": 14
+  },
+  "r8c3": {
+   "buds": [
+    "left",
+    "right"
+   ],
+   "crown_cx": 88,
+   "face": [
+    45,
+    107,
+    127,
+    131
+   ],
+   "facing": "front",
+   "head_top": 14
+  },
+  "r8c4": {
+   "buds": [
+    "left",
+    "right"
+   ],
+   "crown_cx": 79,
+   "face": [
+    33,
+    105,
+    113,
+    130
+   ],
+   "facing": "front",
+   "head_top": 15
+  },
+  "r8c5": {
+   "buds": [
+    "left",
+    "right"
+   ],
+   "crown_cx": 87,
+   "face": [
+    45,
+    109,
+    126,
+    131
+   ],
+   "facing": "front",
+   "head_top": 14
+  },
+  "r9c0": {
+   "buds": [
+    "left",
+    "right"
+   ],
+   "crown_cx": 86,
+   "face": [
+    35,
+    86,
+    129,
+    118
+   ],
+   "facing": "front",
+   "head_top": 9
+  },
+  "r9c1": {
+   "buds": [
+    "left",
+    "right"
+   ],
+   "crown_cx": 86,
+   "face": [
+    43,
+    86,
+    123,
+    121
+   ],
+   "facing": "front",
+   "head_top": 9
+  },
+  "r9c2": {
+   "buds": [
+    "left"
+   ],
+   "crown_cx": 82,
+   "face": [
+    61,
+    90,
+    124,
+    121
+   ],
+   "facing": "right",
+   "head_top": 9
+  },
+  "r9c3": {
+   "buds": [
+    "left"
+   ],
+   "crown_cx": 79,
+   "face": [
+    58,
+    92,
+    124,
+    121
+   ],
+   "facing": "right",
+   "head_top": 6
+  },
+  "r9c4": {
+   "buds": [
+    "left"
+   ],
+   "crown_cx": 88,
+   "face": [
+    72,
+    96,
+    123,
+    121
+   ],
+   "facing": "right",
+   "head_top": 6
+  },
+  "r9c5": {
+   "buds": [
+    "left"
+   ],
+   "crown_cx": 95,
+   "face": [
+    62,
+    109,
+    120,
+    130
+   ],
+   "facing": "right",
+   "head_top": 10
+  },
+  "r9c6": {
+   "buds": [
+    "left",
+    "right"
+   ],
+   "crown_cx": 100,
+   "face": [
+    54,
+    115,
+    116,
+    131
+   ],
+   "facing": "front",
+   "head_top": 16
+  },
+  "r9c7": {
+   "buds": [
+    "left",
+    "right"
+   ],
+   "crown_cx": 100,
+   "face": [
+    54,
+    118,
+    115,
+    133
+   ],
+   "facing": "front",
+   "head_top": 18
+  }
+ },
+ "version": 1
+}
