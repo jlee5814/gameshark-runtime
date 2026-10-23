@@ -1,0 +1,7 @@
+{
+ "comment": "Hand corrections to the anchors compose_loadout.py proposes. Keys per frame: head_top, crown_cx, facing (front, left, right), buds (sides that show an earbud), note. Rerun mac/tools/compose_loadout.py after editing.",
+ "frames": {
+  "r5c4": {"facing": "front", "note": "dozing head tilt, not a turn"},
+  "r7c3": {"facing": "front", "note": "hand at chin, face still forward"}
+ }
+}
