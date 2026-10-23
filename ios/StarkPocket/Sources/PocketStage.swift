@@ -8,6 +8,8 @@ import StarkKit
 struct PocketAtlas {
     let manifest: SpriteManifest
     let frames: [CGImage]
+    /// The same frames with the gym loadout baked in; nil when not bundled.
+    var gymFrames: [CGImage]? = nil
 
     static func load(bundle: Bundle = .main) -> PocketAtlas? {
         guard let url = bundle.url(forResource: "manifest", withExtension: "json"),
@@ -24,7 +26,9 @@ struct PocketAtlas {
             guard let img = atlas.cropping(to: r) else { return nil }
             frames.append(img)
         }
-        return PocketAtlas(manifest: m, frames: frames)
+        let gym = bundle.url(forResource: "stark-atlas-gym", withExtension: "png")
+            .flatMap { AtlasCrop.frames(at: $0, manifest: m) }
+        return PocketAtlas(manifest: m, frames: frames, gymFrames: gym)
     }
 }
 
@@ -49,7 +53,11 @@ final class PocketStage {
     let atlas: PocketAtlas
     private(set) var frame: Int
     private(set) var animation: StarkAnimation = .idle
+    /// What Stark wears, from the runtime (ClientState.shownLoadout).
+    private(set) var loadout: Loadout = .standard
 
+    @ObservationIgnored private lazy var sheets = LoadoutFrames(standard: atlas.frames,
+                                                                 gym: atlas.gymFrames)
     @ObservationIgnored private let controller: StarkAnimationController
     @ObservationIgnored private let driver: AnimationDriver
     @ObservationIgnored private var hold = WorkingHold()
@@ -77,6 +85,7 @@ final class PocketStage {
 
     func follow(_ s: ClientState, listening: Bool, viewedSeq: Int) {
         last = (s, listening, viewedSeq)
+        if loadout != s.shownLoadout { loadout = s.shownLoadout }
         let now = Self.now()
         let inputs: [AnyHashable] = [s.connection.isLive, s.isActiveSurface, s.isWorking,
                                      s.isThinking, listening, s.rows.count, viewedSeq]
@@ -104,5 +113,5 @@ final class PocketStage {
     /// Off screen (app in background): no timers at all.
     func setVisible(_ visible: Bool) { driver.setPaused(!visible) }
 
-    var image: CGImage { atlas.frames[frame] }
+    var image: CGImage { sheets.frames(for: loadout)[frame] }
 }

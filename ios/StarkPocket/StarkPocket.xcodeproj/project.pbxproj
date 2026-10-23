@@ -10,6 +10,7 @@
 		141AF45E64556DB3D46385C0 /* Views.swift in Sources */ = {isa = PBXBuildFile; fileRef = A914E09BBDFE62551407CD29 /* Views.swift */; };
 		221637BD0988AC04A95FA491 /* CredentialStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = C28D8EC3961803EDEDAF02A0 /* CredentialStore.swift */; };
 		311B85F0BBE44CFFF27406C3 /* stark-atlas.png in Resources */ = {isa = PBXBuildFile; fileRef = 4C418BD42BECEFABC849EC5D /* stark-atlas.png */; };
+		7A18C2301E4B29F70F257E88 /* stark-atlas-gym.png in Resources */ = {isa = PBXBuildFile; fileRef = 70D177A827A5ABB4AE4FA95E /* stark-atlas-gym.png */; };
 		393E068475B6453FC978C9F4 /* StarkPocketApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = FC5DD75DDA61B8B6088280DA /* StarkPocketApp.swift */; };
 		43542E31CD93E03E6428CFAE /* PocketModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 997A7751A077753A832111E4 /* PocketModel.swift */; };
 		5CB0ADB3BA0542A1F740F36B /* NetLog.swift in Sources */ = {isa = PBXBuildFile; fileRef = A598C251F479EECDA5B0E5BB /* NetLog.swift */; };
@@ -19,6 +20,7 @@
 		BCD5BFA6ACC93CA1CF465EA4 /* PresenceSummary.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5CBB4DAAF0DD3FFE975063C7 /* PresenceSummary.swift */; };
 		D6927A7B72525BA63B205707 /* StarkKit in Frameworks */ = {isa = PBXBuildFile; productRef = 8F072172B59FA1CC7813A48F /* StarkKit */; };
 		F5ECD70FC79762FBB6B737CD /* StarkPocketTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20F44EE20CBC2C651F6607E3 /* StarkPocketTests.swift */; };
+		EB05B3A6E7F76021A3DA937A /* PocketLoadoutTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 582E7EF9E7E7CCDC31B756D9 /* PocketLoadoutTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -40,10 +42,12 @@
 
 /* Begin PBXFileReference section */
 		20F44EE20CBC2C651F6607E3 /* StarkPocketTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StarkPocketTests.swift; sourceTree = "<group>"; };
+		582E7EF9E7E7CCDC31B756D9 /* PocketLoadoutTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PocketLoadoutTests.swift; sourceTree = "<group>"; };
 		3B88F63E372862B0AB0CAD0A /* StarkPocketTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = StarkPocketTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		3BB0A9DA5F1B604C4F8F4ED1 /* manifest.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = manifest.json; sourceTree = "<group>"; };
 		478CE09FB466FDC749007054 /* PocketHandoffUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PocketHandoffUITests.swift; sourceTree = "<group>"; };
 		4C418BD42BECEFABC849EC5D /* stark-atlas.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "stark-atlas.png"; sourceTree = "<group>"; };
+		70D177A827A5ABB4AE4FA95E /* stark-atlas-gym.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "stark-atlas-gym.png"; sourceTree = "<group>"; };
 		5CBB4DAAF0DD3FFE975063C7 /* PresenceSummary.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PresenceSummary.swift; sourceTree = "<group>"; };
 		62C53BA124010B81ED1F187A /* StarkPocketUITests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = StarkPocketUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		729BA8D248ABDDBFD3C478E8 /* StarkMac */ = {isa = PBXFileReference; lastKnownFileType = folder; name = StarkMac; path = ../../mac/StarkMac; sourceTree = SOURCE_ROOT; };
@@ -127,6 +131,7 @@
 			children = (
 				3BB0A9DA5F1B604C4F8F4ED1 /* manifest.json */,
 				4C418BD42BECEFABC849EC5D /* stark-atlas.png */,
+				70D177A827A5ABB4AE4FA95E /* stark-atlas-gym.png */,
 			);
 			path = stark;
 			sourceTree = "<group>";
@@ -166,6 +171,7 @@
 			isa = PBXGroup;
 			children = (
 				20F44EE20CBC2C651F6607E3 /* StarkPocketTests.swift */,
+				582E7EF9E7E7CCDC31B756D9 /* PocketLoadoutTests.swift */,
 			);
 			path = Tests;
 			sourceTree = "<group>";
@@ -282,6 +288,7 @@
 			files = (
 				713756CCD0341938CAD1B10F /* manifest.json in Resources */,
 				311B85F0BBE44CFFF27406C3 /* stark-atlas.png in Resources */,
+				7A18C2301E4B29F70F257E88 /* stark-atlas-gym.png in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -337,6 +344,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				F5ECD70FC79762FBB6B737CD /* StarkPocketTests.swift in Sources */,
+				EB05B3A6E7F76021A3DA937A /* PocketLoadoutTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
