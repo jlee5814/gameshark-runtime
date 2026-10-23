@@ -88,9 +88,11 @@ changed pixel outside each frame's accessory mask, the cap on the crown and insi
 canvas in every frame, the bill toward the face, earbuds beside the face, no starburst
 left above the seam, overrides, determinism, and committed outputs.
 
-**Approval gate**: `anchors.json` carries `"approved": false` until Jae accepts the
-gallery. The renderers ship the atlas regardless, so the physical check can run; the
-flag records review, not a runtime switch.
+**Approval**: Jae approved the art without changes on 2026-10-23 from the PR #47 gallery.
+`overrides.json` records the approval with the sha256 of the atlas reviewed, and
+`anchors.json` reports `"approved": true` only while the composed atlas has that digest.
+Recomposing to different pixels (a new anchor, cap, or earbud) voids the approval until
+it is reviewed again. The flag records review; it is not a runtime switch.
 
 ## Surfaces
 

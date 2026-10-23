@@ -27,11 +27,16 @@ outside each frame's accessory mask stay byte identical to the original atlas.
 
 Outputs in Assets/stark: stark-atlas-gym.png, loadout/anchors.json (deterministic),
 and preview-gym.png (each animation, standard above gym, for review).
+
+Approval: overrides.json carries Jae's approval and the sha256 of the atlas reviewed.
+anchors.json reports approved only while the composed atlas still has that digest.
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
+import io
 import json
 import sys
 from dataclasses import dataclass
@@ -378,7 +383,8 @@ def build(assets: Path = ASSETS) -> Result:
     src = Image.open(assets / manifest["atlas"]["file"]).convert("RGBA")
     atlas = np.asarray(src).copy()
     ov_path = assets / "loadout" / "overrides.json"
-    overrides = json.loads(ov_path.read_text())["frames"] if ov_path.exists() else {}
+    curated = json.loads(ov_path.read_text()) if ov_path.exists() else {}
+    overrides = curated.get("frames", {})
     unknown = set(overrides) - {f["id"] for f in manifest["frames"]}
     if unknown:
         raise ComposeError(f"overrides name unknown frames {sorted(unknown)}")
@@ -391,13 +397,20 @@ def build(assets: Path = ASSETS) -> Result:
         out[y:y + h, x:x + w] = g
         changed.append(m)
     gym = Image.fromarray(out, "RGBA")
+    digest = atlas_sha256(gym)
+    # Approval is Jae's, recorded in overrides.json against the exact atlas reviewed. Any
+    # change to the composed pixels changes the digest and voids it.
+    approved = curated.get("approved") is True and curated.get("approved_atlas_sha256") == digest
     doc = {
         "version": 1,
         "atlas": GYM_ATLAS,
-        "approved": False,
+        "atlas_sha256": digest,
+        "approved": approved,
         "block": BLOCK,
         "frames": {a.id: a.as_json() for a in anc},
     }
+    if approved and curated.get("approved_by"):
+        doc["approved_by"] = curated["approved_by"]
     return Result(gym, doc, preview(manifest, src, gym), changed)
 
 
@@ -425,6 +438,13 @@ def preview(manifest: dict, std: Image.Image, gym: Image.Image) -> Image.Image:
                 img.alpha_composite(tile.resize((cw, ch), Image.Resampling.NEAREST), (x, y))
                 draw.text((x + 2, y + ch + 1), fid, fill=(170, 170, 170, 255))
     return img
+
+
+def atlas_sha256(img: Image.Image) -> str:
+    """The digest of the PNG bytes save_png writes for img."""
+    buf = io.BytesIO()
+    img.save(buf, format="PNG", optimize=False, compress_level=9)
+    return hashlib.sha256(buf.getvalue()).hexdigest()
 
 
 def save_png(img: Image.Image, path: Path) -> None:

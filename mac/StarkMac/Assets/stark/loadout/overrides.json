@@ -1,7 +1,16 @@
 {
- "comment": "Hand corrections to the anchors compose_loadout.py proposes. Keys per frame: head_top, crown_cx, facing (front, left, right), buds (sides that show an earbud), note. Rerun mac/tools/compose_loadout.py after editing.",
+ "comment": "Hand corrections to the anchors compose_loadout.py proposes. Keys per frame: head_top, crown_cx, facing (front, left, right), buds (sides that show an earbud), note. Rerun mac/tools/compose_loadout.py after editing. approved, approved_by, and approved_atlas_sha256 record Jae's review of the exact atlas; recomposing to different pixels voids it.",
+ "approved": true,
+ "approved_by": "Jae, 2026-10-23, PR #47 gallery",
+ "approved_atlas_sha256": "9c37ceaf1619bcf44ac2c72c4e18c913c740d0b401c0be99446c7fabd5862724",
  "frames": {
-  "r5c4": {"facing": "front", "note": "dozing head tilt, not a turn"},
-  "r7c3": {"facing": "front", "note": "hand at chin, face still forward"}
+  "r5c4": {
+   "facing": "front",
+   "note": "dozing head tilt, not a turn"
+  },
+  "r7c3": {
+   "facing": "front",
+   "note": "hand at chin, face still forward"
+  }
  }
 }

@@ -1,6 +1,8 @@
 {
- "approved": false,
+ "approved": true,
+ "approved_by": "Jae, 2026-10-23, PR #47 gallery",
  "atlas": "stark-atlas-gym.png",
+ "atlas_sha256": "9c37ceaf1619bcf44ac2c72c4e18c913c740d0b401c0be99446c7fabd5862724",
  "block": 3,
  "frames": {
   "r0c0": {

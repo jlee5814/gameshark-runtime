@@ -446,13 +446,23 @@ and `/auto` in the composer pin or clear it and never become chat rows.
 
 #### Phase 4.4B physical checklist (not yet run)
 
-Before you start: approve the art in the gallery first. Back up the database
-(`sqlite3 ~/.gameshark/device-check/runtime.db ".backup ~/.gameshark/device-check/runtime-pre44b.db"`);
-this branch only adds two tables, and older builds ignore them. Stop the running daemon,
-then start this branch's `stark.py run --lan --tailscale` against the same database with
-the shell environment stripped, so the pairing stays as it is. Build StarkMac
+Art approved by Jae on 2026-10-23. Before you start, take an online backup of the
+database and the gateway directory (its LAN identity key is what the iPhone pairing
+pins); both are safe to copy while the daemon runs:
+
+```
+B=~/.gameshark/backups/pre44b-$(date +%Y%m%d-%H%M%S); mkdir -p "$B"
+sqlite3 ~/.gameshark/device-check/runtime.db ".backup '$B/runtime.db'"
+cp -Rp ~/.gameshark/device-check/gateway "$B/gateway"
+sqlite3 "$B/runtime.db" "PRAGMA integrity_check; SELECT count(*) FROM devices; SELECT count(*) FROM messages;"
+```
+
+This branch only adds two tables, and older builds ignore them. Then stop the running
+daemon, and start this branch's `stark.py run` against the same database with the same
+flags and the shell environment stripped, so the pairing stays as it is. Build StarkMac
 (`mac/scripts/build-app.sh`) and Stark Pocket from this branch; choose your team in Xcode
-without committing the signing change.
+without committing the signing change. To roll back, stop the branch daemon and start
+the previous build with its original flags.
 
 1. On the Mac, send "I'm at the gym". Stark wears the cap and earbuds once the message is
    sent, before his reply.

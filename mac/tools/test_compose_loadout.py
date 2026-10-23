@@ -54,8 +54,28 @@ def test_every_original_frame_has_an_anchor(result, manifest):
         assert a["head_top"] < y0 < y1 and x0 < x1, fid
 
 
-def test_the_art_is_unapproved_until_jae_says_so(result):
-    assert result.anchors["approved"] is False
+def test_the_committed_art_is_the_atlas_jae_approved(result):
+    curated = json.loads((cl.ASSETS / "loadout" / "overrides.json").read_text())
+    assert result.anchors["approved"] is True
+    assert result.anchors["atlas_sha256"] == curated["approved_atlas_sha256"]
+    assert result.anchors["approved_by"].startswith("Jae")
+
+
+def test_approval_comes_only_from_overrides_and_voids_on_new_pixels(tmp_path, manifest):
+    for name in ("manifest.json", manifest["atlas"]["file"]):
+        shutil.copy(cl.ASSETS / name, tmp_path / name)
+    (tmp_path / "loadout").mkdir()
+    ov = tmp_path / "loadout" / "overrides.json"
+    curated = json.loads((cl.ASSETS / "loadout" / "overrides.json").read_text())
+    ov.write_text(json.dumps({"frames": curated["frames"]}))
+    assert cl.build(tmp_path).anchors["approved"] is False
+    ov.write_text(json.dumps(curated))
+    assert cl.build(tmp_path).anchors["approved"] is True
+    # Different pixels (one corrected anchor moves the cap) void the approval.
+    moved = {**curated, "frames": {**curated["frames"], "r0c0": {"crown_cx": 70}}}
+    ov.write_text(json.dumps(moved))
+    doc = cl.build(tmp_path).anchors
+    assert doc["approved"] is False and "approved_by" not in doc
 
 
 def test_same_layout_as_the_original_atlas(result, manifest):
