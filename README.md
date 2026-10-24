@@ -58,6 +58,10 @@ process restarts without a second prompt.
   ([architecture/stark-voice-input.md](architecture/stark-voice-input.md#phase-43c-acceptance-physical-iphone-and-starkmac-2026-10-19));
   the finishing state and the iPhone keyboard fix passed a retest by hand on 2026-10-20
   ([retest](architecture/stark-voice-input.md#phase-43c-retest-physical-iphone-and-starkmac-2026-10-20)).
+  Phase 4.4B: Stark wears a cap and earbuds while the user is at the gym, a costume the
+  runtime owns, accepted by hand on StarkMac and a physical iPhone for the recorded
+  scenarios
+  ([architecture/stark-avatar-loadout.md](architecture/stark-avatar-loadout.md#phase-44b-acceptance-physical-iphone-and-starkmac-2026-10-23)).
   Design: [architecture/stark-companion.md](architecture/stark-companion.md),
   app: [mac/StarkMac/README.md](mac/StarkMac/README.md).
 

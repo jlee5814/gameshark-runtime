@@ -75,6 +75,8 @@ hand; see Saved memory (Phase 4.2). It has also passed the Phase 4.3A persona ac
 by hand; see Persona (Phase 4.3A). It has also passed the Phase 4.3B voice output
 acceptance by hand; see Voice output (Phase 4.3B). It has also passed the Phase 4.3C
 voice input acceptance by hand for the recorded scenarios; see Voice input (Phase 4.3C).
+It has also passed the Phase 4.4B avatar loadout acceptance by hand; see Avatar loadout
+(Phase 4.4B).
 The LAN checklist below has still not run end to end on a
 device. The
 checklist uses its own database, never `~/.gameshark/runtime.db` or the simulator's
@@ -444,7 +446,7 @@ Stark wears a black cap and white earbuds while the runtime's loadout is gym; se
 only: no speech, memory, inference, presence, or audio route change. `/gym`, `/default`,
 and `/auto` in the composer pin or clear it and never become chat rows.
 
-#### Phase 4.4B physical checklist (not yet run)
+#### Phase 4.4B physical checklist
 
 Art approved by Jae on 2026-10-23. Before you start, take an online backup of the
 database and the gateway directory (its LAN identity key is what the iPhone pairing
@@ -483,3 +485,16 @@ the previous build with its original flags.
 10. Quit and relaunch StarkMac, then restart the daemon. The loadout is unchanged.
 11. Connect and disconnect real AirPods on the phone. The avatar never changes with them.
 12. `stark.py loadout` prints the same loadout both surfaces show.
+
+#### Phase 4.4B acceptance: physical iPhone and StarkMac, 2026-10-23
+
+User observed by hand; not automated test results. The full record is in
+[architecture/stark-avatar-loadout.md](../../architecture/stark-avatar-loadout.md#phase-44b-acceptance-physical-iphone-and-starkmac-2026-10-23).
+Build: e01092a, whose tree matches merge commit 353d5ac. Not recorded: the iOS version,
+the iPhone model, the AirPods model, and the logs.
+
+All 12 checklist steps passed. On the phone: Jack In showed the gym loadout at once;
+"I'm leaving the gym" cleared it on both surfaces; `/gym` pinned it without a chat row or
+a reply; a change made on the Mac while the phone was in airplane mode reached it on reconnect; and
+real AirPods connecting and disconnecting never changed the avatar. The loadout survived a
+StarkMac relaunch and a daemon restart.
