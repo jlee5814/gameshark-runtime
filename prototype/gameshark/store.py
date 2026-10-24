@@ -296,6 +296,28 @@ CREATE TABLE IF NOT EXISTS memory_ops (
     created          REAL NOT NULL,
     PRIMARY KEY (agent_id, op_id)
 );
+
+-- v0.6: avatar loadout (loadout.py). What Stark wears on every surface: presentation
+-- only. One row per identity; a missing row means default with no override.
+CREATE TABLE IF NOT EXISTS avatar_loadout (
+    agent_id         TEXT PRIMARY KEY,
+    inferred         TEXT NOT NULL,        -- default | gym, from the newest explicit message
+    inferred_seq     INTEGER,              -- the user row that stated it
+    override         TEXT,                 -- NULL (auto) | default | gym, pinned by hand
+    override_surface TEXT,
+    updated          REAL NOT NULL,
+    generation       INTEGER NOT NULL      -- lease generation of the last write
+);
+
+-- Override writes, deduplicated by the client chosen op_id so a resend lands once.
+CREATE TABLE IF NOT EXISTS loadout_ops (
+    agent_id         TEXT NOT NULL,
+    op_id            TEXT NOT NULL,
+    override         TEXT,                 -- the value requested; NULL clears the pin
+    surface          TEXT NOT NULL,
+    created          REAL NOT NULL,
+    PRIMARY KEY (agent_id, op_id)
+);
 """
 
 # Columns added after a table first shipped. Applied idempotently so a v0.1 or early v0.2

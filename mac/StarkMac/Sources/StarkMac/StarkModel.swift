@@ -121,6 +121,12 @@ final class StarkModel {
     func submit(_ raw: String) -> Bool {
         let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return false }
+        // /gym, /default, /auto pin or clear the loadout; never a chat row.
+        if let cmd = LoadoutCommand.parse(text) {
+            guard state.loadoutAvailable else { return false }
+            setLoadout(cmd.requested)
+            return true
+        }
         // An explicit command saves memory; it never becomes a chat row.
         switch MemoryCommand.parse(text) {
         case .show?:
@@ -144,6 +150,11 @@ final class StarkModel {
     /// here on follows draft continuity like anything typed.
     func insertIntoComposer(_ text: String) {
         draft = draft.isEmpty ? text : draft + " " + text
+    }
+
+    /// Pin a loadout, or nil for auto. Presentation only: no speech, memory, or reply.
+    func setLoadout(_ l: Loadout?) {
+        client.setLoadout(l)
     }
 
     func addMemory(_ text: String) {

@@ -258,6 +258,8 @@ public struct Snapshot: Decodable, Equatable, Sendable {
     public var features: [String]?
     /// Saved memory count and whether it reaches the model; absent before Phase 4.2.
     public var memory: MemorySummary?
+    /// What Stark wears; absent before Phase 4.4B, which draws the standard sprite.
+    public var loadout: LoadoutState?
 }
 
 struct ReadyOutResult: Decodable {

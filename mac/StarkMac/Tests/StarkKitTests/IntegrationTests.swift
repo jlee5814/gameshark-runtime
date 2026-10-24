@@ -166,6 +166,34 @@ final class IntegrationTests {
         stopDaemon()
     }
 
+    @Test func theGymLoadoutFollowsChatAndSurvivesRestart() throws {
+        try Data("{}".utf8).write(to: dir.appendingPathComponent("github.json"))
+        try startDaemon()
+        let c = client()
+        c.start()
+        defer { c.stop() }
+        #expect(eventually(15) { c.state.connection == .live && c.state.loadoutAvailable })
+        #expect(c.state.shownLoadout == .standard)
+        c.send("I'll be at the gym later")
+        #expect(eventually(10) { self.rows(c, role: "assistant").count == 1 })
+        #expect(c.state.shownLoadout == .standard)
+        c.send("I'm at the gym")
+        #expect(eventually(10) { c.state.shownLoadout == .gym })
+        c.setLoadout(.standard)
+        #expect(eventually(10) { c.state.loadout.pinned == .standard && c.state.loadoutOp == nil })
+
+        stopDaemon()
+        try startDaemon()
+        #expect(eventually(30) { c.state.connection == .live })
+        #expect(eventually(10) {
+            c.state.loadout == LoadoutState(effective: .standard, inferred: .gym, pinned: .standard,
+                                            inferredSeq: c.state.loadout.inferredSeq)
+        })
+        c.setLoadout(nil)
+        #expect(eventually(10) { c.state.shownLoadout == .gym && c.state.loadoutOp == nil })
+        stopDaemon()
+    }
+
     // MARK: paired device over the LAN gateway
 
     var lanInfo: URL { dir.appendingPathComponent("gateway/stark.sock.lan.json") }

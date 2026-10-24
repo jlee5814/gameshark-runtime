@@ -26,6 +26,7 @@ from dataclasses import dataclass
 from gameshark.clock import Clock
 from gameshark.inference.types import InvalidRequest, OwnershipMismatch, Role
 from gameshark.lease import LeaseManager
+from gameshark.loadout import infer_in_txn
 from gameshark.presence import PresenceManager
 from gameshark.store import write_txn
 
@@ -88,6 +89,8 @@ class SurfaceConversation:
                 (conversation_id, seq, Role.USER.value, content, self.generation, now))
             self.conn.execute("UPDATE conversations SET next_seq=?, updated=? WHERE id=?",
                               (seq + 1, now, conversation_id))
+            # Phase 4.4B: an explicit "I'm at the gym" lands with its row, never twice.
+            infer_in_txn(self.conn, self.agent_id, seq, content, self.generation, now)
             self.conn.execute(
                 "INSERT INTO surface_writes(agent_id, client_msg_id, surface, presence_gen, "
                 "conversation_id, seq, created) VALUES(?,?,?,?,?,?,?)",

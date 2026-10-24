@@ -583,6 +583,31 @@ def cmd_memory(args) -> int:
     return 0
 
 
+def cmd_loadout(args) -> int:
+    """Show Stark's avatar loadout, or pin gym or default, or clear the pin (auto). A pin
+    goes through the control queue, so a running daemon applies it under its lease."""
+    from gameshark.loadout import current
+
+    if args.action != "show":
+        override = None if args.action == "auto" else args.action
+        conn = connect(args.db)
+        rid = enqueue_control(conn, AGENT, "stark", "loadout",
+                              {"override": override, "op_id": f"cli-{secrets.token_hex(16)}"})
+        conn.close()
+        if InstanceLock(args.db).held_elsewhere():
+            _poke_daemon(args)
+            print(f"queued loadout {args.action} {rid}; the running daemon applies it now")
+            return 0
+        return _apply_now(args, rid)
+    conn = connect(args.db)
+    try:
+        lo = current(conn, AGENT)
+    finally:
+        conn.close()
+    print(f"loadout {lo.effective} (override {lo.override or 'auto'}, inferred {lo.inferred})")
+    return 0
+
+
 def _apply_now(args, rid: int) -> int:
     try:
         with InstanceLock(args.db):
@@ -749,6 +774,9 @@ def build_parser() -> argparse.ArgumentParser:
     mem = sub.add_parser("memory", help="list saved memories, or forget one")
     mem.add_argument("action", nargs="?", choices=["list", "forget"], default="list")
     mem.add_argument("memory", nargs="?")
+    lo = sub.add_parser("loadout", help="show Stark's avatar loadout, or pin or clear it")
+    lo.add_argument("action", nargs="?", choices=["show", "gym", "default", "auto"],
+                    default="show")
     j = sub.add_parser("jack", help="move Stark's presence to another surface")
     j.add_argument("surface")
     sub.add_parser("status")
@@ -784,7 +812,7 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_control(args, args.cmd)
     return {"run": cmd_run, "status": cmd_status, "feed": cmd_feed, "ack": cmd_ack,
             "pair": cmd_pair, "devices": cmd_devices, "drafts": cmd_drafts,
-            "memory": cmd_memory}[args.cmd](args)
+            "memory": cmd_memory, "loadout": cmd_loadout}[args.cmd](args)
 
 
 if __name__ == "__main__":

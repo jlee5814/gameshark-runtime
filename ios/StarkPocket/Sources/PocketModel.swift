@@ -26,6 +26,14 @@ protocol PocketClient: AnyObject {
 
 extension GatewayClient: PocketClient {}
 
+/// The loadout command (Phase 4.4B), apart from PocketClient so older test doubles need no
+/// change. GatewayClient is the only production conformer.
+protocol PocketLoadoutClient: AnyObject {
+    @discardableResult func setLoadout(_ pin: Loadout?) -> String
+}
+
+extension GatewayClient: PocketLoadoutClient {}
+
 /// The phone's whole view of Stark. Identity, presence, duties, and rows come from the
 /// runtime through GatewayClient; this object keeps only UI facts (draft, viewed cursor)
 /// and the pairing in the Keychain. It never holds agent state of its own.
@@ -332,6 +340,12 @@ final class PocketModel {
     func submit(_ raw: String) -> Bool {
         let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return false }
+        // /gym, /default, /auto pin or clear the loadout; never a chat row.
+        if let cmd = LoadoutCommand.parse(text) {
+            guard state?.loadoutAvailable == true else { return false }
+            setLoadout(cmd.requested)
+            return true
+        }
         // An explicit command saves memory; it never becomes a chat row.
         switch MemoryCommand.parse(text) {
         case .show?:
@@ -355,6 +369,13 @@ final class PocketModel {
     /// here on follows draft continuity like anything typed.
     func insertIntoComposer(_ text: String) {
         draft = draft.isEmpty ? text : draft + " " + text
+    }
+
+    // MARK: loadout
+
+    /// Pin a loadout, or nil for auto. Presentation only: no speech, memory, or reply.
+    func setLoadout(_ l: Loadout?) {
+        (client as? PocketLoadoutClient)?.setLoadout(l)
     }
 
     // MARK: memory

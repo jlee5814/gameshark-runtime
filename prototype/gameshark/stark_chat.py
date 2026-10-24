@@ -173,9 +173,16 @@ class StarkChatAdapter:
     # ------------------------------------------------------------------ controls
     def apply_control(self, action: str, payload: dict) -> str:
         """Operator controls. jack moves presence toward another surface (demo and tests);
-        forget_memory forgets one saved memory for `stark.py memory forget`."""
+        forget_memory forgets one saved memory for `stark.py memory forget`; loadout pins or
+        clears Stark's avatar loadout for `stark.py loadout`."""
         ctx = self.ctx
         assert ctx is not None
+        if action == "loadout":
+            if ctx.loadout is None:
+                raise ValueError("loadout is not enabled")
+            op = str(payload.get("op_id") or f"cli-{uuidlib.uuid4().hex}")
+            lo = ctx.loadout.set_override("operator-cli", op, payload.get("override"))
+            return f"loadout:{lo.effective}:override={lo.override or 'auto'}"
         if action == "forget_memory":
             if ctx.memory is None:
                 raise ValueError("memory is not enabled")

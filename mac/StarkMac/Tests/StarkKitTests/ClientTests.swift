@@ -78,6 +78,13 @@ final class FakeRuntime: @unchecked Sendable {
     var nextMemory = 1
     /// When set, the next memory write is refused with this code and nothing is written.
     var memoryErrorOnce: String?
+    /// Loadout (Phase 4.4B): whether the snapshot advertises it, the row in wire form (nil
+    /// leaves it out of the snapshot, as an older runtime does), every loadout_set received,
+    /// and a code to refuse the next one with.
+    var loadoutFeature = false
+    var loadout: [String: Any]?
+    var loadoutRequests: [[String: Any]] = []
+    var loadoutErrorOnce: String?
 
     /// The open jack resolves (acked by its target, or reverted) and presence moves to
     /// holder; the push tells every connection the jack closed.
@@ -138,8 +145,9 @@ final class FakeRuntime: @unchecked Sendable {
                 "responsibilities": [], "conversation": ["id": Wire.conversation, "head_seq": rows.count - 1],
                 "activity": activity, "devices": devices,
                 "model": model.map { $0 as Any } ?? NSNull(),
-                "features": memoryFeature ? ["memory"] : [],
+                "features": (memoryFeature ? ["memory"] : []) + (loadoutFeature ? ["loadout"] : []),
                 "memory": ["count": memories.count, "inject": true],
+                "loadout": loadout.map { $0 as Any } ?? NSNull(),
                 "draft": draft.map { $0 as Any } ?? NSNull()]])
         case "sync":
             let after = msg["after_seq"] as? Int ?? -1
@@ -270,6 +278,20 @@ final class FakeRuntime: @unchecked Sendable {
             t.push(["type": "result", "id": id, "data": ["memories": memories, "inject": true]])
         case "memory_remember", "memory_correct", "memory_forget":
             memoryWrite(type, msg, id: id, on: t)
+        case "loadout_set":
+            loadoutRequests.append(msg)
+            if let code = loadoutErrorOnce {
+                loadoutErrorOnce = nil
+                t.push(["type": "error", "id": id, "code": code, "message": code])
+                return
+            }
+            var row = loadout ?? ["effective": "default", "inferred": "default",
+                                  "override": NSNull(), "inferred_seq": NSNull()]
+            let pin = msg["override"] as? String
+            row["override"] = pin.map { $0 as Any } ?? NSNull()
+            row["effective"] = pin ?? row["inferred"]!
+            loadout = row
+            t.push(["type": "result", "id": id, "data": ["loadout": row, "replayed": false]])
         default:
             t.push(["type": "error", "id": id, "code": "unknown_command", "message": type])
         }
@@ -333,6 +355,17 @@ final class FakeRuntime: @unchecked Sendable {
             return
         }
         t.push(["type": "result", "id": id, "data": data])
+    }
+
+    /// The runtime's loadout push, to every connection.
+    func pushLoadout(_ row: [String: Any]) {
+        lock.lock()
+        loadout = row
+        let conns = connections
+        lock.unlock()
+        for c in conns {
+            c.push(["type": "event", "kind": "loadout", "rev": 6, "data": row])
+        }
     }
 
     /// The runtime's memories push, to every connection.
