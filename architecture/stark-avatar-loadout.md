@@ -108,7 +108,7 @@ it is reviewed again. The flag records review; it is not a runtime switch.
   standard atlas. The accessibility label is unchanged on Pocket (it lives in a view
   Phase 4.4A is editing).
 
-## Phase 4.4B acceptance: physical iPhone and StarkMac, 2026-10-23
+## Phase 4.4B acceptance: physical iPhone and StarkMac, 2026-10-23 to 2026-10-24
 
 User observed by hand on StarkMac and a physical Stark Pocket iPhone; not automated test
 results. No test was newly executed for this record. The steps are the

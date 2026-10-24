@@ -486,10 +486,10 @@ the previous build with its original flags.
 11. Connect and disconnect real AirPods on the phone. The avatar never changes with them.
 12. `stark.py loadout` prints the same loadout both surfaces show.
 
-#### Phase 4.4B acceptance: physical iPhone and StarkMac, 2026-10-23
+#### Phase 4.4B acceptance: physical iPhone and StarkMac, 2026-10-23 to 2026-10-24
 
 User observed by hand; not automated test results. The full record is in
-[architecture/stark-avatar-loadout.md](../../architecture/stark-avatar-loadout.md#phase-44b-acceptance-physical-iphone-and-starkmac-2026-10-23).
+[architecture/stark-avatar-loadout.md](../../architecture/stark-avatar-loadout.md#phase-44b-acceptance-physical-iphone-and-starkmac-2026-10-23-to-2026-10-24).
 Build: e01092a, whose tree matches merge commit 353d5ac. Not recorded: the iOS version,
 the iPhone model, the AirPods model, and the logs.
 
