@@ -107,3 +107,56 @@ it is reviewed again. The flag records review; it is not a runtime switch.
 - Stark Pocket: `PocketStage` does the same; `stark-atlas-gym.png` is bundled beside the
   standard atlas. The accessibility label is unchanged on Pocket (it lives in a view
   Phase 4.4A is editing).
+
+## Phase 4.4B acceptance: physical iPhone and StarkMac, 2026-10-23 to 2026-10-24
+
+User observed by hand on StarkMac and a physical Stark Pocket iPhone; not automated test
+results. No test was newly executed for this record. The steps are the
+[physical checklist](../ios/StarkPocket/README.md#phase-44b-physical-checklist) in the
+Stark Pocket README.
+
+Repository record: the run used builds of the daemon, StarkMac, and Stark Pocket from
+`feat/stark-avatar-loadout` at e01092a. PR #47 merged into `main` as 353d5ac on
+2026-10-24; the e01092a tree is identical to the 353d5ac tree.
+
+Environment, from a read only process audit on 2026-10-24, not from the run itself: the
+daemon runs `stark.py --db ~/.gameshark/device-check/runtime.db run --lan --tailscale`
+against SGLang on the Mac (`127.0.0.1:30000`) serving `mlx-community/Qwen3-4B-4bit` with
+thinking off, and StarkMac runs from the same branch's `mac/build`. The audit found both
+on code identical to merged `main`.
+
+Not recorded: the iPhone model, the iOS version, the AirPods model, the backup output, the
+daemon and StarkMac logs, and SQL evidence.
+
+All 12 checklist steps passed, as the user reported them (checklist step in brackets):
+
+1. Gym detection: after "I'm at the gym" on the Mac, Stark wore the cap and earbuds once
+   the message was sent, before his reply. [1]
+2. Every pose in gym form kept the cap on the crown and the earbuds beside his face. [2]
+3. False positive prevention: "I'm not at the gym yet", "I'll leave the gym later", and
+   "If I left the gym would you notice?" changed nothing. [3]
+4. Device handoff: after Jack In, the iPhone showed the gym loadout at once. [4]
+5. "I'm leaving the gym" from the phone returned both surfaces to the standard
+   sprite. [5]
+6. Manual override: `/gym` on the phone put the cap on both surfaces; no chat row
+   appeared and Stark said nothing. [6]
+7. The pin held against a second "I'm leaving the gym"; the Mac Loadout menu showed Gym
+   checked and Auto read "from chat: Default". [7]
+8. Auto on the Mac returned both surfaces to the standard sprite. [8]
+9. Reconnect handoff: Default chosen on the Mac while the phone was in airplane mode
+   reached the phone after it reconnected. [9]
+10. Restart persistence: the loadout stayed unchanged across a StarkMac quit and
+    relaunch and a daemon restart. [10]
+11. Bluetooth isolation: connecting and disconnecting real AirPods on the phone never
+    changed the avatar. [11]
+12. `stark.py loadout` printed the same loadout both surfaces showed. [12]
+
+Verdict: Phase 4.4B is accepted for the demonstrated scenarios only. One run by hand is
+not a reliability claim, and paraphrases outside the narrow detector stay unsupported by
+design.
+
+Separate reliability issue, not a Phase 4.4B result: memory growth in the SGLang MLX
+server on port 30000 (MLX allocator cache plus idle request KV buffers). Since 2026-10-23
+it runs with `SGLANG_MLX_CACHE_LIMIT_GB=2`; upstream diagnostics are in draft
+sgl-project/sglang#46204. The loadout reads no inference state, and this run neither
+tested nor changed that issue.

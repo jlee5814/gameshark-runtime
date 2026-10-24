@@ -245,6 +245,9 @@ observations stay open; see
 [stark-voice-input.md](stark-voice-input.md#phase-43c-acceptance-physical-iphone-and-starkmac-2026-10-19).
 The finishing state and the iPhone keyboard fix passed a retest by hand on 2026-10-20; see
 [stark-voice-input.md](stark-voice-input.md#phase-43c-retest-physical-iphone-and-starkmac-2026-10-20).
+The Phase 4.4B avatar loadout acceptance passed by hand on StarkMac and a physical iPhone
+from 2026-10-23 to 2026-10-24 for the recorded scenarios only; see
+[stark-avatar-loadout.md](stark-avatar-loadout.md#phase-44b-acceptance-physical-iphone-and-starkmac-2026-10-23-to-2026-10-24).
 
 ## Not yet built
 
