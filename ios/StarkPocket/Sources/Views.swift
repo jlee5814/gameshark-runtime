@@ -120,6 +120,13 @@ enum KeyboardLayout {
     static func mode(overlap: CGFloat) -> HeaderMode {
         overlap >= collapseOverlap ? .compact : .full
     }
+
+    /// Resign whichever field holds the keyboard: the composer or the voice draft. Drafts
+    /// live in the model, so nothing typed is lost.
+    @MainActor static func dismiss() {
+        UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder),
+                                        to: nil, from: nil, for: nil)
+    }
 }
 
 /// Follows the keyboard's frame and picks the header mode, animated with the keyboard.
@@ -340,6 +347,11 @@ struct ConversationList: View {
                 }
                 .padding()
             }
+            // Drag down into the keyboard, or tap the conversation, to put the keyboard away.
+            // Scrolling history above it leaves the keyboard up. Buttons in rows win the tap.
+            .scrollDismissesKeyboard(.interactively)
+            .contentShape(Rectangle())
+            .onTapGesture { KeyboardLayout.dismiss() }
             .coordinateSpace(.named("conversation"))
             .onChange(of: model.visibleRows.last?.seq) { _, seq in
                 if let seq { withAnimation { proxy.scrollTo(seq, anchor: .bottom) } }

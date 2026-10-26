@@ -1270,6 +1270,71 @@ final class PocketConversationLayoutTests: PocketHarness {
         XCTAssertTrue(atNewest(try conversationView(window)))
     }
 
+    /// Dragging the conversation down into the keyboard dismisses it; scrolling elsewhere
+    /// leaves it up, so history stays readable beside the compact header.
+    func testTheConversationDismissesTheKeyboardWhenDraggedDown() async throws {
+        let (model, c) = try conversation(12)
+        let window = await host(model, c, screens[2])
+        let list = try conversationView(window)
+        // SwiftUI's interactively maps to the accessory variant; never none or on drag.
+        XCTAssertTrue([.interactive, .interactiveWithAccessory].contains(list.keyboardDismissMode),
+                      "keyboardDismissMode raw \(list.keyboardDismissMode.rawValue)")
+    }
+
+    /// A tap on the conversation puts the keyboard away: the draft and the reader's place stay.
+    func testDismissingTheKeyboardKeepsTheDraftAndThePlace() async throws {
+        let screen = screens[0]
+        let (model, c) = try conversation(40)
+        model.draft = "Half typed"
+        let window = await host(model, c, screen, arrive: false)
+        let composer = try XCTUnwrap(views(UITextView.self, in: window).last)
+        XCTAssertTrue(composer.becomeFirstResponder())
+        await openKeyboard(260, screen: screen, window)
+        await settle { model.inputFocused }
+        XCTAssertTrue(model.inputFocused)
+        XCTAssertEqual(keyboard.mode, .compact)
+        let list = try conversationView(window)
+        let top = list.contentOffset.y
+        XCTAssertFalse(atNewest(list), metrics(list))
+
+        KeyboardLayout.dismiss()
+        await closeKeyboard(screen: screen, window)
+        await settle { !model.inputFocused }
+        XCTAssertFalse(composer.isFirstResponder)
+        XCTAssertFalse(model.inputFocused)
+        XCTAssertEqual(keyboard.mode, .full)
+        XCTAssertEqual(model.draft, "Half typed")
+        let closed = try conversationView(window)
+        XCTAssertEqual(closed.contentOffset.y, top, accuracy: 1, metrics(closed))
+        XCTAssertTrue(c.sent.isEmpty)
+        XCTAssertTrue(c.jacks.isEmpty)
+    }
+
+    /// The voice draft field gives up the keyboard the same way and keeps its text for review.
+    func testDismissingTheKeyboardKeepsTheVoiceDraft() async throws {
+        let screen = screens[2]
+        let (model, c) = try conversation(12)
+        await settle { model.listen.isPresent }
+        model.listen.press()
+        input.hear(.partial("Remind me after lunch"))
+        model.listen.release()
+        input.hear(.final("Remind me after lunch"))
+        let window = await host(model, c, screen)
+        let voice = try XCTUnwrap(views(UITextView.self, in: window).first)
+        XCTAssertTrue(voice.becomeFirstResponder())
+        await openKeyboard(336, screen: screen, window)
+        voice.insertText(" today")
+        await settle()
+
+        KeyboardLayout.dismiss()
+        await closeKeyboard(screen: screen, window)
+        XCTAssertFalse(voice.isFirstResponder)
+        XCTAssertEqual(keyboard.mode, .full)
+        XCTAssertEqual(model.listen.phase, .reviewing)
+        XCTAssertEqual(model.listen.draft, "Remind me after lunch today")
+        XCTAssertTrue(c.sent.isEmpty)
+    }
+
     /// The reviewed voice draft keeps its five line field beside the compact header.
     func testTheVoiceDraftKeepsItsLinesUnderTheCompactHeader() async throws {
         let transcript = "Stark, remind me to review the pull request after lunch, then check "

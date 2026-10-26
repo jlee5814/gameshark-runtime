@@ -471,8 +471,9 @@ Build to the phone yourself from this branch with your signing settings, Stark o
    composer disables. Jack In again from the full header.
 7. With the keyboard up, use mute, Saved memories, and Settings in the toolbar.
 8. Send a message with the keyboard up: Stark's reply appears in view.
-9. Dismiss the keyboard (swipe down or send): the full header returns with no jump in
-   the conversation.
+9. With an unsent draft, dismiss the keyboard by dragging the conversation down into it,
+   then again by tapping the conversation: each time the full header returns with no jump
+   in the conversation, and the draft stays in the composer.
 10. Hold the microphone, speak a long sentence, release, then tap the voice draft field:
     the header collapses, the draft keeps up to five lines, edits stick, and Send, Insert
     into Composer, and Discard each behave as in Phase 4.3C.
