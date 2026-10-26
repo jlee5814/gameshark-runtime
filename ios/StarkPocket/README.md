@@ -479,6 +479,11 @@ Build to the phone yourself from this branch with your signing settings, Stark o
 11. Tap Stark's small sprite while he speaks: speech stops, as with the full sprite.
 12. If a hardware keyboard is available, connect it and focus the composer: the full
     header stays.
+13. Loadout in the compact header (Phase 4.4B), NOT YET TESTED: with Auto on and the
+    inferred loadout Default (the Mac Loadout menu reads "from chat: Default"), tap the
+    composer so the header collapses. Send `/gym`: the small sprite wears the black cap
+    and white earbuds. Send `/auto`: the small sprite returns to the standard look.
+    Neither command adds a chat row or draws a reply from Stark.
 
 ### Avatar loadout (Phase 4.4B)
 
