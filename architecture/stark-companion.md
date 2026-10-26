@@ -88,6 +88,7 @@ machinery. Surfaces reach only `stark:main`.
 | `ready_out {handoff_id, draft, presence_gen}` | write | source confirms its exit |
 | `ack_in {handoff_id, presence_gen}` | write | target confirms its arrival |
 | `jack {handoff_id, to: self\|home, presence_gen}` | write | Jack In to the caller, or Jack Out home from the holder |
+| `loadout_set {op_id, override}` | write | pin or clear Stark's avatar loadout (Phase 4.4B, [stark-avatar-loadout.md](stark-avatar-loadout.md)) |
 
 Pushes (`event` frames with a monotonic `rev`): `presence`, `responsibilities`,
 `messages` (rows after the last seq that session was sent), then `activity`, in that
@@ -244,6 +245,9 @@ observations stay open; see
 [stark-voice-input.md](stark-voice-input.md#phase-43c-acceptance-physical-iphone-and-starkmac-2026-10-19).
 The finishing state and the iPhone keyboard fix passed a retest by hand on 2026-10-20; see
 [stark-voice-input.md](stark-voice-input.md#phase-43c-retest-physical-iphone-and-starkmac-2026-10-20).
+The Phase 4.4B avatar loadout acceptance passed by hand on StarkMac and a physical iPhone
+from 2026-10-23 to 2026-10-24 for the recorded scenarios only; see
+[stark-avatar-loadout.md](stark-avatar-loadout.md#phase-44b-acceptance-physical-iphone-and-starkmac-2026-10-23-to-2026-10-24).
 
 ## Not yet built
 

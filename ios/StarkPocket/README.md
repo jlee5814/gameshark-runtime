@@ -75,6 +75,8 @@ hand; see Saved memory (Phase 4.2). It has also passed the Phase 4.3A persona ac
 by hand; see Persona (Phase 4.3A). It has also passed the Phase 4.3B voice output
 acceptance by hand; see Voice output (Phase 4.3B). It has also passed the Phase 4.3C
 voice input acceptance by hand for the recorded scenarios; see Voice input (Phase 4.3C).
+It has also passed the Phase 4.4B avatar loadout acceptance by hand; see Avatar loadout
+(Phase 4.4B).
 The LAN checklist below has still not run end to end on a
 device. The
 checklist uses its own database, never `~/.gameshark/runtime.db` or the simulator's
@@ -477,3 +479,63 @@ Build to the phone yourself from this branch with your signing settings, Stark o
 11. Tap Stark's small sprite while he speaks: speech stops, as with the full sprite.
 12. If a hardware keyboard is available, connect it and focus the composer: the full
     header stays.
+
+### Avatar loadout (Phase 4.4B)
+
+Stark wears a black cap and white earbuds while the runtime's loadout is gym; see
+[architecture/stark-avatar-loadout.md](../../architecture/stark-avatar-loadout.md). Costume
+only: no speech, memory, inference, presence, or audio route change. `/gym`, `/default`,
+and `/auto` in the composer pin or clear it and never become chat rows.
+
+#### Phase 4.4B physical checklist
+
+Art approved by Jae on 2026-10-23. Before you start, take an online backup of the
+database and the gateway directory (its LAN identity key is what the iPhone pairing
+pins); both are safe to copy while the daemon runs:
+
+```
+B=~/.gameshark/backups/pre44b-$(date +%Y%m%d-%H%M%S); mkdir -p "$B"
+sqlite3 ~/.gameshark/device-check/runtime.db ".backup '$B/runtime.db'"
+cp -Rp ~/.gameshark/device-check/gateway "$B/gateway"
+sqlite3 "$B/runtime.db" "PRAGMA integrity_check; SELECT count(*) FROM devices; SELECT count(*) FROM messages;"
+```
+
+This branch only adds two tables, and older builds ignore them. Then stop the running
+daemon, and start this branch's `stark.py run` against the same database with the same
+flags and the shell environment stripped, so the pairing stays as it is. Build StarkMac
+(`mac/scripts/build-app.sh`) and Stark Pocket from this branch; choose your team in Xcode
+without committing the signing change. To roll back, stop the branch daemon and start
+the previous build with its original flags.
+
+1. On the Mac, send "I'm at the gym". Stark wears the cap and earbuds once the message is
+   sent, before his reply.
+2. Watch every pose in gym form: idle and blink, thinking while he replies, working, a
+   drag (walk left and right), lookAround, notify, a doze (leave him idle), and error. The
+   cap stays on the crown and the earbuds stay beside his face in each.
+3. Send "I'm not at the gym yet", "I'll leave the gym later", and "If I left the gym
+   would you notice?". Nothing changes.
+4. Jack In on the iPhone. The phone shows the gym loadout at once.
+5. On the phone, send "I'm leaving the gym". Both surfaces return to the standard sprite.
+6. On the phone, type `/gym`. Both surfaces show the cap; no chat row appears and Stark
+   says nothing.
+7. Send "I'm leaving the gym" again. The pin holds: the cap stays. On the Mac, the
+   Loadout menu shows Gym checked and Auto reads "from chat: Default".
+8. Choose Auto on the Mac. Both surfaces return to the standard sprite.
+9. Send "I'm at the gym", then put the phone in airplane mode, choose Default on the Mac,
+   and turn airplane mode off. The phone shows the standard sprite after it reconnects.
+10. Quit and relaunch StarkMac, then restart the daemon. The loadout is unchanged.
+11. Connect and disconnect real AirPods on the phone. The avatar never changes with them.
+12. `stark.py loadout` prints the same loadout both surfaces show.
+
+#### Phase 4.4B acceptance: physical iPhone and StarkMac, 2026-10-23 to 2026-10-24
+
+User observed by hand; not automated test results. The full record is in
+[architecture/stark-avatar-loadout.md](../../architecture/stark-avatar-loadout.md#phase-44b-acceptance-physical-iphone-and-starkmac-2026-10-23-to-2026-10-24).
+Build: e01092a, whose tree matches merge commit 353d5ac. Not recorded: the iOS version,
+the iPhone model, the AirPods model, and the logs.
+
+All 12 checklist steps passed. On the phone: Jack In showed the gym loadout at once;
+"I'm leaving the gym" cleared it on both surfaces; `/gym` pinned it without a chat row or
+a reply; a change made on the Mac while the phone was in airplane mode reached it on reconnect; and
+real AirPods connecting and disconnecting never changed the avatar. The loadout survived a
+StarkMac relaunch and a daemon restart.

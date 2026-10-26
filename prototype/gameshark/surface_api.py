@@ -28,6 +28,12 @@ memory_correct are fenced by presence like send, and memory_forget only by the l
 any authenticated surface may always delete. Each write carries a client chosen op_id; a
 resend returns the first result. Saved text never becomes a conversation row. A change
 pushes the whole list (at most 256 rows) as a memories event.
+
+The avatar loadout (Phase 4.4B) is one typed command, loadout_set, fenced only by the
+lease like memory_forget: any authenticated surface may pin gym or default, or clear the
+pin. The snapshot carries the current loadout, and a change from either input (an
+explicit message or an override) pushes a loadout event to every live session. A
+surface that reconnects reads it from the snapshot, never from its own rows.
 """
 
 from __future__ import annotations
@@ -41,6 +47,7 @@ from gameshark.errors import Cancelled, Draining, FencedError, HandoffConflict, 
 from gameshark.gateway import HELLO, LOST, PROTO_VERSIONS, GatewayServer, Session
 from gameshark.inference.fake import FakeProvider
 from gameshark.inference.types import InvalidRequest, OwnershipMismatch
+from gameshark.loadout import LOADOUTS
 from gameshark.memory import ID_RE as MEMORY_ID_RE
 from gameshark.memory import MAX_TEXT as MEMORY_TEXT
 from gameshark.memory import MemoryConflict, MemoryDuplicate, MemoryLimit, MemorySuperseded
@@ -55,7 +62,7 @@ MAX_TEXT = 8 * 1024
 PAGE = 500
 SERVER = "gameshark-runtime/0.4"
 CONVERSATIONS = frozenset({CONVERSATION})   # the only conversations a surface may touch
-FEATURES = ("memory",)                      # optional commands this runtime serves
+FEATURES = ("memory", "loadout")            # optional commands this runtime serves
 
 
 class Invalid(Exception):
@@ -149,6 +156,7 @@ class SurfaceAPI:
             "memory_remember": self._memory_remember,
             "memory_correct": self._memory_correct,
             "memory_forget": self._memory_forget,
+            "loadout_set": self._loadout_set,
         }
 
     # ------------------------------------------------------------------ loop hooks
@@ -255,6 +263,8 @@ class SurfaceAPI:
             "features": list(FEATURES),
             # Counts only; the list itself comes from memory_list and memories pushes.
             "memory": self._memory_summary(),
+            # What Stark wears: runtime owned, the same on every surface.
+            "loadout": self._loadout(),
         }
 
     def _sync(self, sess: Session, msg: dict) -> dict:
@@ -375,6 +385,25 @@ class SurfaceAPI:
     def _memory_summary(self) -> dict:
         store = self._store()
         return {"count": store.count(), "inject": store.inject_enabled()}
+
+    # ------------------------------------------------------------------ loadout
+    def _loadout_set(self, sess: Session, msg: dict) -> dict:
+        op = _id(msg, "op_id")
+        if "override" not in msg:
+            raise Invalid("override is required: gym, default, or null for auto")
+        override = msg["override"]
+        if override is not None and override not in LOADOUTS:
+            raise Invalid(f"override must be one of {list(LOADOUTS)} or null")
+        lo = self._loadout_store().set_override(sess.surface, op, override)
+        return {"loadout": lo.view(), "replayed": lo.replayed}
+
+    def _loadout_store(self):
+        if self.sup.loadout is None:
+            raise Invalid("loadout is not enabled")
+        return self.sup.loadout
+
+    def _loadout(self) -> dict:
+        return self._loadout_store().current().view()
 
     # ------------------------------------------------------------------ devices
     def _authenticate(self, sess: Session, req: AuthRequest) -> None:
@@ -547,6 +576,10 @@ class SurfaceAPI:
         if store is not None and self._changed("memories", (store.version,
                                                             store.inject_enabled())):
             self._push(sessions, "memories", self._memories())
+        # Read from the row each pump: a send, a surface, or the operator may change it.
+        loadout = self._loadout()
+        if self._changed("loadout", loadout):
+            self._push(sessions, "loadout", loadout)
         # After rows, so a surface never shows Stark idle before his reply has arrived.
         self._push_activity(sessions)
 

@@ -25,6 +25,7 @@ struct SpriteAvatarView: View {
                 }
             }
             .accessibilityElement()
-            .accessibilityLabel("Stark, \(stage.animation.rawValue)")
+            .accessibilityLabel(stage.loadout == .gym ? "Stark, gym, \(stage.animation.rawValue)"
+                                : "Stark, \(stage.animation.rawValue)")
     }
 }

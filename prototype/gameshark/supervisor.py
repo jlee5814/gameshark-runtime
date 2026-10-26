@@ -51,6 +51,7 @@ from gameshark.inference.tracker import ModelTracker, TrackerPolicy
 from gameshark.inference.types import ProviderCancelled, ProviderError
 from gameshark.lease import LeaseManager
 from gameshark.lifecycle import Lifecycle, Phase
+from gameshark.loadout import LoadoutStore
 from gameshark.memory import MemoryStore
 from gameshark.presence import PresenceManager
 from gameshark.responsibilities import ResponsibilityStore
@@ -99,6 +100,7 @@ class AgentSupervisor:
         self.presence: PresenceManager | None = None
         self.surface: SurfaceConversation | None = None
         self.memory: MemoryStore | None = None
+        self.loadout: LoadoutStore | None = None
         # What runs right now, for surfaces. In memory and read only: never durable state.
         self.activity = ActivityTracker()
 
@@ -193,6 +195,7 @@ class AgentSupervisor:
             presence=self.presence,
             activity=self.activity,
             memory=self.memory,
+            loadout=self.loadout,
         )
 
     def _fenced(self, fn):
@@ -235,6 +238,8 @@ class AgentSupervisor:
         # A forget committed just before a crash may still sit in the WAL; no resend is owed.
         self.memory.scrub()
         self.inference.memory = self.memory
+        self.loadout = LoadoutStore(self.conn, self.agent_id, self.lease, self.generation,
+                                    self.clock, crash=self._maybe_crash)
         if self._inference_cfg is not None:
             self._start_inference()
         self.router = EventRouter(

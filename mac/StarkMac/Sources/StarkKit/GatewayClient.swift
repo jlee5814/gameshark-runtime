@@ -112,6 +112,19 @@ public struct ClientState: Equatable, Sendable {
     public var memoryOps: [MemoryOp] = []
     /// The last memory outcome worth saying, such as what a forget left in history.
     public var memoryNotice: String?
+    /// The runtime serves loadout_set (its snapshot lists the feature).
+    public var loadoutAvailable = false
+    /// What Stark wears, from the snapshot and loadout pushes. Kept while disconnected, so
+    /// a dropped session never strips his cap; a new identity resets it.
+    public var loadout: LoadoutState = .standard
+    /// A manual pin not yet answered. It shows at once and goes out when live.
+    public var loadoutOp: LoadoutOp?
+    /// What the avatar draws: the pending pin if any, else the runtime's value.
+    public var shownLoadout: Loadout {
+        guard let op = loadoutOp else { return loadout.effective }
+        return op.pin ?? loadout.inferred
+    }
+
     /// Publish order, rising across every client in the process: a consumer that receives
     /// states out of order (a Task hop) can tell a late one from news. 0 before any publish.
     public var revision = 0
@@ -197,7 +210,7 @@ public final class GatewayClient: @unchecked Sendable {
 
     private enum Pending {
         case snapshot, sync, send(String), readyOut(String), ackIn(String), jack(String),
-             draftAck(String), retryReply(Int), memoryList, memory(String)
+             draftAck(String), retryReply(Int), memoryList, memory(String), loadout(String)
     }
 
     public enum JackDirection: String, Sendable {
@@ -253,6 +266,7 @@ public final class GatewayClient: @unchecked Sendable {
     /// Memory ops sent on this connection and awaiting a result. Cleared on reconnect, so
     /// an op lost with its connection is sent again under the same op id.
     private var memorySent: Set<String> = []
+    private var loadoutSent = false
     /// memory_list asked on this connection.
     private var memoryListed = false
 
@@ -436,6 +450,20 @@ public final class GatewayClient: @unchecked Sendable {
         }
     }
 
+    /// Pin a loadout, or clear the pin with nil (auto). Any live surface may, wherever Stark
+    /// is. Returns the op id; a newer call replaces an op not yet sent.
+    @discardableResult
+    public func setLoadout(_ pin: Loadout?) -> String {
+        let id = "\(config.surface)-lo-" + UUID().uuidString.lowercased()
+        queue.async {
+            self.st.loadoutOp = LoadoutOp(id: id, pin: pin)
+            self.loadoutSent = false
+            self.flushLoadout()
+            self.publish()
+        }
+        return id
+    }
+
     private func enqueueMemory(_ kind: MemoryOp.Kind) -> String {
         let id = "\(config.surface)-mem-" + UUID().uuidString.lowercased()
         queue.async {
@@ -500,6 +528,7 @@ public final class GatewayClient: @unchecked Sendable {
         retrySent = false
         memorySent = []
         memoryListed = false
+        loadoutSent = false
         haveSnapshot = false
         haveSync = false
         clearActivity()
@@ -658,6 +687,9 @@ public final class GatewayClient: @unchecked Sendable {
                 st.memories = []
                 st.memoryOps = []
                 memorySent = []
+                st.loadout = .standard
+                st.loadoutOp = nil
+                loadoutSent = false
                 st.outbox.removeAll { if case .pending = $0.status { false } else { true } }
             }
             st.identity = w.identity
@@ -708,6 +740,8 @@ public final class GatewayClient: @unchecked Sendable {
                                         uniquingKeysWith: { a, _ in a })
             st.memoryAvailable = s.features?.contains("memory") == true
             if let m = s.memory { st.memoryInject = m.inject }
+            st.loadoutAvailable = s.features?.contains("loadout") == true
+            st.loadout = s.loadout ?? .standard
             if st.memoryAvailable && !memoryListed {
                 memoryListed = true
                 request("memory_list", .memoryList)
@@ -784,6 +818,13 @@ public final class GatewayClient: @unchecked Sendable {
                     st.memories.append(m)
                 }
             }
+        case .loadout(let opId):
+            let r = try Wire.decode(Result<LoadoutSetResult>.self, from: body).data
+            st.loadout = r.loadout
+            if st.loadoutOp?.id == opId {
+                st.loadoutOp = nil
+                loadoutSent = false
+            }
         }
         if haveSnapshot && haveSync && st.connection != .live {
             st.connection = .live
@@ -793,6 +834,7 @@ public final class GatewayClient: @unchecked Sendable {
             sendDraftAcks()
             sendRetry()
             flushMemoryOps()
+            flushLoadout()
         }
         publish()
     }
@@ -854,6 +896,13 @@ public final class GatewayClient: @unchecked Sendable {
             st.memoryNotice = MemoryText.refused(code)
             if code == "stale_presence" { request("snapshot", .snapshot) }
             if code == "conflict" { request("memory_list", .memoryList) }
+        case .loadout(let opId):
+            guard st.loadoutOp?.id == opId else { break }
+            loadoutSent = false
+            // Ownership moved mid write and nothing landed: send again once live.
+            if code == "fenced" || code == "draining" { break }
+            st.loadoutOp = nil
+            st.lastError = "loadout: \(code)"
         case .snapshot, .sync:
             st.lastError = "\(code): \(message ?? "")"
         }
@@ -891,6 +940,8 @@ public final class GatewayClient: @unchecked Sendable {
             let p = try Wire.decode(Event<MemoriesPayload>.self, from: body).data
             st.memories = p.memories
             st.memoryInject = p.inject
+        case "loadout":
+            st.loadout = try Wire.decode(Event<LoadoutState>.self, from: body).data
         default:
             return
         }
@@ -995,6 +1046,14 @@ public final class GatewayClient: @unchecked Sendable {
                 request("memory_forget", .memory(op.id), ["op_id": op.id, "memory_id": mid])
             }
         }
+    }
+
+    private func flushLoadout() {
+        guard st.connection == .live, st.loadoutAvailable, !loadoutSent,
+              let op = st.loadoutOp else { return }
+        loadoutSent = true
+        request("loadout_set", .loadout(op.id),
+                ["op_id": op.id, "override": op.pin?.rawValue ?? NSNull()])
     }
 
     private func setStatus(_ id: String, _ status: OutgoingMessage.Status) {

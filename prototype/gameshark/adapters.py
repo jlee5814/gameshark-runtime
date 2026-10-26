@@ -36,6 +36,7 @@ class AdapterContext:
     presence: object = None                    # PresenceManager when presence is enabled
     activity: object = None                    # ActivityTracker: mark execution, read only
     memory: object = None                      # MemoryStore: operator forget controls only
+    loadout: object = None                     # LoadoutStore: operator loadout controls only
 
 
 class Adapter(Protocol):
