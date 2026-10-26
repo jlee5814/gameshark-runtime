@@ -129,7 +129,7 @@ enum KeyboardLayout {
     }
 }
 
-/// Follows the keyboard's frame and picks the header mode, animated with the keyboard.
+/// Follows the keyboard's frame and picks the header mode.
 @MainActor @Observable
 final class KeyboardObserver {
     private(set) var mode: HeaderMode = .full
@@ -166,8 +166,10 @@ final class KeyboardObserver {
             ? 0 : KeyboardLayout.overlap(of: end, screenHeight: screenHeight(note))
         let next = KeyboardLayout.mode(overlap: overlap)
         guard next != mode else { return }
-        let duration = note.userInfo?[UIResponder.keyboardAnimationDurationUserInfoKey] as? Double
-        withAnimation(.easeOut(duration: duration ?? 0.25)) { mode = next }
+        // Not animated: an animated resize of the conversation overrides the scroll that
+        // keeps the newest reply at its bottom, leaving it under the edge. The keyboard
+        // still slides, and the list follows it.
+        mode = next
     }
 }
 
@@ -362,11 +364,12 @@ struct ConversationList: View {
             .onChange(of: model.replyLine) { _, line in
                 if line != nil { withAnimation { proxy.scrollTo("reply", anchor: .bottom) } }
             }
-            // The keyboard and the header collapse shrink the list from below; keep the newest
-            // reply in view unless the user is reading older history.
+            // The keyboard and the header shrink the list as it rises and grow it as it
+            // leaves; keep the newest reply at the bottom either way, unless the user is
+            // reading older history.
             .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { new in
                 defer { height = new }
-                guard new < height, endY <= height + 24 else { return }
+                guard new != height, endY <= max(new, height) + 24 else { return }
                 if model.replyLine != nil {
                     proxy.scrollTo("reply", anchor: .bottom)
                 } else if let seq = model.visibleRows.last?.seq {

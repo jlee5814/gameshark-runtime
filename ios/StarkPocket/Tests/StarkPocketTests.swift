@@ -1097,14 +1097,16 @@ final class PocketConversationLayoutTests: PocketHarness {
     /// MainView in a window of the host app's scene, so SwiftUI keeps rendering changes.
     /// The newest row then arrives while the view is up and scrolls into view, as it does in
     /// the app; without it the list stays at the oldest rows, as if reading history.
+    /// With `realKeyboard`, the header follows the system's own keyboard notifications.
     func host(_ model: PocketModel, _ c: FakeClient, _ size: CGSize,
-              arrive: Bool = true) async -> UIWindow {
+              arrive: Bool = true, realKeyboard: Bool = false) async -> UIWindow {
         await settle { !model.visibleRows.isEmpty && model.summary?.canSend == true }
         // Not in tearDown: on Xcode 16.4 it is nonisolated and cannot touch a window.
         windows.forEach { $0.isHidden = true; $0.rootViewController = nil }
         windows = []
         center = NotificationCenter()
-        keyboard = KeyboardObserver(center: center, screenHeight: { _ in size.height })
+        keyboard = realKeyboard ? KeyboardObserver()
+                                : KeyboardObserver(center: center, screenHeight: { _ in size.height })
         let scene = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first
         let window = scene.map(UIWindow.init(windowScene:)) ?? UIWindow()
         window.frame = CGRect(origin: .zero, size: size)
@@ -1146,6 +1148,39 @@ final class PocketConversationLayoutTests: PocketHarness {
         await layout(window)
     }
 
+    /// The simulator acts as if a hardware keyboard is attached, so the software keyboard
+    /// never rises. Turning UIKit's hardware keyboard mode off (a test only private switch)
+    /// brings up the real keyboard with its real frames, animation, and safe area.
+    func softwareKeyboard(_ on: Bool) throws {
+        // Fail, never skip: a silent skip would hide lost real keyboard coverage.
+        struct Unavailable: Error {}
+        guard let type = NSClassFromString("UIKeyboardImpl") as? NSObject.Type,
+              let impl = type.perform(NSSelectorFromString("sharedInstance"))?
+                .takeUnretainedValue() as? NSObject,
+              impl.responds(to: NSSelectorFromString("setInHardwareKeyboardMode:")),
+              impl.responds(to: NSSelectorFromString("setAutomaticMinimizationEnabled:")) else {
+            XCTFail("UIKeyboardImpl's hardware keyboard switch is unavailable: real keyboard "
+                    + "coverage lost")
+            throw Unavailable()
+        }
+        impl.setValue(!on, forKey: "automaticMinimizationEnabled")
+        impl.setValue(!on, forKey: "inHardwareKeyboardMode")
+    }
+
+    /// Waits for the real keyboard's animation to finish and the header to follow it. Fails
+    /// if it never does, so a keyboard that never rose cannot pass a test vacuously.
+    func waitForHeader(_ mode: HeaderMode, _ window: UIWindow,
+                       file: StaticString = #filePath, line: UInt = #line) async {
+        for _ in 0..<30 where keyboard.mode != mode {
+            try? await Task.sleep(for: .milliseconds(100))
+            window.layoutIfNeeded()
+        }
+        XCTAssertEqual(keyboard.mode, mode, "the software keyboard did not "
+                       + (mode == .compact ? "appear" : "leave"), file: file, line: line)
+        try? await Task.sleep(for: .milliseconds(400))    // the keyboard animation's tail
+        window.layoutIfNeeded()
+    }
+
     func views<T: UIView>(_ type: T.Type, in view: UIView) -> [T] {
         ((view as? T).map { [$0] } ?? []) + view.subviews.flatMap { views(type, in: $0) }
     }
@@ -1166,6 +1201,12 @@ final class PocketConversationLayoutTests: PocketHarness {
         // a lazy stack also lands on an estimated row height, so allow one text line more.
         list.contentOffset.y + list.bounds.height - list.adjustedContentInset.bottom
             >= list.contentSize.height - 40
+    }
+
+    /// Blank space below the content: the visible bottom past the content's end.
+    func gap(_ list: UIScrollView) -> CGFloat {
+        list.contentOffset.y + list.bounds.height - list.adjustedContentInset.bottom
+            - list.contentSize.height
     }
 
     func snapshot(_ window: UIWindow, _ name: String) {
@@ -1268,6 +1309,68 @@ final class PocketConversationLayoutTests: PocketHarness {
         await closeKeyboard(screen: screen, window)
         XCTAssertEqual(keyboard.mode, .full)
         XCTAssertTrue(atNewest(try conversationView(window)))
+    }
+
+    /// With the real keyboard: a reply that arrives while it is up stays anchored at the
+    /// bottom when it leaves, and again when it returns. An animated header resize used to
+    /// override the anchoring scroll and leave the newest reply under the edge.
+    func testTheRealKeyboardLeavesTheNewestReplyAnchored() async throws {
+        let (model, c) = try conversation(20)
+        model.draft = "Half typed"
+        let window = await host(model, c, UIScreen.main.bounds.size, realKeyboard: true)
+        try softwareKeyboard(true)
+        defer { try? softwareKeyboard(false) }
+        func check(_ step: String, _ mode: HeaderMode) throws {
+            let list = try conversationView(window)
+            XCTAssertEqual(keyboard.mode, mode, step)
+            XCTAssertTrue(atNewest(list), "\(step) \(metrics(list))")
+            XCTAssertLessThanOrEqual(gap(list), 2, "\(step) gap \(gap(list))")
+        }
+        try check("hosted", .full)
+        let composer = try XCTUnwrap(views(UITextView.self, in: window).last)
+        XCTAssertTrue(composer.becomeFirstResponder())
+        await waitForHeader(.compact, window)
+        try check("open", .compact)
+        c.emit { $0.rows.append(self.row(22)) }
+        await waitForHeader(.compact, window)
+        try check("reply with the keyboard up", .compact)
+        KeyboardLayout.dismiss()
+        await waitForHeader(.full, window)
+        try check("dismissed", .full)
+        XCTAssertTrue(composer.becomeFirstResponder())
+        await waitForHeader(.compact, window)
+        try check("reopened", .compact)
+        KeyboardLayout.dismiss()
+        await waitForHeader(.full, window)
+        XCTAssertEqual(model.draft, "Half typed")
+        XCTAssertTrue(c.sent.isEmpty)
+        XCTAssertTrue(c.jacks.isEmpty)
+    }
+
+    /// With the real keyboard: someone reading older history keeps their place as it opens
+    /// and closes, twice, and no blank space opens under the conversation.
+    func testTheRealKeyboardKeepsAReadersPlace() async throws {
+        let (model, c) = try conversation(40)
+        let window = await host(model, c, UIScreen.main.bounds.size, arrive: false,
+                                realKeyboard: true)
+        try softwareKeyboard(true)
+        defer { try? softwareKeyboard(false) }
+        let top = try conversationView(window).contentOffset.y
+        let composer = try XCTUnwrap(views(UITextView.self, in: window).last)
+        for step in ["open", "closed", "reopened", "closed again"] {
+            if step.hasPrefix("closed") {
+                KeyboardLayout.dismiss()
+                await waitForHeader(.full, window)
+            } else {
+                XCTAssertTrue(composer.becomeFirstResponder())
+                await waitForHeader(.compact, window)
+            }
+            let list = try conversationView(window)
+            XCTAssertEqual(list.contentOffset.y, top, accuracy: 1, "\(step) \(metrics(list))")
+            XCTAssertFalse(atNewest(list), "\(step) \(metrics(list))")
+            XCTAssertLessThanOrEqual(gap(list), 2, "\(step) gap \(gap(list))")
+        }
+        XCTAssertTrue(c.sent.isEmpty)
     }
 
     /// Dragging the conversation down into the keyboard dismisses it; scrolling elsewhere
