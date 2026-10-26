@@ -439,6 +439,53 @@ sent nothing. Still not exercised on the phone: the permission prompts, denied o
 restricted access, a call or alarm interruption, and the finishing spinner itself. The
 screen lock message stays open.
 
+### Conversation layout (Phase 4.4A)
+
+While a software keyboard is up, Stark's header collapses to one row: a small sprite, the
+presence line, the connection chip, and Jack In or Jack Out. The conversation takes the
+height the header gave up, and the composer stays directly above the keyboard. Dismissing
+the keyboard restores the full header. Mute, stop, memories, and Settings stay in the
+toolbar in both states. The header follows the keyboard's frame, not text focus, so the
+voice draft field collapses it too; a hardware keyboard's shortcut bar (under 120 points)
+leaves the full header. When the list shrinks, it keeps the newest message in view only if
+it was in view; someone reading older history keeps their place. Simulated in
+`PocketConversationLayoutTests` on iPhone SE, 17e, 18 Pro, and 18 Pro Max sizes. Not yet
+accepted on a physical iPhone.
+
+#### Checklist
+
+Build to the phone yourself from this branch with your signing settings, Stark on the phone
+(Jack In), and a conversation longer than one screen.
+
+1. Keyboard closed: the full sprite header shows, as before.
+2. Tap the composer: the header collapses to one row as the keyboard rises, the newest
+   message stays visible just above the composer, and the composer sits directly above
+   the keyboard (or its QuickType bar).
+3. Type several lines: the composer grows to five lines and stays above the keyboard; the
+   conversation stays readable above it.
+4. With the keyboard up, scroll back through history and forward to the newest message:
+   scrolling behaves normally and the header stays compact.
+5. Scroll up into older history, dismiss the keyboard, tap the composer again: the list
+   keeps its place instead of jumping to the newest message.
+6. With the keyboard up, tap Jack Out in the compact row: Stark goes home and the
+   composer disables. Jack In again from the full header.
+7. With the keyboard up, use mute, Saved memories, and Settings in the toolbar.
+8. Send a message with the keyboard up: Stark's reply appears in view.
+9. With an unsent draft, dismiss the keyboard by dragging the conversation down into it,
+   then again by tapping the conversation: each time the full header returns with no jump
+   in the conversation, and the draft stays in the composer.
+10. Hold the microphone, speak a long sentence, release, then tap the voice draft field:
+    the header collapses, the draft keeps up to five lines, edits stick, and Send, Insert
+    into Composer, and Discard each behave as in Phase 4.3C.
+11. Tap Stark's small sprite while he speaks: speech stops, as with the full sprite.
+12. If a hardware keyboard is available, connect it and focus the composer: the full
+    header stays.
+13. Loadout in the compact header (Phase 4.4B), NOT YET TESTED: with Auto on and the
+    inferred loadout Default (the Mac Loadout menu reads "from chat: Default"), tap the
+    composer so the header collapses. Send `/gym`: the small sprite wears the black cap
+    and white earbuds. Send `/auto`: the small sprite returns to the standard look.
+    Neither command adds a chat row or draws a reply from Stark.
+
 ### Avatar loadout (Phase 4.4B)
 
 Stark wears a black cap and white earbuds while the runtime's loadout is gym; see
