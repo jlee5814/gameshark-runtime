@@ -1167,18 +1167,29 @@ final class PocketConversationLayoutTests: PocketHarness {
         impl.setValue(!on, forKey: "inHardwareKeyboardMode")
     }
 
-    /// Waits for the real keyboard's animation to finish and the header to follow it. Fails
-    /// if it never does, so a keyboard that never rose cannot pass a test vacuously.
-    func waitForHeader(_ mode: HeaderMode, _ window: UIWindow,
+    /// Waits for the header to follow the real keyboard and, when it moves, for its
+    /// animation to finish: the system's did change frame note, not a guessed delay, which
+    /// sampled mid animation on slower runners. Fails if either never happens, so a
+    /// keyboard that never rose cannot pass a test vacuously.
+    func waitForHeader(_ mode: HeaderMode, _ window: UIWindow, keyboardMoves: Bool = true,
                        file: StaticString = #filePath, line: UInt = #line) async {
-        for _ in 0..<30 where keyboard.mode != mode {
-            try? await Task.sleep(for: .milliseconds(100))
+        // Set on the main queue and read on the main actor, so never touched concurrently.
+        nonisolated(unsafe) var finished = !keyboardMoves
+        let token = NotificationCenter.default.addObserver(
+            forName: UIResponder.keyboardDidChangeFrameNotification, object: nil,
+            queue: .main) { _ in finished = true }
+        defer { NotificationCenter.default.removeObserver(token) }
+        for _ in 0..<60 where keyboard.mode != mode || !finished {
+            try? await Task.sleep(for: .milliseconds(50))
             window.layoutIfNeeded()
         }
         XCTAssertEqual(keyboard.mode, mode, "the software keyboard did not "
                        + (mode == .compact ? "appear" : "leave"), file: file, line: line)
-        try? await Task.sleep(for: .milliseconds(400))    // the keyboard animation's tail
-        window.layoutIfNeeded()
+        XCTAssertTrue(finished, "the keyboard animation did not finish", file: file, line: line)
+        for _ in 0..<2 {    // let SwiftUI lay out what the animation's end committed
+            try? await Task.sleep(for: .milliseconds(50))
+            window.layoutIfNeeded()
+        }
     }
 
     func views<T: UIView>(_ type: T.Type, in view: UIView) -> [T] {
@@ -1332,7 +1343,8 @@ final class PocketConversationLayoutTests: PocketHarness {
         await waitForHeader(.compact, window)
         try check("open", .compact)
         c.emit { $0.rows.append(self.row(22)) }
-        await waitForHeader(.compact, window)
+        try await Task.sleep(for: .milliseconds(600))    // the reply's animated scroll, 0.35 s
+        await waitForHeader(.compact, window, keyboardMoves: false)
         try check("reply with the keyboard up", .compact)
         KeyboardLayout.dismiss()
         await waitForHeader(.full, window)
